@@ -1,0 +1,1969 @@
+from __future__ import annotations
+
+# Maintainer contact: see repository README.
+
+from openai import APIConnectionError, APITimeoutError, OpenAI, RateLimitError, responses
+import base64
+import requests
+import subprocess
+import os 
+import json
+import time
+from typing import Any, Dict, List
+from pathlib import Path
+
+from datetime import datetime
+import sys
+from dotenv import load_dotenv
+from typing import List, Dict, Tuple
+from types import SimpleNamespace
+
+# NOTE: retry utilities live in `alde.error_recovery`, but this module does
+# not currently use them. Avoid importing optional deps at import-time.
+
+try:
+    from .counter import Counter  # type: ignore
+except ImportError as e:
+    msg = str(e)
+    if "no known parent package" in msg or "attempted relative import" in msg:
+        from counter import Counter  # type: ignore
+    else:
+        raise
+
+try:
+    from .get_path import GetPath  # type: ignore
+except ImportError as e:
+    msg = str(e)
+    if "no known parent package" in msg or "attempted relative import" in msg:
+        from get_path import GetPath  # type: ignore
+    else:
+        raise
+
+try:
+    from .vstores import VectorStore  # type: ignore
+except BaseException as e:
+    # VectorStore (LangChain/FAISS stack) is optional for the GUI.
+    # When unavailable, keep ChatHistory usable for logging/persistence.
+    VectorStore = object  # type: ignore
+    _VSTORE_IMPORT_ERROR = e
+else:
+    _VSTORE_IMPORT_ERROR = None
+
+
+# ---------------------------------------------------------------------------
+# Canonical AppData paths
+#
+# This repo contains two historical layouts:
+#   1) <pkg>/AppData/...            (canonical; alongside the `alde` package)
+#   2) <repo>/ALDE/AppData  (legacy; one directory higher)
+#
+# Additionally, an older bug created a folder with a trailing space:
+#   `VSM_3_Data `
+#
+# We always *write* to the canonical path, but we can *read* from legacy
+# locations and migrate once.
+# ---------------------------------------------------------------------------
+
+_PKG_ROOT = Path(__file__).resolve().parents[1]          # .../ALDE/ALDE
+_REPO_LEVEL = Path(__file__).resolve().parents[2]        # .../ALDE
+
+_APPDATA_CANON = _PKG_ROOT / "AppData"
+_APPDATA_LEGACY = _REPO_LEVEL / "AppData"
+
+_VSM3_CANON = _APPDATA_CANON / "VSM_3_Data"
+_VSM3_LEGACY = _APPDATA_LEGACY / "VSM_3_Data"
+
+_VSM3_CANON_TRAILING = _APPDATA_CANON / "VSM_3_Data "
+_VSM3_LEGACY_TRAILING = _APPDATA_LEGACY / "VSM_3_Data "
+
+_HISTORY_CANON = _VSM3_CANON / "history.json"
+_HISTORY_LEGACY = _VSM3_LEGACY / "history.json"
+_HISTORY_CANON_TRAILING = _VSM3_CANON_TRAILING / "history.json"
+_HISTORY_LEGACY_TRAILING = _VSM3_LEGACY_TRAILING / "history.json"
+
+_MANIFEST_CANON = _VSM3_CANON / "manifest.json"
+_MANIFEST_LEGACY = _VSM3_LEGACY / "manifest.json"
+
+
+
+"""
+    '''
+    A trivial singleton wrapper around `list[dict[str, Any]]`.
+    Only one instance will ever be created.
+    '''
+Citizen
+    _instance: "ChatHistory | None" = None
+
+    def __new__(cls) -> "ChatHistory":  # noqa: D401
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    # Convenience alias
+    def add(self, role: str, content: str, **extra: str ) -> None:
+        self.append({"role": role, "content": content, **extra})
+
+
+    _HISTORY = ChatHistory()  # eager instantiation
+    """
+
+   # This is the main class that is used to generate a chat response
+class ChatCompletion():
+
+    @staticmethod
+    def _read_api_key() -> str:
+            __root_env = Path(__file__).resolve().parents[1] / ".env"
+            __local_env = Path(__file__).with_suffix(".env")
+
+            for f in (__root_env, __local_env):
+                if f.exists():
+                    load_dotenv(f, override=False)
+                    break
+
+            load_dotenv()                     # fallback
+            __key = os.getenv("OPENAI_API_KEY")
+            if not __key:
+                raise RuntimeError(
+                    "OPENAI_API_KEY not found – supply it via .env or environment."
+                )
+            return __key
+    
+    # Single shared OpenAI client instance for this module.
+    # Lazily initialized so imports work without OPENAI_API_KEY set.
+    _client: OpenAI | None = None
+    _http_client: "httpx.Client | None" = None
+
+    @classmethod
+    def _build_http_client(cls) -> "httpx.Client":
+        import httpx
+
+        # Keep the GUI resilient: prevent long-lived idle connections from
+        # accumulating in half-closed states (e.g. CLOSE_WAIT) after remote close.
+        limits = httpx.Limits(
+            max_connections=20,
+            max_keepalive_connections=5,
+            keepalive_expiry=5.0,
+        )
+        timeout = httpx.Timeout(connect=10.0, read=60.0, write=60.0, pool=10.0)
+        return httpx.Client(limits=limits, timeout=timeout)
+
+    @classmethod
+    def _close_clients(cls) -> None:
+        try:
+            if cls._client is not None:
+                cls._client.close()
+        except Exception:
+            pass
+        finally:
+            cls._client = None
+
+        try:
+            if cls._http_client is not None:
+                cls._http_client.close()
+        except Exception:
+            pass
+        finally:
+            cls._http_client = None
+
+    @classmethod
+    def _get_client(cls) -> OpenAI:
+        if cls._client is None:
+            try:
+                import atexit
+                import httpx
+            except Exception:
+                atexit = None  # type: ignore
+                httpx = None  # type: ignore
+
+            if cls._http_client is None:
+                try:
+                    cls._http_client = cls._build_http_client()  # type: ignore[arg-type]
+                except Exception:
+                    cls._http_client = None
+
+            cls._client = OpenAI(api_key=cls._read_api_key(), http_client=cls._http_client)
+
+            try:
+                if atexit is not None:
+                    atexit.register(cls._close_clients)
+            except Exception:
+                pass
+        return cls._client
+
+
+class Caller(ChatCompletion):
+    """ public attributes,,
+    accesable for subclasses 
+    and inheritors. """
+
+    '@public'
+
+    _BYdA:str = '%B %Y, %d %A'
+    _dmY:str = '%d%m%Y'
+    _hMs:str = '%H:%M:%S'  
+    _nowTime:datetime = datetime.now()
+    _date_f1:str = _nowTime.strftime(_BYdA)
+    _date_f2:str = _nowTime.strftime(_dmY)
+    _time:str = _nowTime.strftime
+    _unix_t:str = _nowTime.timestamp
+    spLit:float = _unix_t
+    spLit:str = str(spLit).split('.')
+    _id:str = f'{spLit[0]}{spLit[1]}'
+     
+    def __init__(self):
+        
+        _count = Counter()
+        _count.increment()
+        self._vnr = _count._global_count
+          
+        _BYdA:str = '%B %Y, %d %A'
+        _dmY:str = '%d%m%Y'
+        _hMs:str = '%H:%M:%S'
+        _nowTime:datetime = datetime.now()
+        self._date_f1:str = _nowTime.strftime(_BYdA)
+        self._date_f2:str = _nowTime.strftime(_dmY)
+        self._time:str = _nowTime.strftime(_hMs) 
+        self._unix_t:str = _nowTime.timestamp() 
+  
+        spLit:float = self._unix_t
+        spLit:str = str(spLit).split('.')
+        self._id:str = f'{spLit[0]}{spLit[1]}'
+        self.path_read:str = ""
+        self.fileTl:str = ""                              # first part of title file to write
+        self.path:str = ""                                # get path from sys.arg[]/__file__ / ..
+        self.file:str = ""                                # first partof title file to write
+        
+        if len(sys.argv) >=2: self.path_read = sys.argv[1] 
+        else: 
+            # Default to workspace root with wildcard pattern
+            # User should provide path via command line argument for production use
+            self.path_read = str(Path.cwd() / "*" / "*")
+        
+        self.workdir:str = GetPath().get_workdir()        # type: ignore # path to current working directory
+        self.path_new:str = ""                            # get file from sys.arg[]
+        self.dbg_file:str = ""
+        self.dir:str = ""
+    
+
+
+def _unique(self):             
+        """returns a unique file_name 
+        with title/  sequenz_number/date/unixtime
+        params: titel -> str.
+        only to use with with path tools from caller class"""                    
+'''
+        try: 
+            get.path_new = f"{get.path}{get.dir}" if self.workdir() !="dbgfile" else get.path
+            print(f"new path:{ get.path_new}")
+            get.dbg_file = f"{get.fileTl}_{get._date_f2}_{get._vnr}_{get._id}"
+            print(f"debuggig file:{ get.dbg_file}")
+            print(f'pfad zum schreiben der datei {get.path_new}')
+        except Exception as e:print(f"Error (error while building path or file): {e}")
+         
+def __repr__():
+        return (f"Caller(date='get._date_f1',"f"dateTime='{get._time}',"
+                f"args='',unix_t='{get._unix_t}',"
+                f"vn='{get._vnr}, path='{get.path_read}',"
+                f"SessionID='get._id',Originpath='{get.path}',"
+                f"date'{get._date_f2}','filename'{get.file}"
+                )
+'''
+from typing import List, Dict, Tuple
+
+class ChatHistory(VectorStore):
+    """ State and persistence for chat messages, nodes and tools history."""
+    VectorStore  = VectorStore
+    # NOTE: always use canonical AppData location (alongside the alde package).
+    # Keep whitespace-clean; older versions created `VSM_3_Data ` (trailing space).
+    _ROOT_DIR = str(_VSM3_CANON)
+    _APP_DIR = str(_VSM3_CANON)
+
+    # Vector-store metadata lives in manifest.json; chat history lives in history.json.
+    _MANIFEST_PATH = str(_MANIFEST_CANON)
+    _HISTORY_PATH = str(_HISTORY_CANON)
+
+    # Legacy locations (read-only / migration sources)
+    _LEGACY_HISTORY_PATHS = [
+        str(_HISTORY_CANON),
+        str(_HISTORY_LEGACY),
+        str(_HISTORY_CANON_TRAILING),
+        str(_HISTORY_LEGACY_TRAILING),
+    ]
+
+    # Backward-compat alias used in some older call sites.
+    _FINAL_PATH = _HISTORY_PATH
+
+    # Autosave (throttled): helps ensure the most recent GUI run is persisted
+    # even if the process crashes or is terminated before Qt shutdown hooks run.
+    #
+    # Controls:
+    #   AI_IDE_HISTORY_AUTOSAVE=0/1 (default: 1)
+    #   AI_IDE_HISTORY_AUTOSAVE_EVERY_N (default: 8)
+    #   AI_IDE_HISTORY_AUTOSAVE_MIN_SECONDS (default: 3)
+    _AUTOSAVE_ENABLED = os.getenv("AI_IDE_HISTORY_AUTOSAVE", "1").strip() in {"1", "true", "True", "yes", "Yes", "on", "On"}
+    try:
+        _AUTOSAVE_EVERY_N = max(1, int(os.getenv("AI_IDE_HISTORY_AUTOSAVE_EVERY_N", "8").strip() or "8"))
+    except Exception:
+        _AUTOSAVE_EVERY_N = 8
+    try:
+        _AUTOSAVE_MIN_SECONDS = max(0.0, float(os.getenv("AI_IDE_HISTORY_AUTOSAVE_MIN_SECONDS", "3").strip() or "3"))
+    except Exception:
+        _AUTOSAVE_MIN_SECONDS = 3.0
+    _autosave_dirty_count: int = 0
+    _autosave_last_ts: float = 0.0
+    _input:List[Dict[str,str]] = []
+    # Lazy initialization: heavy operations (model loading, FAISS build)
+    # must not run at import time because importing this module is done
+    # during application startup and may happen before a QApplication
+    # exists. Initialize on first ChatHistory() instantiation instead.
+    #vsm_projekt:VectorDBmanager = None  # type: VectorDBmanager | None
+    #vsm_application:VectorDBmanager = None  # type: VectorDBmanager | None
+    # 1) Gemeinsamer Speicher (Singleton-Light)
+    # wird nur 1× angelegt
+
+    #vsm:VectorStore = None  # type: VectorStore | None
+    _history_: List[List[Dict[str, str]]] = []
+    vdb_history:VectorStore = None  # type: VectorStore | None
+    # Liste bereits existierender Assistenten
+    _assis_colec:list[dict[str,str]] = []
+    # Lazy import to avoid loading embedding model a startup
+    _assistant_id = Caller()._id
+    _count:Counter= Counter()
+    _msg_iD:int = _count.increment()
+    print(f"ChatHistory message ID start at: {_msg_iD}")
+    _thread_iD:int = Counter._global_count
+
+    _dev:str = None
+    _sys:bool | None = None
+    _dev_state:bool | None = None
+    _sys_state:bool | None = None
+
+    # Ensure app dir exists (safe if already present).
+    try:
+        os.makedirs(_APP_DIR, exist_ok=True)
+    except Exception:
+        pass
+    # ----------------------------------------------------------------------
+    # 1) Aus _history_ alle eindeutige_APP_DIR (assistant-name, assistant-id)-Paare
+    #    extrahieren und einmalig in _assis_colec ablegen
+    # ----------------------------------------------------------------------
+    # ----------------------------------------------------------------------
+    # 2) Liefert zwei Listen: alle Namen, alle IDs  (für Abfragen o. Ä.)
+    # ----------------------------------------------------------------------
+    @staticmethod
+    def _deep_get(obj: Any, key_path: str) -> Any:
+        """Safe getter for nested structures.
+
+        Supports dotted paths like "data.user.id".
+        Returns None when the path cannot be resolved.
+        """
+
+        if not key_path:
+            return None
+
+        cur: Any = obj
+        for part in str(key_path).split("."):
+            if isinstance(cur, dict):
+                cur = cur.get(part)
+                continue
+
+            if isinstance(cur, list):
+                # Optional numeric list indexing ("items.0.name")
+                if part.isdigit():
+                    idx = int(part)
+                    if 0 <= idx < len(cur):
+                        cur = cur[idx]
+                        continue
+                    return None
+                # Non-numeric list traversal is not well-defined; stop here.
+                return None
+
+            return None
+
+        return cur
+
+    @staticmethod
+    def _value_matches(value: Any, needle: str) -> bool:
+        """Return True if *needle* matches (possibly nested) *value*."""
+
+        if value is None:
+            return False
+
+        if isinstance(value, (str, int, float, bool)):
+            return str(value) == needle
+
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if str(k) == needle:
+                    return True
+                if ChatHistory._value_matches(v, needle):
+                    return True
+            return False
+
+        if isinstance(value, (list, tuple)):
+            return any(ChatHistory._value_matches(v, needle) for v in value)
+
+        # Fallback for custom objects
+        try:
+            return str(value) == needle
+        except Exception:
+            return False
+
+    @staticmethod
+    def _deep_match(obj: Any, query: Any) -> bool:
+        """Return True if *obj* matches *query*.
+
+        - If *query* is a dict: all keys in *query* must exist in *obj* and match.
+          Keys may be dotted paths ("data.user.id").
+        - If *query* is a list: each query item must match at least one element in *obj*.
+        - Otherwise: direct equality.
+        """
+
+        if isinstance(query, dict):
+            if not isinstance(obj, dict):
+                return False
+            for k, v in query.items():
+                if isinstance(k, str) and "." in k:
+                    candidate = ChatHistory._deep_get(obj, k)
+                else:
+                    candidate = obj.get(k) if isinstance(obj, dict) else None
+                if not ChatHistory._deep_match(candidate, v):
+                    return False
+            return True
+
+        if isinstance(query, list):
+            if not isinstance(obj, list):
+                return False
+            return all(any(ChatHistory._deep_match(item, q) for item in obj) for q in query)
+
+        return obj == query
+
+    @classmethod
+    def find(cls, query: dict[str, Any], *, data: list[dict[str, Any]] | None = None) -> list[dict[str, Any]]:
+        """Find history entries matching a (possibly nested) query dict."""
+
+        haystack = data if data is not None else cls._history_
+        if not isinstance(haystack, list):
+            return []
+        return [entry for entry in haystack if isinstance(entry, dict) and cls._deep_match(entry, query)]
+
+    @classmethod
+    def _key_values(cls,keys: List[str], data: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Return a list of dicts containing only the requested *keys*."""
+
+        pre_filter: List[Dict[str, Any]] = []
+        if not isinstance(data, list):
+            return pre_filter
+        for entry in data:
+            if not isinstance(entry, dict):
+                continue
+            chunk: Dict[str, Any] = {}
+            for key in keys:
+                value = cls._deep_get(entry, key)
+                if value in (None, ""):
+                    continue
+                chunk[key] = value
+            if chunk:
+                pre_filter.append(chunk)
+        return pre_filter
+    @classmethod
+    def check(cls, _value: str, keys: List[str],*
+              , data: List[Dict[str, Any]]) -> Dict[str, Any] | None:
+        """Return the first key-bundle where *_value* matches one of the keys."""
+
+        for data_objct in cls._key_values(keys, data):
+            if any(cls._value_matches(data_objct.get(key), _value) for key in keys):
+                post_filter = data_objct
+                return post_filter 
+
+        cls._value_name = None
+        return None
+    @classmethod
+    def _load(cls,path:str|None=None) -> List[Any]:
+            '''
+            Try to read *.json* and return the list that was stored before.
+            Returns an empty list if the file is missing or unreadable.
+            ---
+            path: str - Path to the JSON file to load.
+    
+            '''
+            # Prefer canonical history.json; fall back to legacy locations.
+            primary = str(path) if path else str(getattr(cls, "_HISTORY_PATH", "") or "")
+            candidates: list[str] = []
+            if primary:
+                candidates.append(primary)
+            # Always try canonical then known legacy paths.
+            try:
+                candidates.extend([p for p in (cls._LEGACY_HISTORY_PATHS or []) if p])
+            except Exception:
+                candidates.extend([str(getattr(cls, "_HISTORY_PATH", "") or "")])
+            # Back-compat alias (some older code overwrote it).
+            try:
+                if getattr(cls, "_FINAL_PATH", None):
+                    candidates.append(str(getattr(cls, "_FINAL_PATH")))
+            except Exception:
+                pass
+            seen: set[str] = set()
+
+            for p in candidates:
+                if not p:
+                    continue
+                p = str(p)
+                if p in seen:
+                    continue
+                seen.add(p)
+                try:
+                    with open(p, "r", encoding="utf-8") as fp:
+                        data = json.load(fp)
+                    # Chat history is expected to be a list of message dicts.
+                    if isinstance(data, list):
+                        # Remember where we read from (debuggable), but always
+                        # write to the canonical path.
+                        try:
+                            setattr(cls, "_LAST_READ_HISTORY_PATH", p)
+                        except Exception:
+                            pass
+
+                        # One-time migration: if we loaded from a legacy path
+                        # and canonical file is missing, write canonical.
+                        try:
+                            canon = str(getattr(cls, "_HISTORY_PATH", "") or "")
+                            if canon and os.path.abspath(p) != os.path.abspath(canon):
+                                canon_parent = os.path.dirname(canon)
+                                os.makedirs(canon_parent, exist_ok=True)
+                                if not os.path.exists(canon):
+                                    tmp = canon + ".migrated.tmp"
+                                    with open(tmp, "w", encoding="utf-8") as out:
+                                        json.dump(data, out, indent=2, ensure_ascii=False)
+                                    os.replace(tmp, canon)
+                        except Exception as exc:
+                            print(f"[WARNING] cannot migrate chat history to canonical path: {exc!s}")
+
+                        # Optional legacy cleanup: once canonical exists (either
+                        # because we migrated or it already existed), we can
+                        # remove/backup the historical duplicate files to avoid
+                        # future confusion.
+                        try:
+                            cls._cleanup_legacy_history_files(loaded_data=data)
+                        except Exception:
+                            pass
+                        return data
+                except FileNotFoundError:
+                    continue
+                except (OSError, json.JSONDecodeError) as exc:
+                    print(f"[WARNING] cannot read chat history from {p}: {exc!s}")
+                    continue
+
+            return []
+
+    @classmethod
+    def _cleanup_legacy_history_files(cls, *, loaded_data: list[Any] | None = None) -> None:
+        """Backup or delete legacy history files once canonical is valid.
+
+        Behavior:
+        - Default: rename legacy duplicates to `*.legacy.bak` (non-destructive).
+        - If `AI_IDE_HISTORY_DELETE_LEGACY=1`: delete them instead.
+
+        Safety:
+        - Only touches legacy paths if canonical exists and (when readable)
+          contains the same JSON as the loaded data.
+        - Runs at most once per process.
+        """
+
+        if getattr(cls, "_legacy_cleanup_done", False):
+            return
+        cls._legacy_cleanup_done = True
+
+        canon = str(getattr(cls, "_HISTORY_PATH", "") or "")
+        if not canon:
+            return
+        if not os.path.exists(canon):
+            return
+
+        # Determine canonical content for equality checks.
+        canon_data = None
+        try:
+            with open(canon, "r", encoding="utf-8") as fp:
+                canon_data = json.load(fp)
+        except Exception:
+            canon_data = None
+
+        # Prefer comparing against the data we just loaded/migrated.
+        reference = loaded_data if loaded_data is not None else canon_data
+        if reference is None:
+            return
+
+        delete = os.getenv("AI_IDE_HISTORY_DELETE_LEGACY", "0").strip() in {"1", "true", "True", "yes", "Yes", "on", "On"}
+
+        legacy_candidates: list[str] = []
+        try:
+            # From the fixed constants at module-level.
+            legacy_candidates.extend(
+                [
+                    str(_HISTORY_LEGACY),
+                    str(_HISTORY_LEGACY_TRAILING),
+                    str(_HISTORY_CANON_TRAILING),
+                ]
+            )
+        except Exception:
+            pass
+
+        canon_abs = os.path.abspath(canon)
+        seen: set[str] = set()
+        for lp in legacy_candidates:
+            if not lp:
+                continue
+            lp = str(lp)
+            if lp in seen:
+                continue
+            seen.add(lp)
+
+            try:
+                if os.path.abspath(lp) == canon_abs:
+                    continue
+                if not os.path.exists(lp):
+                    continue
+
+                with open(lp, "r", encoding="utf-8") as fp:
+                    legacy_data = json.load(fp)
+                if legacy_data != reference:
+                    continue
+
+                if delete:
+                    os.remove(lp)
+                else:
+                    bak = lp + ".legacy.bak"
+                    # Avoid clobbering an existing backup.
+                    if os.path.exists(bak):
+                        bak = lp + f".legacy.{int(time.time())}.bak"
+                    os.replace(lp, bak)
+            except Exception:
+                continue
+  
+    """
+    Hält den kompletten Nachrichten­verlauf **prozessweit** vor.
+    Jede Instanz greift auf dieselbe Liste `_history_` zu.
+    """
+    """
+    Minimal helper that hides all file-system interaction.
+            Persistence
+        p = ChatHistory()                     # create helper
+        history = p.load()                    # load old history
+        ...
+        p.flush(history)                      # store on exit
+    """
+    @classmethod
+    def _flush(cls) -> None:
+        """Atomically dump chat history to disk."""
+        if getattr(cls, "_is_flushing", False):
+            return
+        cls._is_flushing = True
+        try:
+            target = getattr(cls, "_HISTORY_PATH", None) or cls._FINAL_PATH
+            tmp = f"{target}.tmp"
+
+            def _sanitize(obj: Any) -> Any:
+                """Recursively coerce data into JSON-safe types."""
+                if isinstance(obj, dict):
+                    safe: dict[str, Any] = {}
+                    for k, v in obj.items():
+                        key = k if isinstance(k, (str, int, float, bool)) or k is None else str(k)
+                        safe[str(key)] = _sanitize(v)
+                    return safe
+                if isinstance(obj, list):
+                    return [_sanitize(x) for x in obj]
+                if isinstance(obj, (str, int, float, bool)) or obj is None:
+                    return obj
+                # Avoid str()/repr() on arbitrary extension objects (e.g. Qt/PySide)
+                # which may segfault during shutdown.
+                t = type(obj)
+                return f"[{t.__module__}.{t.__name__}]"
+
+            if cls._history_:
+                with open(tmp, "w", encoding="utf-8") as fp:
+                    json.dump(_sanitize(cls._history_), fp, indent=2, ensure_ascii=False)
+                os.replace(tmp, target)
+        except Exception as exc:
+            print(f"ERROR:{exc}")
+        finally:
+            cls._is_flushing = False
+
+    @classmethod
+    def _maybe_autosave(cls) -> None:
+        """Best-effort, throttled autosave."""
+        if not getattr(cls, "_AUTOSAVE_ENABLED", False):
+            return
+        # Respect the global disable switch used by the GUI shutdown logic.
+        if os.getenv("AI_IDE_DISABLE_HISTORY_FLUSH", "0").strip() in {"1", "true", "True", "yes", "Yes", "on", "On"}:
+            return
+        try:
+            cls._autosave_dirty_count = int(getattr(cls, "_autosave_dirty_count", 0)) + 1
+        except Exception:
+            cls._autosave_dirty_count = 1
+        now = time.time()
+        last = float(getattr(cls, "_autosave_last_ts", 0.0) or 0.0)
+        if cls._autosave_dirty_count < int(getattr(cls, "_AUTOSAVE_EVERY_N", 8) or 8):
+            return
+        if now - last < float(getattr(cls, "_AUTOSAVE_MIN_SECONDS", 3.0) or 3.0):
+            return
+        cls._autosave_dirty_count = 0
+        cls._autosave_last_ts = now
+        cls._flush()
+
+    # ------------------------------------------------------------------
+    #                         __init__()
+    #
+    #     Alias auf die Klassen­variable legen (kein Überschreiben!)
+    #            self._history_ = ChatHistory._history_
+    #      
+    # ------------------------------------------------------------------
+    
+    # <-- 05.08.2025 ---------------------------------------------------
+    #_msg_iD: int = _count.increment()
+    
+
+    def __init__(self) -> None:
+        self._dmY = '%d%m%Y'
+        self._hMs = '%H:%M:%S'
+        self._nowTime: datetime = datetime.now()
+        self._date: str = self._nowTime.strftime(self._dmY)
+        self._time: str = self._nowTime.strftime(self._hMs)
+        self._name:str = ""
+        self._history_ = ChatHistory._history_
+        self.current_thread_id = None
+
+    # Public alias for backward/UX naming: many call sites expect `ChatHistory.log()`.
+    def log(self, *args: Any, **kwargs: Any) -> None:
+        return self._log(*args, **kwargs)
+
+    # Vector store initialization - call this explicitly when needed
+        """Initialize vector stores lazily - call this when you actually need them."""
+        # Ensure the vector-store systems are initialized lazily and
+        # resiliently. This avoids heavy model loads and file I/O at
+        # import time which can interfere with GUI startup.
+    def init_vector_store(self) -> None:
+        try:
+            if VectorStore is object:
+                raise RuntimeError(f"VectorStore unavailable: {_VSTORE_IMPORT_ERROR}")
+            # Lazy import to avoid loading embedding model at startup
+            if ChatHistory.vdb_history is None:
+                ChatHistory.vdb_history:VectorStore = VectorStore # type: VectorStore | None
+
+                # Instantiate VecStore but avoid heavy initialization at import time.
+                # initialize() may load models / files; defer until first use.
+                # override default paths to point to AppData/VSM_1_Data, ...
+                base_dir = GetPath()._parent(parg=f"{__file__}")
+                store_path = f"{base_dir}/AppData/VSM_1_Data"
+                manifest_file = f"{base_dir}/AppData/VSM_1_Data/manifest.json"  
+ 
+                ChatHistory.vdb_projekt:VectorStore = VectorStore(
+                    store_path=store_path, 
+                manifest_file=manifest_file
+                )
+                ChatHistory.vdb_projekt.build(GetPath().get_path(
+                    parg=f"{__file__}",opt="p"))
+                
+                """
+                # Index erstellen / erweitern
+                store_path = GetPath()._parent(
+                    parg=f"{__file__}"
+                ) + "AppData/VSM_2_Data"
+                manifest_file = GetPath()._parent(
+                    parg=f"{__file__}"
+                ) + "AppData/VSM_2_Data/manifest.json"
+
+                ChatHistory.vsm_application = self.VectorDBmanager(
+                    store_path=store_path, 
+                manifest_file=manifest_file
+                )
+                ChatHistory.vsm_application.build(GetPath().get_path(
+                    parg="home ben Applications Job_offers",opt="s"))
+                """
+
+                store_path = GetPath()._parent(
+                    parg=f"{__file__}",
+                ) + "/AppData/VSM_3_Data"
+                manifest_file = GetPath()._parent(
+                    parg=f"{__file__}"
+                ) + "/AppData/VSM_3_Data/manifest.json"
+
+                ChatHistory.vdb_history = VectorStore(
+                    store_path=store_path,  
+                manifest_file=manifest_file
+                )
+                #ChatHistory.vdb_history.wipe()
+                ChatHistory.vdb_history.build(GetPath()._parent(
+                    parg=f"{__file__}") + "/AppData/")
+
+        except Exception as e:
+            # Non-fatal: log and continue. The app can still run without
+            # embeddings; vector features will be unavailable until the
+            # user triggers a rebuild.
+            print(f"[WARNING] VectorStore initialization failed: {e}")
+
+    # 2) the chat history will be load from disk to cache
+    # ------------------------------------------------------------------
+    #
+    # 2) Öffentliche Methoden
+    #
+    # ------------------------------------------------------------------
+    # ---------------------- NEW 25.07.2025 ---------------- persistence
+
+    def get_history(): return ChatHistory._history_           # <- hinzugefuegt am 24.08.2025
+    """Initialize vector stores lazily - call this when you actually need them."""
+
+    def _log(
+        self,
+        _role: str = 'user',
+        _content: str | list = None,
+        _obj: str = "",
+        _data: list | None = None,
+        _thread_name: str | None = "" or 'chat',
+        _name: str | None = "",
+        _dev: bool = None,
+        _sys: bool = None,
+        _tool_calls: list | None = None,
+        _tool_call_id: str | None = None,
+        _name_tool: str | None = None  # Renamed to avoid conflict with _name
+) ->     None:
+        # ... (existing normalization code) ...
+        """Log a message or State to the history with detailed metadata."""
+
+        # Normalize role to prevent OpenAI API errors like "Invalid value: 'system '".
+        if isinstance(_role, str):
+            _role = _role.strip()
+
+       
+        
+        # Serialize tool_calls - handle both objects and dicts
+        def serialize_tc(tc):
+            if isinstance(tc, dict):
+                return tc
+            elif hasattr(tc, 'model_dump'):
+                return tc.model_dump()
+            elif hasattr(tc, '__dict__'):
+                return {
+                    'id': getattr(tc, 'id', ''),
+                    'type': 'function',
+                    'function': {
+                        'name': getattr(tc.function, 'name', '') if hasattr(tc, 'function') else '',
+                        'arguments': getattr(tc.function, 'arguments', '{}') if hasattr(tc, 'function') else '{}'
+                    }
+                }
+            return tc
+        
+        serialized_tool_calls = [serialize_tc(tc) for tc in _tool_calls] if _tool_calls else []
+
+    # Defensive: some callers accidentally pass a non-string (e.g. list/dict)
+        # for `_name_tool`. OpenAI expects `message.name` to be a string.
+        if _name_tool is not None and not isinstance(_name_tool, str):
+            try:
+                if isinstance(_name_tool, (list, tuple)) and _name_tool:
+                    first = _name_tool[0]
+                    if isinstance(first, dict):
+                        cand = first.get("name") or first.get("type")
+                        if isinstance(cand, str) and cand:
+                            _name_tool = cand
+                        else:
+                            _name_tool = json.dumps(_name_tool, ensure_ascii=False)
+                    elif all(isinstance(x, str) for x in _name_tool):
+                        _name_tool = ",".join(_name_tool)
+                    else:
+                        _name_tool = json.dumps(_name_tool, ensure_ascii=False)
+                elif isinstance(_name_tool, dict):
+                    cand = _name_tool.get("name") or _name_tool.get("type")
+                    _name_tool = cand if isinstance(cand, str) else json.dumps(_name_tool, ensure_ascii=False)
+                else:
+                    _name_tool = str(_name_tool)
+            except Exception:
+                _name_tool = None
+
+        # Defensive: tool_call_id must be hashable (string) because we later map
+        # tool_call_id -> tool response in `_insert()`. If a list slips in here,
+        # it will crash with "unhashable type: 'list'".
+        if _tool_call_id is not None and not isinstance(_tool_call_id, str):
+            try:
+                if isinstance(_tool_call_id, (list, tuple)):
+                    if all(isinstance(x, str) for x in _tool_call_id):
+                        _tool_call_id = ",".join(_tool_call_id)
+                    else:
+                        _tool_call_id = json.dumps(_tool_call_id, ensure_ascii=False)
+                elif isinstance(_tool_call_id, dict):
+                    _tool_call_id = json.dumps(_tool_call_id, ensure_ascii=False)
+                else:
+                    _tool_call_id = str(_tool_call_id)
+            except Exception:
+                _tool_call_id = None
+        
+        _message: dict = {
+            'message-id':  self._count.increment(),
+            'role': _role,
+            'content': _content,
+            'object':'chat',
+            'date': datetime.now().strftime('%Y-%m-%d'),
+            'time':  datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'thread-name': _thread_name,
+            'thread-id': self._thread_iD,
+            'assistant-name': _name,
+            'assistant-id': self._assistant_id,
+            'tools': [],
+            'data': _data,
+            'tool_choices': 'auto',
+            'dev': None,
+            'sys': None,
+            'tool_calls': serialized_tool_calls,
+            'tool_call_id': _tool_call_id,
+            'name': _name_tool  # For tool messages
+        }                             # instruction for the assistant      
+                                              # if the assistant did'n exist already a name ,
+                                          # assitants are derivates of real existing modell
+                                          # object as an general classification, objects are predefined.
+                                          # a new assistant must match a classification, if not its creation is omitted.
+                                          # Validierungs-/Debug-Ausgabe   (kann später entfernt werden)
+       
+        if ChatHistory._dev_state == False and _role == "developer" and _dev == True:
+            ChatHistory._dev_state = True
+            try:           
+                ChatHistory._history_.append(_message)  
+            except Exception as e:
+                print(f'Error during log messages to history: {e}')       
+        elif ChatHistory._sys_state == False and _role == "system" and _sys == True:
+            ChatHistory._sys_state = False
+            try:
+                ChatHistory._history_.append(_message)  
+            except Exception as e:
+                print(f'Error during log messages to history: {e}')       
+        elif _role == "user":
+            try:  
+                ChatHistory._history_.append(_message)  
+            except Exception as e:
+                print(f'Error during log messages to history: {e}')       
+        elif _role == "assistant":
+            try:  
+                ChatHistory._history_.append(_message)  
+            except Exception as e:
+                print(f'Error during log messages to history: {e}')   
+        elif _role == "tool":
+            try:
+                ChatHistory._history_.append(_message)
+            except Exception as e:
+                print(f'Error during log messages to history: {e}')
+
+        # Throttled autosave to reduce history loss on crashes.
+        try:
+            ChatHistory._maybe_autosave()
+        except Exception:
+            pass
+
+# ------------------------------------------------------------------------------
+    def _insert(self,tool:bool | None = False, f_depth:int | None = None , f_role:str | None = None) -> List[Dict[str, Any]]:
+        """Return the message object for the model API. tool = true includes messages with role 'tool'.
+        f_deph limits the number of messages returned to the last f_deph entries.
+        if role is specified, only messages with that role are included.
+        
+        IMPORTANT: This method validates tool_call sequences to prevent OpenAI API errors.
+        Assistant messages with tool_calls that lack matching tool responses are stripped of tool_calls.
+        """
+        
+        # IMPORTANT: Avoid sending unbounded chat history to the model.
+            # Default to a bounded slice of recent history
+        def _truncate_text(val: Any, *, max_chars: int) -> str:
+            if val is None:
+                return ""
+            if not isinstance(val, str):
+                try:
+                    val = json.dumps(val, ensure_ascii=False)
+                except Exception:
+                    val = str(val)
+            if len(val) <= max_chars:
+                return val
+            return val[:max_chars] + "\n\n[TRUNCATED]"
+
+        def _normalize_msg_name(val: Any) -> str | None:
+            """OpenAI chat messages accept optional `name` but it must be a string."""
+            if val is None:
+                return None
+            if isinstance(val, str):
+                return val
+            try:
+                if isinstance(val, (list, tuple)) and val:
+                    first = val[0]
+                    if isinstance(first, dict):
+                        cand = first.get("name") or first.get("type")
+                        if isinstance(cand, str) and cand:
+                            return cand
+                    if all(isinstance(x, str) for x in val):
+                        joined = ",".join(val)
+                        return joined or None
+                    return json.dumps(val, ensure_ascii=False)
+                if isinstance(val, dict):
+                    cand = val.get("name") or val.get("type")
+                    if isinstance(cand, str) and cand:
+                        return cand
+                    return json.dumps(val, ensure_ascii=False)
+                return str(val)
+            except Exception:
+                return None
+
+        # Build valid message sequence ensuring tool messages follow their tool_calls
+        # Step 1: Map tool_call_id -> tool response
+        tool_responses: dict[str, dict] = {}
+        for idx, entry in enumerate(self._history_):
+            idx = idx
+            if isinstance(entry, dict) and entry.get("role") == "tool":
+                tid = entry.get("tool_call_id")
+                if tid:
+                    tool_name = _normalize_msg_name(entry.get("name"))
+                    tool_responses[tid] = {
+                        "role": "tool",
+                        # Tool outputs can be massive (vector results, JSON dumps). Hard-cap them.
+                        "content": _truncate_text(entry.get("content", ""), max_chars=8000),
+                        "tool_call_id": tid,
+                        **({"name": tool_name} if tool_name else {}),
+                    }
+            # If callers pass 0/None, treat it as "recent history".
+        
+        # Step 2: Build filtered list with proper sequencing
+        filtered: list[dict[str, Any]] = []
+        for idx, entry in enumerate(self._history_):
+            idx = idx
+            if not isinstance(entry, dict):
+                continue
+        
+            role = entry.get("role")
+            # Filter to current conversation thread (prevents mixing threads)
+            entry_thread_id = entry.get("thread-id")
+            if entry_thread_id is not None and entry_thread_id != self._thread_iD:
+                continue
+
+            role = entry.get("role")
+
+            # Skip tool messages here - they will be inserted after their assistant message
+            if role == "tool":
+                continue
+
+             # Build base message
+            msg = {
+                "role": role,
+                "content": entry.get("content", ""),
+            }
+            
+            # Ensure content is a string and clamp size.
+            msg["content"] = _truncate_text(msg.get("content"), max_chars=20000)
+            
+            name_val = entry.get("name")
+            name_str = _normalize_msg_name(name_val)
+            if name_str:
+                msg["name"] = name_str
+            
+            # Handle assistant messages with tool_calls
+            if role == "assistant" and entry.get("tool_calls") and tool:
+                tool_calls = entry.get("tool_calls")
+                # Only include tool_calls that have matching responses
+                valid_tool_calls = []
+                pending_tool_responses = []
+                
+                for tc in tool_calls:
+                    tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+                    if tc_id and tc_id in tool_responses:
+                        # Serialize tool_call
+                        if isinstance(tc, dict):
+                            valid_tool_calls.append(tc)
+                        elif hasattr(tc, "model_dump"):
+                            valid_tool_calls.append(tc.model_dump())
+                        else:
+                            valid_tool_calls.append({
+                                "id": tc_id, 
+                                "type": "function", 
+                                "function": {
+                                    "name": getattr(tc.function, "name", "") if hasattr(tc, "function") else "",
+                                    "arguments": getattr(tc.function, "arguments", "{}") if hasattr(tc, "function") else "{}"
+                                }
+                            })
+                        pending_tool_responses.append(tool_responses[tc_id])
+                
+                if valid_tool_calls:
+                    msg["tool_calls"] = valid_tool_calls
+                    filtered.append(msg)
+                    # Immediately add the tool responses after assistant message
+                    filtered.extend(pending_tool_responses)
+                    continue  # Skip the normal append
+            
+            # Skip role filter
+            if msg.get("role") == f_role:
+                continue
+            filtered.append(msg)
+            
+
+        # IMPORTANT: Avoid sending unbounded chat history to the model.
+        # If f_depth is None/0/negative, fall back to a safe default.
+        try:
+            depth = int(f_depth) if f_depth is not None else 0
+        except Exception:
+            depth = 0
+        if depth <= 0:
+            depth = 15
+
+        out = filtered[-depth:]
+        # Safety: never start a prompt with a tool message.
+        # If truncation cuts off the preceding assistant/tool_calls, OpenAI rejects the request.
+        while out and isinstance(out[0], dict) and out[0].get("role") == "tool":
+            out.pop(0)
+        print(f'Filtered messages for model API (count={len(out)})')
+        
+        return out
+        
+    # ---------------------------------------------------------------------------
+    # 3) Komfort-Ausgabe (Debug)
+    # ---------------------------------------------------------------------------
+
+    def __repr__(self) -> str:                       # pragma: no cover
+            return f"{self.__class__.__name__}{self._history_!r}"
+
+# This class is used to generate a image description from an image URL
+class ImageDescription(ChatCompletion):
+
+    def __init__(self,
+            _model:str = None,
+            _url:str = str,
+            _input_text:str = str,
+            res:str = None
+            ):
+
+        super().__init__()
+        self.model = _model
+        self._url =_url
+        self.input_text =_input_text
+        self._res = "high"    
+        
+        message = [{"role":"user", "content":
+           [{"type":"text", "text":self.input_text},
+           {"type":"image_url", "image_url": 
+           {"url":f"data:image/jpeg;base64,{self._img_to_b64()}",
+           "detail":self._res
+           }
+        }
+        ]
+        }
+        ]
+        try:
+            ChatHistory().log(
+                _role="tool",
+                _content="openai.chat.completions.create request",
+                _obj="model",
+                _data={"model": self.model, "n_messages": len(message)},
+                _thread_name="model",
+                _name_tool="openai.chat.completions.create",
+            )
+        except Exception:
+            pass
+
+        try:
+            self.img_response = self._get_client().chat.completions.create(
+                model=self.model,
+                messages=message,
+            )
+        except Exception as exc:
+            try:
+                ChatHistory().log(
+                    _role="tool",
+                    _content="openai.chat.completions.create error",
+                    _obj="model",
+                    _data={"model": self.model, "error": f"{type(exc).__name__}: {exc}"},
+                    _thread_name="model",
+                    _name_tool="openai.chat.completions.create",
+                )
+            except Exception:
+                pass
+            raise
+
+        try:
+            ChatHistory().log(
+                _role="tool",
+                _content="openai.chat.completions.create response",
+                _obj="model",
+                _data={
+                    "model": self.model,
+                    "response_id": getattr(self.img_response, "id", None),
+                    "has_choices": bool(getattr(self.img_response, "choices", None)),
+                },
+                _thread_name="model",
+                _name_tool="openai.chat.completions.create",
+            )
+        except Exception:
+            pass
+    def _img_to_b64(_url:str) -> str|list:  
+        for url in _url:
+            with open(url, "rb") as _f:
+                return base64.b64encode(
+                _f.read()).decode('utf-8')  
+
+    def get_descript(self):
+            print(self.img_response.choices[0].message.content)
+            return self.img_response
+    
+
+class ChatDialogue(ChatCompletion):
+    _object:str = "audio"
+
+    def __init__(self,
+        model:str = None,
+        mod:str = None
+        ): # ((;
+      
+       super().__init__(
+            )
+
+       self.model = model 
+       self.mod = mod
+       self.voice = "shimmer"
+       self.format = "mp3"
+
+    def get_response(self,input_text):
+        try:
+            ChatHistory().log(
+                _role="tool",
+                _content="openai.chat.completions.create request",
+                _obj="model",
+                _data={"model": self.model, "modalities": ["text", "audio"]},
+                _thread_name="model",
+                _name_tool="openai.chat.completions.create",
+            )
+        except Exception:
+            pass
+
+        try:
+            self.response = self._get_client().chat.completions.create(
+                model=self.model,
+                modalities=["text", "audio"],
+                audio={"voice": {self.voice}, "format": {self.format}},
+                messages=input_text,
+                temperature=1.3,
+                frequency_penalty=1.2,
+                presence_penalty=1.2,
+            )
+        except Exception as exc:
+            try:
+                ChatHistory().log(
+                    _role="tool",
+                    _content="openai.chat.completions.create error",
+                    _obj="model",
+                    _data={"model": self.model, "error": f"{type(exc).__name__}: {exc}"},
+                    _thread_name="model",
+                    _name_tool="openai.chat.completions.create",
+                )
+            except Exception:
+                pass
+            raise
+
+        try:
+            ChatHistory().log(
+                _role="tool",
+                _content="openai.chat.completions.create response",
+                _obj="model",
+                _data={"model": self.model, "response_id": getattr(self.response, "id", None)},
+                _thread_name="model",
+                _name_tool="openai.chat.completions.create",
+            )
+        except Exception:
+            pass
+       
+    def get_message(self):
+            return self.response.choices[0].message.audio.transcript
+
+    def get_audio(self):
+            return self.response.choices[0].message.audio.data
+
+# This class is used to generate images
+
+
+# ─ ChatCom ‑ Wrapper, with in memory context cache implementation and vector store query ─
+class ChatCom(ChatCompletion,ChatHistory):
+
+    def __init__(self,
+            *,
+            _model: str,
+            _input_text: str|list,
+            tools: dict[list]|list[str]|None = None,
+            tool_choice: str | None = None,
+            _name: str|None=None,
+            _url: str=None,
+            _res: str=None
+            ) -> None:
+
+        self._model = _model
+        self._input_text = _input_text
+        self._tool_choice = tool_choice or "auto"
+        tools=tools
+        _name
+        _url = _url
+        _res = _res
+        _object = "chat"        
+        # instantiate chat history (context cache) -
+        if not ChatHistory._history_:
+            ChatHistory._history_ = ChatHistory._load()
+        _chat = ChatHistory()
+
+        if not ChatHistory._history_:_res
+        # system message: instructions for the Primary Assistant (Agent #1)
+        # Use the unified tool registry (shared with agenszie_factory) instead of a
+        # custom, inconsistent schema. Keep the list small to reduce model confusion.
+        try:
+            from .tools import UNIFIED_TOOLS  # type: ignore
+        except Exception:
+            from tools import UNIFIED_TOOLS  # type: ignore
+        try:
+            from .agents_factory import get_agent_tools  # type: ignore
+        except Exception:
+            from agents_factory import get_agent_tools  # type: ignore
+        try:
+            from . import agents_registry as agents_registry  # type: ignore
+        except Exception:
+            import agents_registry as agents_registry  # type: ignore
+
+        _agent_cfg = agents_registry.AGENTS_REGISTRY.get("_primary_assistant") or {
+            "model": "gpt-4.1-mini-2025-04-14",
+            "system": "You are the Primary Assistant.",
+            "tools": ["route_to_agent"],
+        }
+        print(f"Using agent config: {_agent_cfg}")
+
+
+        def _normalize_user_text(val: Any) -> str:
+            """Ensure user text is a string (never list[str])."""
+            if val is None:
+                return ""
+            if isinstance(val, str):
+                return val
+            if isinstance(val, (list, tuple)):
+                return "\n".join(str(x) for x in val)
+            if isinstance(val, dict):
+                try:
+                    return json.dumps(val, ensure_ascii=False)
+                except Exception:
+                    return str(val)
+            return str(val)
+
+        msg_user_text: str = _normalize_user_text(self._input_text)
+        print(f"""USER INPUT:
+              { msg_user_text}""")
+
+        # ------------------------------------------------------------------
+        # Deterministic routing shortcuts (business logic)
+        # - If the user starts with "@_agent_name" (or "@ _agent_name"), route
+        #   directly via route_to_agent.
+        # - If the user asks to generate a cover letter (with needed infos),
+        #   route to _data_dispatcher to run the batch/dispatcher flow.
+        # ------------------------------------------------------------------
+        self._forced_route: dict[str, str] | None = None
+        try:
+            import re
+
+            def _parse_at_agent(text: str) -> tuple[str | None, str]:
+                m = re.match(r"^\s*@\s*([A-Za-z0-9_\-]+)\b[\s:,-]*", text or "")
+                if not m:
+                    return None, text
+                agent = (m.group(1) or "").strip()
+                rest = (text[m.end():] or "").lstrip()
+                return agent, rest
+
+            at_agent, remainder = _parse_at_agent(msg_user_text)
+            if at_agent:
+                # Accept both "data_dispatcher" and "_data_dispatcher" styles.
+                candidate = at_agent if at_agent.startswith("_") else f"_{at_agent}"
+                if candidate in getattr(agents_registry, "AGENTS_REGISTRY", {}):
+                    self._forced_route = {
+                        "target_agent": candidate,
+                        "user_question": remainder or "",
+                    }
+                elif at_agent in getattr(agents_registry, "AGENTS_REGISTRY", {}):
+                    self._forced_route = {
+                        "target_agent": at_agent,
+                        "user_question": remainder or "",
+                    }
+
+         
+        except Exception:
+            # Never let routing shortcuts break normal chat execution.
+            self._forced_route = None
+
+        def _img_to_b64(_url: str | list | None) -> list[str]:
+            img: list[str] = []
+            if _url is None:
+                return img
+            paths: list[str]
+            if isinstance(_url, str):
+                paths = [_url]
+            else:
+                paths = [str(p) for p in _url]
+                
+            for path in paths:
+                with open(path, "rb") as _f:
+                    img.append(base64.b64encode(_f.read()).decode("utf-8"))
+            return img
+        
+        _img_b64_list = _img_to_b64(_url)
+        _msg_user_content_data_img: list[dict[str, Any]] = (
+            [{"type": "text", "text": msg_user_text}]
+            + [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": f"data:image/jpeg;base64,{b64}",
+                        "detail": _res or "auto",
+                    },
+                }
+                for b64 in _img_b64_list
+            ]
+        )
+        # log messages to context cache for conversation liftime, -  
+        # developer / system message 
+        
+        _chat._log(
+            'user', 
+            _msg_user_content_data_img if _url 
+            else msg_user_text,
+            _object, _name = 'Primary Assistant'
+        )
+        # initialize vector store -
+        #_chat.init_vector_store()
+
+        _user_content: Any = _msg_user_content_data_img if _img_b64_list else msg_user_text
+
+        # Build model input from bounded history so the assistant can remember prior turns.
+        # We prepend exactly one system message and then append recent history (excluding system)
+        # to avoid duplicated system instructions.
+
+        msg_sys_content_txt = str(_agent_cfg.get("system") or "")
+        print(f"""SYSTEM INSTRUCTION:
+        {msg_sys_content_txt}""")
+        
+        inserted = _chat._insert(tool=True, f_depth=0, f_role="system")
+        _input: list[dict[str, Any]] = [{"role": "system", "content": msg_sys_content_txt}]
+        if inserted:
+            _input.extend(inserted)
+        else:
+            # Fallback: ensure the current user message is present.
+            _input.append({"role": "user", "content": _user_content})
+
+        print(f"INSERT: {len(inserted) if inserted else 0}")
+
+        # Optional: include lightweight vector-store context (best-effort).
+        embeddings_context = ""
+        try:
+            vdb = getattr(ChatHistory, "vdb_history", None)
+            if vdb is not None:
+                embeddings_context = str(vdb.query(query=msg_user_text, k=2))
+        except Exception as e:
+            print(f"[WARNING] VectorStore query failed: {e}")
+
+        if embeddings_context:
+            _input.append({"role": "system", "content": f"Embeddings: {embeddings_context}"})
+        try:
+            _input_chars = sum(len(str(m.get("content", ""))) for m in _input if isinstance(m, dict))
+        except Exception:
+            _input_chars = -1
+        print(f"INPUT: messages="'\n',len(_input),'\n'+f'approx_chars=','\n', _input_chars)
+        # --------------------------------------------------- call to OpenAI's API
+        def _response(_input: list[dict[str, Any]] = _input):
+           
+            """Returon the full OpenAI response (choices/tool_calls live here)."""
+            # Ensure we pass the object list expected by the API (not a single string).
+            try:
+                model = (_agent_cfg.get("model") if isinstance(_agent_cfg, dict) else None) or self._model
+                print(f"Using model: {model}")
+            except Exception:
+                model ='123456'
+
+
+            try:
+                tools = agents_registry.get_agent_tools(
+                   _agent_cfg.get("tools"))
+                print(f"Using tools: {tools}")
+
+            except Exception:
+                try:
+                    tools = get_agent_tools(_agent_cfg.get("tools") )
+                except Exception:
+                    tools = None
+           
+            try:
+                _chat.log(
+                    _role="tool",
+                    _content="openai.chat.completions.create request",
+                    _obj="model",
+                    _data={"model": model, "n_messages": len(_input), "has_tools": bool(tools)},
+                    _thread_name="model",
+                    _name_tool="openai.chat.completions.create",
+                )
+            except Exception:
+                pass
+
+            try:
+                response = self._get_client().chat.completions.create(
+                    model=model,
+                    messages=_input,
+                    tools=tools,
+                    tool_choice="auto",
+                )
+            except Exception as exc:
+                try:
+                    _chat.log(
+                        _role="tool",
+                        _content="openai.chat.completions.create error",
+                        _obj="model",
+                        _data={"model": model, "error": f"{type(exc).__name__}: {exc}"},
+                        _thread_name="model",
+                        _name_tool="openai.chat.completions.create",
+                    )
+                except Exception:
+                    pass
+                raise
+
+            try:
+                _chat.log(
+                    _role="tool",
+                    _content="openai.chat.completions.create response",
+                    _obj="model",
+                    _data={"model": model, "response_id": getattr(response, "id", None)},
+                    _thread_name="model",
+                    _name_tool="openai.chat.completions.create",
+                )
+            except Exception:
+                pass
+
+            return response
+                
+        # If we already know we will route deterministically, skip the initialcontent: "
+        # primary-model call (it would just add latency/cost).
+        if self._forced_route:
+            self.assistant_msg_content = ""
+            self.assistant_msg = SimpleNamespace(content="", tool_calls=None)
+        else:
+            try:
+                _resp = _response(_input)
+            except Exception as exc:
+                err_text = (
+                    "OpenAI chat call failed: "
+                    f"{exc}. Check OPENAI_API_KEY and network connectivity."
+                )
+                self.assistant_msg_content = err_text
+                self.assistant_msg = SimpleNamespace(content=err_text, tool_calls=None)
+                _chat._log(
+                    'assistant',
+                    err_text,
+                    _object,
+                    _name='Primary Assistant'
+                )
+                return
+            self.assistant_msg = _resp.choices[0].message
+            self.assistant_msg_content = (getattr(self.assistant_msg, 'content', '') or "")
+
+        #print(f"USER INPUT:\n\n{_msg_user_text}\n\nMODEL RESPONSE\n\n{self.assistant_msg_content}")
+        # -------------------------------------- log response to context cache -
+        _chat._log('assistant',
+            self.assistant_msg_content if self.assistant_msg_content else "[tool calls executed]",
+            _object,
+            _tool_calls=getattr(self.assistant_msg, 'tool_calls'),
+            _name = 'Primary Assistant'
+        )
+    # -------------------------------- API (retrieve the model's response) -
+    # -------------------------------- tool calls handler from the agenszie_factory_framework -
+
+    def get_response(self) -> str:
+            import sys
+            """Return the assistant reply as plain text.
+
+            This method is used by both the GUI and headless callers.
+            Always return a string to avoid UI crashes like: 'str' has no attribute 'content'
+            or 'ChatCompletionMessage' is not JSON serializable.
+            """
+            # Shortcut: user explicitly selected an agent via @prefix, or a
+            # cover-letter request was detected with required info.
+            if getattr(self, "_forced_route", None):
+                try:
+                    try:
+                        from . import agents_factory as _agents_factory  # type: ignore
+                    except Exception:
+                        import agents_factory as _agents_factory  # type: ignore
+
+                    args = dict(getattr(self, "_forced_route") or {})
+                    _status, routing_request = _agents_factory.execute_route_to_agent(args)
+                    if not isinstance(routing_request, dict):
+                        return str(_status or "")
+
+                    # Mirror the follow-up logic from agents_factory._handle_tool_calls.
+                    history = _agents_factory.get_history()
+                    followup_messages = routing_request.get("messages") or []
+                    if not isinstance(followup_messages, list):
+                        followup_messages = [followup_messages]
+                    followup_messages = list(followup_messages)
+                    followup_messages.extend(history._insert(tool=True, f_depth=0))
+
+                    followup_tools = routing_request.get("tools") or []
+                    followup_model = routing_request.get("model") or self._model
+
+        # ------------------------
+
+                    c = ChatComE(
+                        _model=followup_model,
+                        _messages=followup_messages,
+                        tools=followup_tools,
+                        tool_choice="auto",
+                    )
+                    resp = c._response()
+                    if getattr(resp, "choices", None):
+                        msg = resp.choices[0].message
+                        if getattr(msg, "tool_calls", None):
+                            rec = _agents_factory._handle_tool_calls(
+                                msg,
+                                depth=0,
+                                ChatCom=ChatCom,
+                                agent_label=routing_request.get("agent_label") or args.get("target_agent") or "",
+                            )
+                            return "" if rec is None else (rec if isinstance(rec, str) else json.dumps(rec, ensure_ascii=False))
+                        return (getattr(msg, "content", "") or "")
+                    return ""
+                except Exception as e:
+                    return f"Routing failed: {e}"
+
+            tool_calls = getattr(self.assistant_msg, 'tool_calls', None)
+            if tool_calls:
+                # Note: tool-call responses often have no direct text content.
+                print(f'Tool calls: {tool_calls}')
+                try:
+                    from .  import agents_factory  as _agents_factory  # type: ignore
+                except Exception:
+                    import agents_factory as _agents_factory  # type: ignore
+
+                final_result = _agents_factory._handle_tool_calls(
+                    self.assistant_msg,
+                    ChatCom=ChatCom,
+                    depth=0,
+                    agent_label="_data_dispatcher",
+                )
+
+                print(f'FINAL_RESULT: {final_result}')
+                if final_result is None:
+                    return ""
+                if isinstance(final_result, str):
+                    return final_result
+                try:
+                    return json.dumps(final_result, ensure_ascii=False)
+                except Exception:
+                    return str(final_result)
+
+            return (self.assistant_msg_content or "")
+
+# This class is used to generate images
+class ImageCreate(ChatCompletion,ChatHistory):
+    _object = "img"
+    _previous_response_id = ''
+
+    def __init__(self,
+        _model:str|None="",
+        _input_text:str=""
+        ):  # ((:
+        _input_text = _input_text
+        image_base64 = ""
+        super().__init__()
+
+        self._log( 
+            _role="user", 
+            _content=_input_text, 
+            _obj=self._object,
+            _tool_call_id = self._previous_response_id,
+            _name_tool="image_generation"
+        )
+        if not self._previous_response_id:
+            try:
+                self.log(
+                    _role="tool",
+                    _content="openai.responses.create request",
+                    _obj="model",
+                    _data={"model": _model, "previous_response_id": None},
+                    _thread_name="model",
+                    _name_tool="openai.responses.create",
+                )
+            except Exception:
+                pass
+            try:
+                response = self._get_client().responses.create(
+                    model=_model,
+                    input=_input_text,
+                    tools=[{
+                        "type": "image_generation",
+                        "background": "transparent",
+                        "quality": "medium",
+                        "size": "1024x1024",
+                        "moderation": "low",
+                    }],
+                )
+            except Exception as exc:
+                try:
+                    self.log(
+                        _role="tool",
+                        _content="openai.responses.create error",
+                        _obj="model",
+                        _data={"model": _model, "error": f"{type(exc).__name__}: {exc}"},
+                        _thread_name="model",
+                        _name_tool="openai.responses.create",
+                    )
+                except Exception:
+                    pass
+                raise
+            self._previous_response_id = response.id
+        else:
+            try:
+                self.log(
+                    _role="tool",
+                    _content="openai.responses.create request",
+                    _obj="model",
+                    _data={"model": _model, "previous_response_id": self._previous_response_id},
+                    _thread_name="model",
+                    _name_tool="openai.responses.create",
+                )
+            except Exception:
+                pass
+            try:
+                response = self._get_client().responses.create(
+                    previous_response_id=self._previous_response_id,
+                    model=_model,
+                    input=_input_text,
+                    tools=[{
+                        "type": "image_generation",
+                        "background": "transparent",
+                        "quality": "medium",
+                        "size": "1024x1024",
+                        "moderation": "low",
+                    }],
+                )
+            except Exception as exc:
+                try:
+                    self.log(
+                        _role="tool",
+                        _content="openai.responses.create error",
+                        _obj="model",
+                        _data={"model": _model, "error": f"{type(exc).__name__}: {exc}"},
+                        _thread_name="model",
+                        _name_tool="openai.responses.create",
+                    )
+                except Exception:
+                    pass
+                raise
+
+        try:
+            self.log(
+                _role="tool",
+                _content="openai.responses.create response",
+                _obj="model",
+                _data={"model": _model, "response_id": getattr(response, "id", None)},
+                _thread_name="model",
+                _name_tool="openai.responses.create",
+            )
+        except Exception:
+            pass
+        self._previous_response_id = response.id
+        image_generation_calls = [
+            output
+            for output in response.output
+            if output.type == "image_generation_call"
+            ]
+        image_data = [output.result for output in image_generation_calls]
+        if image_data:
+            image_base64: bytes= image_data[0]
+        self._log(
+            _role="assistant",
+            _content=(
+                f"image: {image_base64}" if image_data else "Image creation failed."
+            ),
+            _obj=self._object,
+            _tool_call_id=self._previous_response_id,
+        )
+        self._previous_response_id = response.id
+        self.image_base64 = image_base64
+
+    def get_img(self) -> object:
+            if not self.image_base64 :
+                raise ValueError(
+            "No image data returned from image generation"
+        )
+            return self.image_base64 
+        
+
+class ChatComE(ChatCompletion,ChatHistory):     
+        if not ChatHistory._history_:
+            ChatHistory._history_ 
+
+        def __init__(self, 
+            _model :str,
+            # path:str|list|None = None, file:str|list|None = None,
+            _messages:list,
+            tools:list[dict],
+            tool_choice:str
+            ):
+            self.model:str = _model
+            self._messages:list = _messages
+            self.tools:list[dict] = tools
+            self.tool_choice:str = tool_choice
+            super().__init__()
+            api_key = self._read_api_key()
+            #print(tools)
+            self.instruction = """
+                  You are an expert DevOps assistant. 
+                  Du generierst sicheren, getesteten und ausfürlich dokumentierten Code für Python GUI's mit Qt6-PySide6. 
+                  Du bist verantwortlich für schreiben, debugging und refactoring 
+                  jede Antwort muss: 
+                  (1) kompilierten/ready to run Code oder 
+                  (2) dropin patches, ein oder mehrteilig, liefern. 
+                  (3) betroffener, fehlerhafter Code muss neu geschrieben werden. 
+                  (4) eine Kurz­erklärung liefern 
+              """
+            api_key
+            #self.path = path   
+            #self.file = file 
+            self.editor = "editor"
+            self.model 
+            self.client = OpenAI(api_key= api_key)
+            """self.messages_chat.append([
+                       {
+                 "role":"system", "content":self.system_message
+                 },
+                 {
+                 "role":"developer", "content":self.instruction
+                 },
+                 {
+                 "role":"user", "content":self.input_text
+                 },
+                     {
+                     "role":"assistant", "content":self.response
+             },
+             ])"""
+       
+        def _response(self):
+                tool_choice = getattr(self, "tool_choice", None) or "auto"
+                try:
+                    self.log(
+                        _role="tool",
+                        _content="openai.chat.completions.create request",
+                        _obj="model",
+                        _data={"model": self.model, "n_messages": len(self._messages), "has_tools": bool(self.tools)},
+                        _thread_name="model",
+                        _name_tool="openai.chat.completions.create",
+                    )
+                except Exception:
+                    pass
+                try:
+                    self.response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=self._messages,
+                        tools=self.tools,
+                        tool_choice=tool_choice,
+                    )
+                except Exception as exc:
+                    try:
+                        self.log(
+                            _role="tool",
+                            _content="openai.chat.completions.create error",
+                            _obj="model",
+                            _data={"model": self.model, "error": f"{type(exc).__name__}: {exc}"},
+                            _thread_name="model",
+                            _name_tool="openai.chat.completions.create",
+                        )
+                    except Exception:
+                        pass
+                    raise
+                try:
+                    self.log(
+                        _role="tool",
+                        _content="openai.chat.completions.create response",
+                        _obj="model",
+                        _data={"model": self.model, "response_id": getattr(self.response, "id", None)},
+                        _thread_name="model",
+                        _name_tool="openai.chat.completions.create",
+                    )
+                except Exception:
+                    pass
+                # Return the full response object so caller can check tool_calls
+                return self.response
+        def _editor(self,e):
+            e=e
+            return subprocess.run(({self.editor}), 
+            shell = False
+                )
+        def _readit(self):
+            path = self.path
+            for path,file in self.path,self.file:
+                with open(f"{path}{file}", "r") as f:
+                    return f.read()
+        def _writeit(self,w):
+                w=w
+                with open(f"{self.path}{self.file}", "a") as file:
+                    return file.write(f"{w}")        
+
+#if __name__ == "__main__":
+##chat_comp = ChatComp("gpt-4o", api_key="sk-...", input_text="What is the weather like today?", filename="editor")
+#print(chat_comp.response())
+'''
+# CALL THE IMAGE DESCRIPTION CLASS
+# Example: Replace with your own image path
+# image_description = ImageDescription(api_key,"gpt-4o","path/to/your/image.png","Describe this image")
+# image_description.get_descript().choices[0].message.content'''
+
+
+# CALL THE IMAGE CREATE CLASS
+'''chat_dialogue = ChatDialogue(api_key,"gpt-4o","What is the weather like today?")
+   print(chat_dialogue.main())'''
+
+
+# CALL THE IMAGE CREATE CLASS
+'''image_create = ImageCreate(api_key,"dall-e-3","Create an image of a friendly alien.")
+   image_create.main()
+'''
+
+# CALL THE EDITOR CLASS
+'''filename="vs_code_1.txt"
+   filename_1="vs_code_2.txt"
+   editor="gnome-text-editor"
+   input_text = ChatComEditor(filename,input_text="").get_readedit()
+   print(input_text)
+
+   w=ChatComEditor(input_text=input_text).get_response()           
+   print(w)
+   ChatComEditor(filename_1).get_writeedit(w=w)
+'''
+
+# CALL IN SHELL WITH PIPING
+# Example usage
+
+'''code-insiders Vs_Code_Projects/Debugger/debug_file.txt && ssh -v -T -D 42539 -o ConnectTimeout=15 gitlab.com &&>> 
+Vs_Code_Projects/Debugger/debug_file.txt & python3 Vs_Code_Projects/Debugger/ChatClassCompletion.py'''
+
+
+"""
+if __name__ == "__main__":  
+
+    # Example: Use relative path from this file's location
+    orpath = str(Path(__file__).resolve().parent)
+    api_key = ChatClassCompletion._read_api_key()
+    path = os.path.join(orpath)
+
+
+    file = "debug_AIIDE" 
+
+
+    editor= "gnome-text-editor"
+    input_text = ""    
+
+    chatcom = ChatComEditor(api_key, path, file, _input_text="") 
+    _input_text = chatcom._readit()
+
+    chatcom_t = ChatComEditor(api_key,path,file,_input_text=_input_text)
+    w = chatcom._response()
+    chatcom = ChatComEditor(api_key,path,file,_input_text=None)
+    chatcom._writeit('\n\n\n'f" '''{w}''' ")"""
+
+
+     
+
+

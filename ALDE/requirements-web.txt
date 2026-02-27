@@ -1,0 +1,11 @@
+fastapi>=0.116.0
+uvicorn>=0.36.0
+pydantic>=2.11.0
+sqlalchemy>=2.0.46
+alembic>=1.14.0
+httpx>=0.28.1
+psycopg[binary]>=3.2.0
+PyJWT[crypto]>=2.10.1
+redis>=5.2.1,<6.0.0
+rq>=1.16.2
+redislite>=6.2.912183
