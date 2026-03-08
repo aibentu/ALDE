@@ -67,11 +67,22 @@ def _run(
     autobuild: bool | None = None,
 ) -> dict[str, Any]:
     try:
+        import importlib
+
         # Support both package mode and direct script execution.
         try:
             from .vstores import VectorStore  # type: ignore
         except ImportError:
-            from vstores import VectorStore  # type: ignore
+            VectorStore = None  # type: ignore
+            vstores_errors: list[Exception] = []
+            for mod_name in ("alde.vstores", "ALDE.alde.vstores", "vstores"):
+                try:
+                    VectorStore = importlib.import_module(mod_name).VectorStore  # type: ignore[attr-defined]
+                    break
+                except Exception as exc:
+                    vstores_errors.append(exc)
+            if VectorStore is None:
+                raise (vstores_errors[0] if vstores_errors else ImportError("Could not import VectorStore"))
 
         pkg_root = Path(__file__).resolve().parents[1]
 

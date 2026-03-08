@@ -270,7 +270,7 @@ def _env_truthy(name: str, default: str = "0") -> bool:
 
 
 def _maybe_flush_history(chat_obj=None) -> None:
-    """Flush history at most once.
+    """Flush history at most once. 
 
     Controlled by env var:
       - AI_IDE_DISABLE_HISTORY_FLUSH=1  (skip history persistence)

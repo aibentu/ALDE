@@ -1,6 +1,9 @@
 from __future__ import annotations
 from importlib import metadata
+from unittest import result
 
+from annotated_types import doc
+from numpy import rint
 from sqlalchemy import literal
 
 #  August 2025
@@ -219,45 +222,27 @@ def _load_pdf(path: str | Path) -> list[Document]:
         sudo apt install tesseract-ocr tesseract-ocr-deu
     """
     _log("", f"Versuche PDF zu laden: {path}")
-    docs = None  # Ensure docs is always defined
-    # --- 1) PyPDFLoader ---------------------------------------------------
     try:
         docs = PyPDFLoader(str(path)).load()
-        docs = [d for d in docs if d.page_content.strip()]
-        for d in docs:
-            d.metadata["source"] = str(path)
-            d.metadata["titel"] = Path(path).name
-            d.metadata['applied']  = 'no'
-            d.metadata['id']       = hex(hash(f"{d.metadata['source']}{d.page_content[:100]}"))
-            #print(f'PDF Doc: source= {d.metadata["source"]} titel= {d.metadata["titel"]} id= {d.metadata["id"]} applied= {d.metadata["applied"]}')
+    except Exception as err:
+        _log(str(err), f"✗ PDF übersprungen (Loader-Fehler): {path}")
+        return []
 
+    docs = [d for d in docs if (d.page_content or "").strip()]
+    if not docs:
+        _log("", f"✗ PDF übersprungen (kein Text extrahierbar): {path}")
+        return []
 
+    for d in docs:
+        d.metadata["source"] = str(path)
+        d.metadata["titel"] = Path(path).name
+        d.metadata["applied"] = "no"
+        d.metadata["id"] = hex(hash(f"{d.metadata['source']}{(d.page_content or '')[:100]}"))
 
-           
-        if docs:                       # Erfolg → sofort zurück
-                _log("", f"✓ PDF erfolgreich mit PyPDFLoader geladen: {path} ({len(docs)} Seiten)")
-                # Zeige ersten Text-Ausschnitt für Debugging
-                _log("", f"  Preview: {preview}...")
-
-                return docs
-        #else:
-         #   _log("", f"⚠ PyPDFLoader fand keine Textinhalte in: {path}")
-    except Exception as e:
-
-    # --- 2) Fallback: OCR -------------------------------------------------
-            if docs:                       # Erfolg → sofort zurück
-              _log("", f"✓ PDF erfolgreich mit PyPDFLoader geladen: {path} ({len(docs)} Seiten)")
-            # Zeige ersten Text-Ausschnitt für Debugging
-            preview = docs[0].page_content[:200].replace('\n', ' ')
-        
-            if docs:
-        
-              _log("", f"✓ OCR-Fallback erfolgreich für PDF: {path} ({len(docs)} Elemente)")
-           # Zeige ersten Text-Ausschnitt für Debugging
-           # preview = docs[0].page_content[:200].replace('\n', ' ')
-           #_log("", f"  Preview: {preview}...")
-        
-            return docs
+    preview = docs[0].page_content[:200].replace("\n", " ")
+    _log("", f"✓ PDF erfolgreich mit PyPDFLoader geladen: {path} ({len(docs)} Seiten)")
+    _log("", f"  Preview: {preview}...")
+    return docs
 # ──────────────────────────────────────────────────────────────────────────
 # 3)  _iter_documents  (komplett ersetzen)  
 def _iter_documents(root: str | Path) -> list[Document]:
@@ -459,8 +444,8 @@ class VectorStore():
     def _load_faiss_store(self) -> None:
         # Persistierten Index laden – falls vorhanden
         # FAISS save_local/load_local expect a DIRECTORY containing index.faiss and index.pkl 
-        #if self.store is not None:
-        #    return
+        if self.store is not None:
+            return
         store_dir = Path(self.FAISS_INDEX_PATH)
         index_faiss_file = store_dir / "index.faiss"
         if store_dir.exists() and index_faiss_file.exists():
@@ -472,7 +457,18 @@ class VectorStore():
                 )
                 print(f"Persistierter Index geladen – Vektoren: {self.store.index.ntotal}")
             except Exception as e:
-                _log(f"Fehler beim Laden des Index: {e}")
+                err = str(e)
+                low = err.lower()
+                # Propagate missing-FAISS errors so caller code can fall back to
+                # a compatible runtime (e.g., micromamba GPU env).
+                if (
+                    "could not import faiss" in low
+                    or "no module named 'faiss'" in low
+                    or 'no module named "faiss"' in low
+                    or "faiss module not installed" in low
+                ):
+                    raise RuntimeError(err) from e
+                print(f"Fehler beim Laden des Index: {err}")
                 self.store = None
         else:
             self.store = None
@@ -501,13 +497,13 @@ class VectorStore():
         '''Erstellt oder erweitert den Vector-Store um neue Dateien.'''
         # Initialize embeddings if not already done
         self._initialize()
-        project_root = Path(path).expanduser().resolve()
+        project_root = Path(path) #.expanduser().resolve()
         #_log(f"Suche nach neuen Dateien in: {project_root}")
         self.all_docs = _iter_documents(project_root)
         for d in self.all_docs:
             d.metadata["source"] = _norm_source(d.metadata.get("source"))
-        new_docs = [d for d in self.all_docs if d.metadata["source"] not in self.manifest]
         # Korrekte Implementierung für Metadata-Injektion in page_content
+        new_docs = [d for d in self.all_docs if d.metadata["source"] not in self.manifest]
         injected_docs: list[Document] = self.metadata_injection(new_docs)
         # ------------------------------------------------------------
         _log(f"{len(injected_docs)} neue Dateien – erstelle Text-Chunks …")
@@ -543,46 +539,49 @@ class VectorStore():
         _log("Manifest aktualisiert.")
             # ------------------------------------------------------------ 
 
-    def query(self,query: str|None = None, k: int = DEFAULT_TOP_K,
-            filter_dict:dict|None = None) -> list:
+    def query(self,query: str|None = None, 
+              k: int = DEFAULT_TOP_K,
+              filter_dict:dict|None = None) -> list:
         '''Lädt vollständigen Quellcode der ähnlichsten
             Chunks mit Performance-Monitoring.'''
-        query=query
         filter_dict = filter_dict if filter_dict is not None else {}
         print(f'Filter Dict im Query: {filter_dict}')
         for key in filter_dict:
             print(f'Filter Key im Query: {key} ')
-        results=''
-        full_content: list=[]
-
+        results : list[tuple[Document, float]]
 
         self._initialize()
         self._load_faiss_store()
         if self.store is None:
             _log("Kein Index vorhanden – bitte zuerst build() ausführen.")
             return []
-        _log(f'Query: "{query}"  (Top-{k})')
-        if query:
-            fetch_k = VSTORE_FETCH_K
-            if fetch_k <= 0:
-                fetch_k = max(int(k) * 4, 10)
-                fetch_k = min(fetch_k, 50)
+        query_text = (query or "").strip()
+        _log(f'Query: "{query_text}"  (Top-{k})')
+        print(query_text)
+        if query_text:
+            # `AI_IDE_VSTORE_FETCH_K=0` means auto. Passing k=0 to FAISS always
+            # returns an empty result set, which previously caused `memorydb -> []`.
+            requested_k = max(1, int(k))
+            fetch_k = int(VSTORE_FETCH_K) if int(VSTORE_FETCH_K) > 0 else max(requested_k, 20)
 
-            results = self.store.similarity_search_with_score(query=query, k=fetch_k)
-                                                              
-                            
+            results = self.store.similarity_search_with_score(query=query_text, k=fetch_k)
             if not results:
                 print("   ↳ Keine Treffer.")
-            pairs: list[tuple[Document, float]] = [(d, float(s)) for (d, s) in results]
+                return []
 
+            pairs: list[tuple[Document, float]] = []
+            for doc, score in results:
+                src = _norm_source(doc.metadata.get("source", ""))
+                print(f"   ↳ Treffer: {src} (Score: {float(score):.4f})")
+                pairs.append((doc, float(score)))
             # Rerank/diversify
             if VSTORE_RERANK and pairs and VSTORE_RERANK_METHOD == "mmr":
                 try:
                     # LangChain FAISS MMR (diversity-aware selection)
                     mmr_docs = self.store.max_marginal_relevance_search(
-                        query,
+                        query_text,
                         k=min(int(k), len(pairs)),
-                        fetch_k=fetch_k,
+                        fetch_k=fetch_k
                     )
                     # Attach approximate distance score by source (best match wins)
                     best_score_by_source: dict[str, float] = {}
@@ -648,6 +647,8 @@ class VectorStore():
                 payload.append(item)
             return payload
             # Fllbk: exact filename match in docstore (useful when the query is a filename)
+        return []
+    
         """
             for itms in payload:
                 match = True
@@ -728,52 +729,24 @@ if __name__ == "__main__":
 #store_path:GetPath=GetPath()._parent( parg = f"{__file__}"        ) + "AppData/VSM_4_Data/"
 #manifest_file:GetPath= GetPath()._parent(parg = f"{__file__}") + "AppData/VSM_4_Data/manifest.json"
 #VectorStore(store_path   , manifest_file).build()
-#vsm_application.query(text,k=k)
+#vsm_application.query(text,k=k=
 #text:dict[str,dict]|strvsmvsm
 #query = "8 punkte learnig path fuer RAG/AI/ML mit LAngChain Torch, "
 #filterquery_dict= {'mkeys': {'titel':'test_dict.py'},'rkeys':{'id','source','applied'},'ukeys':{'updated':'08.01.2026'}}
+'''
+k: int= 20
+qy: str= "Stellenauschreibung für KI-Entwickler im Bereich RAG mit LangChain und PyTorch, idealerweise mit Fokus auf Vektor-Datenbanken"
+path: str= "AppData/VSM_3_Data/"
 
-#k:int=20
+store_path: GetPath = GetPath()._parent(parg = f"{__file__}") + f"AppData/VSM_3_Data/"
+manifest_file: GetPath = store_path + "manifest.json"
+vsm: VectorStore = VectorStore(store_path=store_path, manifest_file=manifest_file)
+vsm.build(GetPath()._parent(parg = Path(store_path)))
+# Example query with filter - replace with your own PDF path:(()
+doc = vsm.query(query=qy, k=k)
 
-#query:str = "06898 62221 116117.de - Arzt- und Psychotherapeutensuche Püttlingen"
+for itm in doc:
 
-#data = "AppData/VSM_1_Data/"
-
-#store_path:GetPath = GetPath()._parent(parg = f"{__file__}") + data
-#manifest_file:GetPath = store_path + "/manifest.json"
-#vsm_projekt = VectorStore(store_path=store_path, manifest_file=manifest_file)
-
-#vsm_projekt.build(GetPath()._parent(parg = f"{__file__} AppData VSM_1_Data"))
-# Example query with filter - replace with your own PDF path:
-# result = vsm_projekt.query(query="", filter_dict={'source':'path/to/your/document.pdf'}, k=k)
-#print(result)
-#manifest_file = GetPath()._parent(    parg = f"{__file__}"        ) + "AppData/VSM_1_Data/manifest.json"   
-#store_path = GetPath()._parent(    parg = f"{__file__}",        ) + "AppData/VSM_1_Data"  
-#
-# rvsm_history = VectorStore(        store_path=store_path,         manifest_file=manifest_file    )   
-#vsm_history.build(GetPath()._parent(parg = f"{__file__}") + "AppData") 
-#vsm_history._initialize()  
-#print(f'\n\nMessage Content:\n\n{msg_content}\n\nMessage Metadata:\n{msg_metadata}\n\n{"="*80}\n')  
-
-#print(vsm_history.query(query=query, k=10)[1])
-
-
-
-
-""""
-
-docs = vsm_application.store.docstore._dict   
-result = vsm_application.query(text,k=k)  
-for d in docs:        ,for msg in result_1
-if docs[d].metadata == result.metadata:           
-doc:Document=[]           
-doc.append(docs[d].page_content)            
-#print(f'Found full document for source: {result},{itm}')                 
-#print(itm[0].id,'\n',itm[0].page_content,'\n',itm[0].metadata,'\n',itm[1],"="*80)
-# #print(result)
-# #print(f'\n\nFull Document:\n\n{doc}\n\n{"="*80}\n')
-return doc
-"""
-
-
-
+    print(f"Rank: { itm.metadata['rank']}, Score: {itm['score']:.4f}, Title: {itm['title']}, Source: {itm['source']}")
+    print(f"Content Preview: {itm['content'][:200]}...\n")
+'''

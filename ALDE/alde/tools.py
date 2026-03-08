@@ -686,6 +686,7 @@ def fetch_url(url: str) -> str:
 
 
 _VSTORE_AUTOBUILD = os.getenv("AI_IDE_VSTORE_AUTOBUILD", "0").strip() in {"1", "true", "True"}
+_VSTORE_GPU_ONLY = os.getenv("AI_IDE_VSTORE_GPU_ONLY", "0").strip() in {"1", "true", "True"}
 _VSTORE_TOOL_TIMEOUT_S = float(os.getenv("AI_IDE_VSTORE_TOOL_TIMEOUT_S", "45"))
 _VSTORE_TOOL_TIMEOUT_AUTOBUILD_S = float(
     os.getenv("AI_IDE_VSTORE_TOOL_TIMEOUT_AUTOBUILD_S", "120")
@@ -731,6 +732,10 @@ def _looks_like_missing_gpu_faiss(msg: str) -> bool:
         "cpu-only build",
         "has no gpu bindings",
         "faiss reports 0 gpus",
+        "no module named 'langchain_huggingface'",
+        'no module named "langchain_huggingface"',
+        "no module named 'langchain_community'",
+        'no module named "langchain_community"',
     )
     return any(n in m for n in needles)
 
@@ -905,20 +910,36 @@ def _vectordb_worker(
         pass
 
     try:
+        import importlib
+
         # Local imports inside the child keep the main GUI process safer.
         try:
             from .get_path import GetPath  # type: ignore
-        except ImportError as e:
-            msg = str(e)
-            if "no known parent package" in msg or "attempted relative import" in msg:
-                from get_path import GetPath  # type: ignore
-            else:
-                raise
+        except ImportError:
+            GetPath = None  # type: ignore
+            last_get_path_err: Exception | None = None
+            for mod_name in ("alde.get_path", "ALDE.alde.get_path", "get_path"):
+                try:
+                    GetPath = importlib.import_module(mod_name).GetPath  # type: ignore[attr-defined]
+                    break
+                except Exception as exc:
+                    last_get_path_err = exc
+            if GetPath is None:
+                raise last_get_path_err or ImportError("Could not import GetPath")
 
         try:
             from .vstores import VectorStore  # type: ignore
         except Exception:
-            from vstores import VectorStore  # type: ignore
+            VectorStore = None  # type: ignore
+            vstores_errors: list[Exception] = []
+            for mod_name in ("alde.vstores", "ALDE.alde.vstores", "vstores"):
+                try:
+                    VectorStore = importlib.import_module(mod_name).VectorStore  # type: ignore[attr-defined]
+                    break
+                except Exception as exc:
+                    vstores_errors.append(exc)
+            if VectorStore is None:
+                raise (vstores_errors[0] if vstores_errors else ImportError("Could not import VectorStore"))
 
         resolved_store_dir, resolved_manifest = _resolve_vectordb_paths(kind, store_dir, manifest_file)
         db = VectorStore(store_path=resolved_store_dir, manifest_file=resolved_manifest)
@@ -1284,6 +1305,18 @@ def _run_vectordb_subprocess(
     autobuild: bool | None = None,
 ) -> list | str:
     """Execute vector DB work in a spawned subprocess with timeout."""
+    # Explicit GPU-only mode: never attempt local (potentially CPU) execution.
+    if _VSTORE_GPU_ONLY:
+        return _run_vectordb_in_micromamba(
+            kind,
+            query,
+            k,
+            store_dir=store_dir,
+            manifest_file=manifest_file,
+            root_dir=root_dir,
+            autobuild=autobuild,
+        )
+
     timeout_s = _effective_vstore_timeout_s(autobuild)
     # CUDA + fork can be problematic if the *parent* already initialized CUDA.
     # For normal GUI runs (started from a file), prefer spawn.
