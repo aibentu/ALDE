@@ -4,6 +4,11 @@
 Diese Liste ist direkt auf ALDE zugeschnitten und priorisiert in `P0 -> P1 -> P2`.
 Jede Task nennt Ziel-Datei(en), konkrete Funktion(en) und Done-Kriterien.
 
+Rahmenannahmen fuer den aktuellen Stand:
+- `alde/agents_config.py` ist bereits die zentrale Runtime-Konfiguration fuer Agent-Manifeste, Rollen, Skill-Profile und Workflow-Definitionen.
+- `alde/agents_factory.py` und `alde/chat_completion.py` setzen diese Runtime-Policies bereits um.
+- Diese Task-Liste erweitert die bestehende manifestbasierte Runtime um Learning-, Policy- und Evaluationsschichten; sie ersetzt nicht mehr die Agent-Konfigurationsstruktur selbst.
+
 ## P0 - Instrumentierung und sichere Basis
 
 ### 1) Event-Schema definieren
@@ -37,9 +42,10 @@ Jede Task nennt Ziel-Datei(en), konkrete Funktion(en) und Done-Kriterien.
 ### 3) Tool-Hooks in Retrieval-Pfad
 - Dateien:
   - `alde/tools.py`
+  - `alde/agents_factory.py`
 - Tasks:
   - Vor Retrieval in `memorydb`/`vectordb`:
-    - `QueryEvent` schreiben (query, k, tool, agent-label, timestamp)
+    - `QueryEvent` schreiben (query, k, tool, agent-label, manifest/role context, timestamp)
   - Nach Retrieval:
     - Ergebnis-Metadaten und Latenz in `OutcomeEvent` schreiben
   - Helper-Funktionen:
@@ -117,6 +123,7 @@ Jede Task nennt Ziel-Datei(en), konkrete Funktion(en) und Done-Kriterien.
 ### 9) Canary-Schalter
 - Dateien:
   - `alde/tools.py`
+  - `alde/agents_factory.py`
   - `alde/chat_completion.py`
 - Tasks:
   - Env Flags:
@@ -206,3 +213,7 @@ Jede Task nennt Ziel-Datei(en), konkrete Funktion(en) und Done-Kriterien.
   - weniger Follow-up/Rephrase
   - bessere Hit@k-Proxies
   - stabile Latenz
+
+## Abgrenzung zu bestehender Runtime-Dokumentation
+- Fuer aktuelle Agent-Rollen, Tool-Policy, Workflow-Schemas und scoped instance reuse sind `alde/agents_config.py` und `ARCHITECTURE_REFACTOR.md` massgeblich.
+- Diese Liste ist ein Ausbaubacklog fuer adaptive Lernlogik, nicht die Beschreibung des heutigen Routing- oder Workflow-Verhaltens.

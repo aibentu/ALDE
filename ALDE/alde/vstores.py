@@ -13,6 +13,7 @@ from sqlalchemy import literal
 
 import json
 import sys
+import hashlib
 from pathlib import Path
 from typing import Iterable, List, Set, Dict, Any
 import os
@@ -22,7 +23,7 @@ from datetime import datetime
 from dataclasses import dataclass, field
 
 from langchain_huggingface import HuggingFaceEmbeddings
-from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_text_splitters import CharacterTextSplitter, MarkdownTextSplitter, RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
 from contextlib import suppress
 from langchain_core.documents import Document
@@ -54,7 +55,7 @@ except ImportError as e:
 __all__ = ["VectorStore"]  # stellt sicher, dass nur das Public-API exportiert wird
 # ─────────────────────── Konfigurations-Konstanten ──────────────────────
 # Ordner, der indiziert wird. Kann beim CLI-Aufruf über --path überschrieben werden.
-DEFAULT_PROJECT_ROOT = GetPath().get_path(parg = f"{__file__}", opt = 'p')
+DEFAULT_PROJECT_ROOT = GetPath().get_path(parg = f"{__file__}" 'AppData', opt = 'p')
 # Ablageort für Index + Metadaten (FAISS benötigt ein Verzeichnis, kein File)
 FAISS_INDEX_PATH:GetPath = GetPath()._parent(parg = f"{__file__}") + f"AppData/VSM_0_Data"
 
@@ -64,8 +65,9 @@ if not os.path.isdir(FAISS_INDEX_PATH):
 # Hugging-Face Modell
 MODEL_NAME = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 # Text-Chunk Parameter
-CHUNK_SIZE = 1_000
-CHUNK_OVERLAP = 150
+CHUNK_STRATEGY = os.getenv("AI_IDE_VSTORE_CHUNK_STRATEGY", "recursive").strip().lower() or "recursive"
+CHUNK_SIZE = int(os.getenv("AI_IDE_VSTORE_CHUNK_SIZE", "1000") or 1000)
+CHUNK_OVERLAP = int(os.getenv("AI_IDE_VSTORE_CHUNK_OVERLAP", "150") or 150)
 # Trefferzahl für query()
 DEFAULT_TOP_K = 50
 # Datei, in der bereits indizierte Quell­pfade gespeichert werden
@@ -76,6 +78,9 @@ MANIFEST_FILE:GetPath = GetPath()._parent(parg = f"{__file__}") + f"AppData/VSM_
 # - Set `AI_IDE_EMBEDDINGS_DEVICE=cpu` to force CPU.
 # - Default: `auto` (use GPU if available, else CPU).
 EMBEDDINGS_DEVICE = os.getenv("AI_IDE_EMBEDDINGS_DEVICE", "auto")
+FAISS_USE_GPU = os.getenv("AI_IDE_FAISS_USE_GPU", "1").strip() in {"1", "true", "True"}
+FAISS_REQUIRE_GPU = os.getenv("AI_IDE_FAISS_REQUIRE_GPU", "0").strip() in {"1", "true", "True"}
+FAISS_GPU_DEVICE = int(os.getenv("AI_IDE_FAISS_GPU_DEVICE", "0") or 0)
 
 
 def _select_embeddings_device() -> str:
@@ -92,6 +97,54 @@ def _select_embeddings_device() -> str:
     except Exception:
         pass
     return "cpu"
+
+
+def _load_faiss_module():
+    import faiss
+
+    return faiss
+
+
+def _faiss_gpu_status() -> dict[str, Any]:
+    try:
+        faiss = _load_faiss_module()
+    except Exception as exc:
+        return {
+            "available": False,
+            "num_gpus": 0,
+            "reason": f"faiss import failed: {type(exc).__name__}: {exc}",
+        }
+
+    try:
+        num_gpus = int(faiss.get_num_gpus()) if hasattr(faiss, "get_num_gpus") else 0
+    except Exception as exc:
+        return {
+            "available": False,
+            "num_gpus": 0,
+            "reason": f"faiss.get_num_gpus() failed: {type(exc).__name__}: {exc}",
+        }
+
+    has_resources = hasattr(faiss, "StandardGpuResources")
+    has_cpu_to_gpu = hasattr(faiss, "index_cpu_to_gpu")
+    has_gpu_to_cpu = hasattr(faiss, "index_gpu_to_cpu")
+    available = bool(num_gpus > 0 and has_resources and has_cpu_to_gpu and has_gpu_to_cpu)
+
+    if available:
+        reason = "gpu bindings available"
+    elif num_gpus <= 0:
+        reason = "faiss reports 0 GPUs"
+    elif not has_resources:
+        reason = "faiss has no StandardGpuResources"
+    elif not has_cpu_to_gpu:
+        reason = "faiss has no index_cpu_to_gpu"
+    else:
+        reason = "faiss has no index_gpu_to_cpu"
+
+    return {
+        "available": available,
+        "num_gpus": num_gpus,
+        "reason": reason,
+    }
 
 # Use multithreading only when explicitly enabled; some native stacks (torch/faiss)
 # can crash when combined with aggressive multithreading.
@@ -153,6 +206,159 @@ def _safe_title_from_source(source: str) -> str:
         return Path(source).name
     return (source or "unknown")
 
+
+def _document_key_from_metadata(metadata: dict[str, Any]) -> str:
+    source = _norm_source(metadata.get("source"))
+    source_key = metadata.get("source-key")
+    if source_key not in (None, ""):
+        return f"{source}#entry:{source_key}"
+    page = metadata.get("page")
+    if page not in (None, ""):
+        return f"{source}#page:{page}"
+    return source
+
+
+def _document_key(doc: Document) -> str:
+    return _document_key_from_metadata(doc.metadata)
+
+
+def _normalize_requested_doc_types(doc_types: str | Iterable[str] | None) -> set[str] | None:
+    if doc_types is None:
+        return None
+
+    if isinstance(doc_types, str):
+        raw_items = [doc_types]
+    else:
+        raw_items = [str(item) for item in doc_types]
+
+    suffixes: set[str] = set()
+    alias_map: dict[str, set[str]] = {
+        "text": {".txt", ".text"},
+        ".text": {".txt", ".text"},
+        "markdown": {".md"},
+        "md": {".md"},
+        "txt": {".txt"},
+        "py": {".py"},
+        "python": {".py"},
+        "pdf": {".pdf"},
+        "json": {".json"},
+        "yaml": {".yaml"},
+        "yml": {".yml"},
+        "rst": {".rst"},
+        "toml": {".toml"},
+        "sqlite": {".sqlite"},
+        "sqlite3": {".sqlite3"},
+    }
+
+    for raw in raw_items:
+        token = (raw or "").strip().lower()
+        if not token:
+            continue
+        if token in alias_map:
+            suffixes.update(alias_map[token])
+            continue
+        if not token.startswith("."):
+            token = f".{token}"
+        suffixes.add(token)
+
+    return suffixes
+
+
+def _manifest_key_to_source_path(key: str) -> str:
+    return str(key).split("#entry:", 1)[0].split("#page:", 1)[0]
+
+
+def _json_item_to_text(item: Any) -> str:
+    if isinstance(item, dict):
+        parts: list[str] = []
+        content = item.get("content")
+        if content not in (None, ""):
+            parts.append(str(content))
+        for field in (
+            "role",
+            "name",
+            "assistant-name",
+            "thread-name",
+            "event",
+            "generated",
+            "date",
+            "time",
+        ):
+            value = item.get(field)
+            if value not in (None, "", [], {}):
+                parts.append(f"{field}: {value}")
+        for field in ("tool_calls", "data"):
+            value = item.get(field)
+            if value not in (None, "", [], {}):
+                try:
+                    rendered = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+                except Exception:
+                    rendered = str(value)
+                parts.append(f"{field}: {rendered}")
+        if parts:
+            return "\n".join(parts)
+    try:
+        return json.dumps(item, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return str(item)
+
+
+def _resolve_chunking_config(
+    chunk_strategy: str | None = None,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
+) -> tuple[str, int, int]:
+    strategy_aliases = {
+        "default": "recursive",
+        "recursivecharacter": "recursive",
+        "char": "character",
+        "charactertext": "character",
+        "md": "markdown",
+    }
+    strategy = str(chunk_strategy or CHUNK_STRATEGY or "recursive").strip().lower()
+    strategy = strategy_aliases.get(strategy, strategy)
+    valid_strategies = {"recursive", "character", "markdown"}
+    if strategy not in valid_strategies:
+        raise ValueError(
+            f"Unsupported chunk_strategy {chunk_strategy!r}. Expected one of: {sorted(valid_strategies)}"
+        )
+
+    resolved_chunk_size = CHUNK_SIZE if chunk_size is None else int(chunk_size)
+    resolved_overlap = CHUNK_OVERLAP if overlap is None else int(overlap)
+
+    if resolved_chunk_size <= 0:
+        raise ValueError(f"chunk_size must be > 0, got {resolved_chunk_size}")
+    if resolved_overlap < 0:
+        raise ValueError(f"overlap must be >= 0, got {resolved_overlap}")
+    if resolved_overlap >= resolved_chunk_size:
+        raise ValueError(
+            f"overlap must be smaller than chunk_size, got overlap={resolved_overlap}, chunk_size={resolved_chunk_size}"
+        )
+    return strategy, resolved_chunk_size, resolved_overlap
+
+
+def _create_text_splitter(
+    chunk_strategy: str | None = None,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
+):
+    strategy, resolved_chunk_size, resolved_overlap = _resolve_chunking_config(
+        chunk_strategy=chunk_strategy,
+        chunk_size=chunk_size,
+        overlap=overlap,
+    )
+    splitter_cls_map = {
+        "recursive": RecursiveCharacterTextSplitter,
+        "character": CharacterTextSplitter,
+        "markdown": MarkdownTextSplitter,
+    }
+    splitter_cls = splitter_cls_map[strategy]
+    return splitter_cls(
+        chunk_size=resolved_chunk_size,
+        chunk_overlap=resolved_overlap,
+        length_function=len,
+    )
+
 # ─────────────────────── Hilfs-/Utility-Funktionen ───────────────────────
 def _log(e:str=None, msg:str="") -> None:
         """'Einfaches Konsolen-Logging."""
@@ -173,39 +379,73 @@ class SafeTextLoader(TextLoader):
             _log(err, f"Überspringe Datei (Encoding-Fehler): {self.file_path}")
             return []
 
-def _load_json(path) -> List[Document]:
-        """Return the list of text snippets contained in *path*."""
-        is_json = Path(f"{path} **/*.json")
-        if not is_json.is_file():
-                _log("", f"File is not a JSON: {path}")
-                return []
+def _load_json(path: str | Path) -> List[Document]:
+        """Load JSON files from *path* and convert list/dict entries to Documents."""
+        root = Path(path).expanduser().resolve()
+        json_files: list[Path]
+        if root.is_file():
+            json_files = [root] if root.suffix.lower() == ".json" else []
         else:
-            with open(is_json ,"r", encoding="utf-8") as fh:
-                data = json.load(fh)
-        
-        documents = []
-        for idx, item in enumerate(data):
-            # Erstelle eindeutigen Source-Key mit Index und Content-Hash
-            content_str = str(item["content"])
-            source_key = hex(hash(f"{item['role']}{item['thread-id']}{item['time']}{item['date']}{idx}{content_str}"))
-            
-            doc = Document(
-                page_content=content_str,
-                metadata={
-                    "source-key": str(source_key),
-                    "role": item["role"],
-                    "message-id": item["message-id"],
-                    "thread-id": item["thread-id"], 
-                    "time": item["time"],
-                    "date": item["date"],
+            json_files = [p for p in root.rglob("*.json") if p.is_file()]
+
+        documents: list[Document] = []
+        for json_file in json_files:
+            if json_file.name == "manifest.json":
+                continue
+            try:
+                with open(json_file, "r", encoding="utf-8") as fh:
+                    data = json.load(fh)
+            except Exception as err:
+                _log(str(err), f"JSON übersprungen (Lade-Fehler): {json_file}")
+                continue
+
+            items = data if isinstance(data, list) else [data]
+            for idx, item in enumerate(items):
+                content_str = _json_item_to_text(item)
+                stable_seed = f"{json_file}:{idx}:{content_str}"
+                if isinstance(item, dict):
+                    stable_seed = "|".join(
+                        [
+                            str(json_file),
+                            str(item.get("message-id", "")),
+                            str(item.get("thread-id", "")),
+                            str(item.get("time", "")),
+                            str(idx),
+                            content_str,
+                        ]
+                    )
+                source_key = hashlib.sha1(stable_seed.encode("utf-8", errors="ignore")).hexdigest()
+
+                metadata: dict[str, Any] = {
+                    "source": str(json_file),
+                    "source-key": source_key,
+                    "titel": json_file.name,
                     "index": idx,
-                    "vector": item.get("vec", None),
-                    "id": item.get("id", None)
                 }
-            )
-            documents.append(doc)
-            # print(f"JSON Doc {idx}: source={source_key}")
-        
+                if isinstance(item, dict):
+                    metadata.update(
+                        {
+                            "role": item.get("role"),
+                            "message-id": item.get("message-id"),
+                            "thread-id": item.get("thread-id"),
+                            "time": item.get("time"),
+                            "date": item.get("date"),
+                            "vector": item.get("vec"),
+                            "id": item.get("id"),
+                            "generated": item.get("generated"),
+                            "event": item.get("event"),
+                            "model": item.get("model"),
+                            "response_id": item.get("response_id"),
+                            "stage": item.get("stage"),
+                            "assistant-name": item.get("assistant-name"),
+                            "thread-name": item.get("thread-name"),
+                            "tool_call_id": item.get("tool_call_id"),
+                            "name": item.get("name"),
+                        }
+                    )
+                metadata["id"] = metadata.get("id") or source_key
+                documents.append(Document(page_content=content_str, metadata=metadata))
+
         return documents
 # ──────────────────────────────────────────────────────────────────────────    
     # 2) HELPER: robuster PDF-Loader  ──────────────────────────────────────────
@@ -245,7 +485,7 @@ def _load_pdf(path: str | Path) -> list[Document]:
     return docs
 # ──────────────────────────────────────────────────────────────────────────
 # 3)  _iter_documents  (komplett ersetzen)  
-def _iter_documents(root: str | Path) -> list[Document]:
+def _iter_documents(root: str | Path, doc_types: str | Iterable[str] | None = None) -> list[Document]:
     """
     Traversiert *root* rekursiv und erzeugt LangChain-Document-Objekte für
 
@@ -258,10 +498,12 @@ def _iter_documents(root: str | Path) -> list[Document]:
     """
     root = Path(root).expanduser().resolve()
     docs: list[Document] = []
+    requested_suffixes = _normalize_requested_doc_types(doc_types)
 
     # Verzeichnisse die übersprungen werden sollen (normalerweise keine relevanten Dokumente)
     SKIP_DIRS ={
-        'venv', '.venv', '__pycache__', '.git', 'node_modules','venv/lib/python3.13/site-packages'
+        'venv', '.venv', '__pycache__', '.git', 'node_modules', '.micromamba', '.tools', 'AppData',
+        'ai_ide_v1756.egg-info', 'venv/lib/python3.13/site-packages',
         'site-packages', '.pytest_cache', '.mypy_cache',
         'matplotlib/mpl-data/images', 
         } # matplotlib icons - meist nur Grafiken ohne Text
@@ -275,29 +517,44 @@ def _iter_documents(root: str | Path) -> list[Document]:
 
 
     # 1) ------------ Python-Quelltexte -----------------------------------
-    py_loader = DirectoryLoader(
-        str(root),
-        glob="*.py",
-        loader_cls=PythonLoader,
-        use_multithreading=USE_MULTITHREADING,
-        show_progress=False,
-    )
-    py_docs = py_loader.load()
-    for d in py_docs:
-        d
-        d.metadata["source"] = _norm_source(d.metadata.get("source"))
-        d.metadata["titel"] = _safe_title_from_source(d.metadata["source"])
-        d.metadata['id'] = hex(hash(f"{d.metadata['source']}{d.page_content[:100]}"))
-    docs.extend(py_docs)
+    if requested_suffixes is None or ".py" in requested_suffixes:
+        py_loader = DirectoryLoader(
+            str(root),
+            glob="*.py",
+            loader_cls=PythonLoader,
+            use_multithreading=USE_MULTITHREADING,
+            show_progress=False,
+        )
+        py_docs = py_loader.load()
+        for d in py_docs:
+            d.metadata["source"] = _norm_source(d.metadata.get("source"))
+            d.metadata["titel"] = _safe_title_from_source(d.metadata["source"])
+            d.metadata['id'] = hex(hash(f"{d.metadata['source']}{d.page_content[:100]}"))
+        docs.extend(py_docs)
     
 
     # 2) ------------ Reine Textformate -----------------------------------
-    text_patterns = (
-        "**/*.txt", "**/*.md", "**/*.rst",
-        "**/*.yaml", "**/*.yml",
-        "**/*.sqlite", "**/*.sqlite3", "**/*.toml",                                 
-    )
-    for pattern in text_patterns:
+    text_patterns: dict[str, tuple[str, ...]] = {
+        ".txt": ("**/*.txt",),
+        ".text": ("**/*.text",),
+        ".md": ("**/*.md",),
+        ".rst": ("**/*.rst",),
+        ".yaml": ("**/*.yaml",),
+        ".yml": ("**/*.yml",),
+        ".sqlite": ("**/*.sqlite",),
+        ".sqlite3": ("**/*.sqlite3",),
+        ".toml": ("**/*.toml",),
+    }
+    selected_patterns: list[str] = []
+    if requested_suffixes is None:
+        for patterns in text_patterns.values():
+            selected_patterns.extend(patterns)
+    else:
+        for suffix, patterns in text_patterns.items():
+            if suffix in requested_suffixes:
+                selected_patterns.extend(patterns)
+
+    for pattern in selected_patterns:
         for path in root.rglob(pattern):
             if should_skip_path(path):
                 continue
@@ -314,21 +571,22 @@ def _iter_documents(root: str | Path) -> list[Document]:
     
 
     # 2.1) ------------ JSON-Dateien ---------------------------------------`
-    docs.extend(_load_json(root))
+    if requested_suffixes is None or ".json" in requested_suffixes:
+        docs.extend(_load_json(root))
     # 3) ------------ PDF-Dateien  (mit robustem Loader) ------------------
     pdf_count = 0
     pdf_success_count = 0
-    for pdf_path in root.rglob("*.pdf"):
-        if should_skip_path(pdf_path):
-            # _log("", f"Überspringe PDF (ausgeschlossenes Verzeichnis): {pdf_path}")
-            continue
-            
-        pdf_count += 1
-        pdf_docs = _load_pdf(pdf_path)
-        if pdf_docs:
-            docs.extend(pdf_docs)
-            pdf_success_count += 1
-            _log("", f"✓ PDF indexiert: {pdf_path} ({len(pdf_docs)} Dokumente)")
+    if requested_suffixes is None or ".pdf" in requested_suffixes:
+        for pdf_path in root.rglob("*.pdf"):
+            if should_skip_path(pdf_path):
+                continue
+
+            pdf_count += 1
+            pdf_docs = _load_pdf(pdf_path)
+            if pdf_docs:
+                docs.extend(pdf_docs)
+                pdf_success_count += 1
+                _log("", f"✓ PDF indexiert: {pdf_path} ({len(pdf_docs)} Dokumente)")
     
     _log("", f"PDF-Verarbeitung: {pdf_success_count}/{pdf_count} erfolgreich")
 
@@ -336,7 +594,7 @@ def _iter_documents(root: str | Path) -> list[Document]:
     unique: dict[str, Document] = {}
     for d in docs:
         d.metadata["source"] = _norm_source(d.metadata.get("source"))
-        unique.setdefault(str(d.metadata["source"]), d)
+        unique.setdefault(_document_key(d), d)
         #print(d.metadata["source"])     # Quelle als Key
     
     print("", f"Dokumente vor Duplikat-Entfernung: {len(docs)}")
@@ -371,6 +629,9 @@ class VectorStore():
         # Lazy initialization - don't load embeddings until needed
         self.embeddings = None
         self.store = None
+        self._gpu_resources = None
+        self._gpu_index_enabled = False
+        self._gpu_device = None
         self.FAISS_INDEX_PATH = store_path if store_path else FAISS_INDEX_PATH
         self.MANIFEST_FILE = manifest_file if manifest_file else MANIFEST_FILE
         self.manifest: Set[str] = self._load_manifest()
@@ -388,7 +649,7 @@ class VectorStore():
         seen_path: list = [] # seen paths to avoid duplicates
         all_docs: list = []
         for d in self.manifest:
-            project_path = GetPath().get_path(parg=d, opt='p')
+            project_path = GetPath().get_path(parg=_manifest_key_to_source_path(d), opt='p')
             #print(f'Checking path: {project_path}')
             if project_path not in seen_path:
                 #print(f'Adding path: {project_path}')
@@ -441,6 +702,42 @@ class VectorStore():
         device: str = str(self.embeddings._client.device)
         print(  f"HuggingFace-Embeddings fuer VectorStore geladen auf Gerät: {device}")
 
+    def _ensure_cpu_index(self) -> None:
+        if self.store is None or not self._gpu_index_enabled:
+            return
+        faiss = _load_faiss_module()
+        if not hasattr(faiss, "index_gpu_to_cpu"):
+            raise RuntimeError("FAISS GPU index cannot be persisted because index_gpu_to_cpu is unavailable.")
+        self.store.index = faiss.index_gpu_to_cpu(self.store.index)
+        self._gpu_resources = None
+        self._gpu_device = None
+        self._gpu_index_enabled = False
+
+    def _maybe_enable_gpu_index(self) -> None:
+        if self.store is None or self._gpu_index_enabled or not FAISS_USE_GPU:
+            return
+
+        status = _faiss_gpu_status()
+        if not status.get("available"):
+            if FAISS_REQUIRE_GPU:
+                raise RuntimeError(f"FAISS GPU required but unavailable: {status.get('reason', 'unknown reason')}")
+            return
+
+        faiss = _load_faiss_module()
+        device = max(0, min(int(FAISS_GPU_DEVICE), int(status.get("num_gpus", 1)) - 1))
+        try:
+            self._gpu_resources = faiss.StandardGpuResources()
+            self.store.index = faiss.index_cpu_to_gpu(self._gpu_resources, device, self.store.index)
+            self._gpu_index_enabled = True
+            self._gpu_device = device
+            print(f"FAISS-Index für Query auf GPU aktiviert (device={device}).")
+        except Exception as exc:
+            self._gpu_resources = None
+            self._gpu_device = None
+            self._gpu_index_enabled = False
+            if FAISS_REQUIRE_GPU:
+                raise RuntimeError(f"FAISS GPU required but CPU→GPU transfer failed: {type(exc).__name__}: {exc}") from exc
+
     def _load_faiss_store(self) -> None:
         # Persistierten Index laden – falls vorhanden
         # FAISS save_local/load_local expect a DIRECTORY containing index.faiss and index.pkl 
@@ -481,7 +778,7 @@ class VectorStore():
         new_docs: list[Document] = []
         for d in all_docs:
             d.metadata["source"] = _norm_source(d.metadata.get("source"))
-            if d.metadata["source"] not in self.manifest:
+            if _document_key(d) not in self.manifest:
                 metadata_str = " | ".join([f"{k}: {v}" for k, v in d.metadata.items()])
                 enriched_content = f"{d.page_content}\n\nMetadata: {metadata_str}"
                 new_docs.append(Document(page_content=enriched_content, metadata=d.metadata))
@@ -493,25 +790,43 @@ class VectorStore():
         # Persistierten Index laden – falls vorhanden
         # FAISS save_local/load_local expect a DIRECTORY containing index.faiss and index.pkl
     # ------------------------------------------------------------
-    def build(self, path: Path | str = DEFAULT_PROJECT_ROOT) -> None:
+    def build(
+        self,
+        path: Path | str = DEFAULT_PROJECT_ROOT,
+        doc_types: str | Iterable[str] | None = None,
+        chunk_strategy: str | None = None,
+        chunk_size: int | None = None,
+        overlap: int | None = None,
+    ) -> None:
         '''Erstellt oder erweitert den Vector-Store um neue Dateien.'''
         # Initialize embeddings if not already done
         self._initialize()
-        project_root = Path(path) #.expanduser().resolve()
+        project_root = Path(path).expanduser().resolve()
         #_log(f"Suche nach neuen Dateien in: {project_root}")
-        self.all_docs = _iter_documents(project_root)
+        self.all_docs = _iter_documents(project_root, doc_types=doc_types)
         for d in self.all_docs:
             d.metadata["source"] = _norm_source(d.metadata.get("source"))
         # Korrekte Implementierung für Metadata-Injektion in page_content
-        new_docs = [d for d in self.all_docs if d.metadata["source"] not in self.manifest]
+        new_docs = [d for d in self.all_docs if _document_key(d) not in self.manifest]
         injected_docs: list[Document] = self.metadata_injection(new_docs)
         # ------------------------------------------------------------
         _log(f"{len(injected_docs)} neue Dateien – erstelle Text-Chunks …")
 
-        splitter = RecursiveCharacterTextSplitter(
-            chunk_size=CHUNK_SIZE,
-            chunk_overlap=CHUNK_OVERLAP,
-            length_function=len,
+        resolved_strategy, resolved_chunk_size, resolved_overlap = _resolve_chunking_config(
+            chunk_strategy=chunk_strategy,
+            chunk_size=chunk_size,
+            overlap=overlap,
+        )
+        splitter = _create_text_splitter(
+            chunk_strategy=resolved_strategy,
+            chunk_size=resolved_chunk_size,
+            overlap=resolved_overlap,
+        )
+        _log(
+            msg=(
+                f"Chunking-Konfiguration: strategy={resolved_strategy}, "
+                f"chunk_size={resolved_chunk_size}, overlap={resolved_overlap}"
+            )
         )
         # -------------------------------------------------------------
         chunks = splitter.split_documents(injected_docs)
@@ -521,6 +836,8 @@ class VectorStore():
         if not chunks:
             _log("Keine Chunks zum Indizieren vorhanden. Überspringe Index-Erstellung.")
             return
+
+        self._ensure_cpu_index()
         
         # Index initial erstellen oder erweitern
         if self.store is None:
@@ -534,7 +851,7 @@ class VectorStore():
         self.store.save_local(self.FAISS_INDEX_PATH)
         _log(f"Index gespeichert → {self.FAISS_INDEX_PATH}")
         # Manifest aktualisieren
-        self.manifest.update(_norm_source(d.metadata.get("source")) for d in new_docs)
+        self.manifest.update(_document_key(d) for d in new_docs)
         self._save_manifest(self.manifest)
         _log("Manifest aktualisiert.")
             # ------------------------------------------------------------ 
@@ -555,6 +872,7 @@ class VectorStore():
         if self.store is None:
             _log("Kein Index vorhanden – bitte zuerst build() ausführen.")
             return []
+        self._maybe_enable_gpu_index()
         query_text = (query or "").strip()
         _log(f'Query: "{query_text}"  (Top-{k})')
         print(query_text)
@@ -572,7 +890,7 @@ class VectorStore():
             pairs: list[tuple[Document, float]] = []
             for doc, score in results:
                 src = _norm_source(doc.metadata.get("source", ""))
-                print(f"   ↳ Treffer: {src} (Score: {float(score):.4f})")
+                print(f"   ↳ Treffer: {src} (Distance: {float(score):.4f})")
                 pairs.append((doc, float(score)))
             # Rerank/diversify
             if VSTORE_RERANK and pairs and VSTORE_RERANK_METHOD == "mmr":
@@ -583,27 +901,27 @@ class VectorStore():
                         k=min(int(k), len(pairs)),
                         fetch_k=fetch_k
                     )
-                    # Attach approximate distance score by source (best match wins)
-                    best_score_by_source: dict[str, float] = {}
+                    # Attach approximate distance score by document key (best match wins)
+                    best_score_by_key: dict[str, float] = {}
                     for d, s in pairs:
-                        src = _norm_source(d.metadata.get("source", ""))
-                        prev = best_score_by_source.get(src)
+                        doc_key = _document_key(d)
+                        prev = best_score_by_key.get(doc_key)
                         if prev is None or float(s) < prev:
-                            best_score_by_source[src] = float(s)
-                    pairs = [(d, best_score_by_source.get(_norm_source(d.metadata.get("source", "")), float("inf"))) for d in mmr_docs]
+                            best_score_by_key[doc_key] = float(s)
+                    pairs = [(d, best_score_by_key.get(_document_key(d), float("inf"))) for d in mmr_docs]
                 except Exception:
                     # Fallback: plain distance ordering
                     pairs.sort(key=lambda x: x[1])
 
             if VSTORE_DEDUP and pairs:
-                best_by_source: dict[str, tuple[Document, float]] = {}
+                best_by_key: dict[str, tuple[Document, float]] = {}
                 for doc, score in pairs:
-                    source = _norm_source(doc.metadata.get("source", ""))
-                    prev = best_by_source.get(source)
+                    doc_key = _document_key(doc)
+                    prev = best_by_key.get(doc_key)
                     # FAISS distance: smaller is better
                     if prev is None or score < prev[1]:
-                        best_by_source[source] = (doc, score)
-                pairs = list(best_by_source.values())
+                        best_by_key[doc_key] = (doc, score)
+                pairs = list(best_by_key.values())
 
             if VSTORE_RERANK and pairs and VSTORE_RERANK_METHOD == "crossencoder":
                 ce = _get_cross_encoder()
@@ -629,14 +947,19 @@ class VectorStore():
             payload: list[dict[str, Any]] = []
             for rank, (doc, score) in enumerate(pairs, 1):
                 source = _norm_source(doc.metadata.get("source", ""))
+                entry_ref = _document_key(doc)
                 title = doc.metadata.get("titel") or _safe_title_from_source(source)
                 content = (doc.page_content or "").strip()
                 if VSTORE_MAX_CONTENT_CHARS > 0 and len(content) > VSTORE_MAX_CONTENT_CHARS:
                     content = content[:VSTORE_MAX_CONTENT_CHARS] + "\n…[truncated]"
                 item: dict[str, Any] = {
                     "rank": rank,
+                    "distance": float(score),
                     "score": float(score),
+                    "score_kind": "faiss_distance",
                     "source": source,
+                    "entry_ref": entry_ref,
+                    "source_key": doc.metadata.get("source-key"),
                     "title": title,
                     "page": doc.metadata.get("page"),
                     "content": content,

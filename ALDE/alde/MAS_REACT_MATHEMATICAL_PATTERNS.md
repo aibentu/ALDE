@@ -485,7 +485,7 @@ The system uses **rule-based heuristics** for agent selection and workflow routi
 
 ### Decision Tree
 
-From `apply_agent_prompts.py:13-30` (Primary Agent system prompt):
+From the primary assistant prompt in `agents_config.py`:
 
 ```python
 def route_decision(job_posting, applicant_profile):
@@ -507,7 +507,7 @@ def route_decision(job_posting, applicant_profile):
         elif not db.has_parsed_job(job_posting):
             return route_to("_job_posting_parser")
         else:
-            return route_to("_cover_letter_generator")
+            return route_to("_cover_letter_agent")
     
     else:
         return ask_user_for_clarification()
@@ -739,10 +739,10 @@ $$
    - FAISS vector store
    - Chunking algorithms
 
-4. **`apply_agent_prompts.py`**
-   - System prompts
-   - Decision heuristics
-   - Workflow logic
+4. **`agents_config.py`**
+    - Runtime instructions and prompt fragments
+    - Routing rules and decision logic
+    - Workflow definitions and policy configuration
 
 ---
 

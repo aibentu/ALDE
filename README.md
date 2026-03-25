@@ -63,3 +63,19 @@ If you need a clean starting point for local runs, use:
 - `ALDE/ALDE/db.example.json`
 
 Copy them to `dispatcher_doc_db.json` / `db.json` locally if needed (these copies remain ignored).
+
+## Architecture
+
+The current agent runtime is documented from three complementary angles:
+
+- `ALDE/ARCHITECTURE_REFACTOR.md` describes the current manifest-driven runtime model and the remaining refactor direction.
+- `ALDE/AGENT_SEQUENCE_STATE_DIAGRAM.md` captures the current routing and tool-call sequence/state model.
+- `ALDE/AUTONOMOUS_MULTI_AGENT_ROADMAP.md` describes the future adaptive learning evolution on top of that runtime.
+
+Use these documents together when changing agent configuration, routing, or workflow structure.
+
+For orientation:
+- Current runtime source of truth: `ALDE/alde/agents_config.py`
+- Current runtime behavior reference: `ALDE/ARCHITECTURE_REFACTOR.md` and `ALDE/AGENT_SEQUENCE_STATE_DIAGRAM.md`
+- Future learning/runtime evolution: `ALDE/AUTONOMOUS_MULTI_AGENT_ROADMAP.md`
+- Historical cleanup note: `ALDE/WORKFLOW_FIXES.md`

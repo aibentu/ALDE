@@ -55,19 +55,19 @@ Options:
 ### Phase 2: Tool Execution
 ```
 [TOOL] route_to_agent
-- Target Agent: _cover_letter_generator
+- Target Agent: _cover_letter_agent
 - Status: ✓ Routing erfolgreich
 - Nachricht mit vollständiger Anweisung weitergeleitet
 ```
 
 ### Phase 3: Cover Letter Generator Agent
 ```
-[AGENT] _cover_letter_generator
-- System Prompt geladen: Cover Letter Generation Guidelines
+[AGENT] _cover_letter_agent
+- Runtime-Instruktion geladen: Cover Letter Generation Guidelines
 - Tool-Calls ausgelöst:
   ✓ memorydb query (für Profil-Kontext)
   ✓ vectordb query (für ähnliche Anschreiben)
-  ✓ dispatch_files (für PDF-Verwaltung)
+  ✓ dispatch_documents (für PDF-Verwaltung)
   ✓ vdb_worker (für Vector Store Management)
 - Mehrere Follow-up API Calls zur Optimierung
 ```
@@ -97,7 +97,7 @@ Options:
    - Fehler werden abgefangen und gemeldet
 
 3. **JSON Parsing**
-   - System Prompts sind korrekt strukturiert
+  - Runtime-Instruktionen sind korrekt strukturiert
    - Agents verstehen die JSON Output-Requirements
    - Fallback auf Text-Response wenn JSON nicht möglich
 
@@ -123,11 +123,11 @@ Options:
 
 | Agent | Model | Tools | Status |
 |-------|-------|-------|--------|
-| _primary_agent | gpt-4o-mini | route_to_agent, load_dispatcher_db, write_document | ✅ Working |
+| _primary_assistant | gpt-4o-mini | route_to_agent, load_dispatcher_db, write_document | ✅ Working |
 | _data_dispatcher | gpt-4o-mini | @dispatcher, route_to_agent | ✅ Configured |
 | _profile_parser | gpt-4o-mini | load_dispatcher_db, save_dispatcher_db | ✅ Configured |
 | _job_posting_parser | gpt-4o-mini | load_dispatcher_db, save_dispatcher_db, route_to_agent | ✅ Configured |
-| _cover_letter_generator | gpt-4o-mini | @rag, write_document, load_dispatcher_db | ✅ Working |
+| _cover_letter_agent | gpt-4o-mini | @rag, write_document, load_dispatcher_db | ✅ Working |
 
 ---
 
@@ -150,13 +150,13 @@ ChatCompletionMessage(
       id='call_gnAiTRq34Wdv93Gaxo4YSG2k',
       function=Function(
         name='route_to_agent',
-        arguments='{"target_agent":"_cover_letter_generator","message_text":"..."}'
+        arguments='{"target_agent":"_cover_letter_agent","message_text":"..."}'
       )
     )
   ]
 )
 
-TOOL RESULT: route_to_agent -> Routing to _cover_letter_generator...
+TOOL RESULT: route_to_agent -> Routing to _cover_letter_agent...
 [DEBUG] Routing to agent with 2 messages
 
 [FINAL_RESULT]: "It seems that there was an error in processing the request due to
@@ -200,7 +200,7 @@ this by installing the `sentence-transformers` library..."
 
 Der Data Dispatcher und Cover Letter Generation Workflow ist produktionsbereit. Die Agenten:
 - ✅ Kommunizieren korrekt miteinander
-- ✅ Verstehen ihre System Prompts
+- ✅ Verstehen ihre manifestbasierten Systemanweisungen
 - ✅ Führen Tools korrekt aus
 - ✅ Handhaben Fehler elegant
 

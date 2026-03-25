@@ -1,6 +1,7 @@
 # Agent Configuration Diagrams (Current State)
 
 Source of truth used:
+- `alde/agents_config.py`
 - `alde/agents_registry.py`
 - `alde/chat_completion.py`
 - `alde/agents_factory.py`
@@ -45,7 +46,7 @@ sequenceDiagram
         end
 
         alt target is _data_dispatcher
-            D->>H: dispatch_job_posting_pdfs / batch_generate_cover_letters
+            D->>H: dispatch_documents / batch_generate_documents
             opt batch tool executed in dispatcher
                 H-->>P: Return terminal tool result (deterministic stop)
             end
@@ -89,7 +90,7 @@ stateDiagram-v2
 
     HasToolCalls: _handle_tool_calls loop
     HasToolCalls --> RouteToSpecialist : tool == route_to_agent
-    HasToolCalls --> DispatcherTerminal : tool == batch_generate_cover_letters && agent=_data_dispatcher
+    HasToolCalls --> DispatcherTerminal : tool == batch_generate_documents && agent=_data_dispatcher
     HasToolCalls --> FollowupLLM : other tools executed
 
     RouteToSpecialist: Build routing_request from AGENTS_REGISTRY
@@ -114,8 +115,8 @@ stateDiagram-v2
   - `_cover_letter_agent`
 - `route_to_agent` is the central handoff primitive.
 - Tool group `@dispatcher` expands to:
-  - `dispatch_job_posting_pdfs`
-  - `batch_generate_cover_letters`
+    - `dispatch_documents`
+    - `batch_generate_documents`
   - `vdb_worker`
-- Deterministic stop exists for dispatcher batch runs after `batch_generate_cover_letters`.
-- Current `ChatCom.get_response()` passes `agent_label="_data_dispatcher"` when handling tool calls, which influences follow-up tool context.
+- Deterministic stop exists for dispatcher batch runs after `batch_generate_documents`.
+- Runtime behavior is manifest-driven from `agents_config.py`, including routing policy, history policy, and instance policy.

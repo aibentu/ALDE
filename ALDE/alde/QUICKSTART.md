@@ -17,7 +17,7 @@
 2. Primary agent loads profile from DB
 3. Primary agent routes job posting to `_job_posting_parser`
 4. Primary agent waits for parser result
-5. Primary agent routes aggregated data to `_cover_letter_generator`
+5. Primary agent routes aggregated data to `_cover_letter_agent`
 6. Primary agent returns structured output with cover letter
 
 **Duration:** ~8-12 seconds
@@ -53,7 +53,7 @@
 2. Primary agent routes CV to `_profile_parser` (extracts & stores)
 3. Primary agent routes job posting to `_job_posting_parser` (extracts & stores)
 4. Primary agent waits for both parsers
-5. Primary agent routes aggregated data to `_cover_letter_generator`
+5. Primary agent routes aggregated data to `_cover_letter_agent`
 6. Primary agent saves letter to file system
 7. Primary agent returns complete response with quality metrics
 
@@ -285,7 +285,7 @@ ALDE/ALDE/AppData/VSM_4_Data/applicant_profile.json
 
 1. **Read**: [ORCHESTRATOR_USAGE.md](ORCHESTRATOR_USAGE.md) for detailed reference
 2. **Explore**: [agents_registry.py](agents_registry.py) to see all agents
-3. **Review**: [apply_agent_prompts.py](apply_agent_prompts.py) for system prompts
+3. **Review**: [agents_config.py](agents_config.py) for runtime instructions, manifests, and workflow policy
 4. **Test**: Run `python alde/agents_registry.py` to inspect registry
 
 ---

@@ -1,0 +1,15 @@
+{
+  "agent_label": "_<agent_label>",
+  "role": "worker",
+  "skill_profile": "structured_parser",
+  "instance_policy": "ephemeral",
+  "routing_policy": {
+    "mode": "worker",
+    "can_route": false
+  },
+  "history_policy": {
+    "followup_history_depth": 6,
+    "include_routed_history": false,
+    "routed_history_depth": 0
+  }
+}

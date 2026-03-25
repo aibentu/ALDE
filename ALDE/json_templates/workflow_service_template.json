@@ -1,0 +1,168 @@
+{
+  "agent_runtime_config": {
+    "agent_label": "_<agent_label>",
+    "canonical_name": "<canonical_agent_name>",
+    "model": "gpt-4o-mini",
+    "tools": [
+      "@dispatcher",
+      "route_to_agent"
+    ],
+    "defaults": {},
+    "workflow": {
+      "definition": "<service_workflow_name>"
+    }
+  },
+  "agent_manifest_overrides": {
+    "agent_label": "_<agent_label>",
+    "role": "workflow_service",
+    "skill_profile": "workflow_dispatch",
+    "instance_policy": "workflow_scoped",
+    "routing_policy": {
+      "mode": "workflow_service",
+      "can_route": false
+    },
+    "history_policy": {
+      "followup_history_depth": 8,
+      "include_routed_history": false,
+      "routed_history_depth": 0
+    }
+  },
+  "workflow_config": {
+    "workflow_name": "<service_workflow_name>",
+    "description": "Deterministic service workflow with tool and optional handoff steps.",
+    "entry_state": "ready",
+    "retry_policy": {
+      "max_attempts": 3,
+      "backoff_seconds": [
+        1,
+        2,
+        4
+      ]
+    },
+    "states": {
+      "ready": {
+        "actor": {
+          "kind": "agent",
+          "name": "_<agent_label>"
+        },
+        "terminal": false
+      },
+      "tool_completed": {
+        "actor": {
+          "kind": "tool",
+          "name": "<tool_name>"
+        },
+        "terminal": false
+      },
+      "routed": {
+        "actor": {
+          "kind": "tool",
+          "name": "route_to_agent"
+        },
+        "terminal": false
+      },
+      "retry_pending": {
+        "actor": {
+          "kind": "state",
+          "name": "retry_pending"
+        },
+        "terminal": false
+      },
+      "failed": {
+        "actor": {
+          "kind": "state",
+          "name": "workflow_failed"
+        },
+        "terminal": true
+      },
+      "complete": {
+        "actor": {
+          "kind": "state",
+          "name": "workflow_complete"
+        },
+        "terminal": true
+      }
+    },
+    "transitions": [
+      {
+        "from": "ready",
+        "on": {
+          "kind": "tool",
+          "name": "<tool_name>"
+        },
+        "to": "tool_completed"
+      },
+      {
+        "from": "tool_completed",
+        "on": {
+          "kind": "tool",
+          "name": "route_to_agent",
+          "conditions": {
+            "target_agent": "_<target_worker_agent>"
+          }
+        },
+        "to": "routed"
+      },
+      {
+        "from": "routed",
+        "on": {
+          "kind": "state",
+          "name": "followup_complete"
+        },
+        "to": "complete"
+      },
+      {
+        "from": [
+          "ready",
+          "tool_completed",
+          "routed"
+        ],
+        "on": {
+          "kind": "state",
+          "name": [
+            "tool_failed",
+            "model_failed",
+            "routed_agent_failed"
+          ],
+          "conditions": {
+            "any": [
+              {
+                "tool_name": {
+                  "in": [
+                    "<tool_name>",
+                    "route_to_agent"
+                  ]
+                }
+              },
+              {
+                "error": {
+                  "exists": true
+                }
+              },
+              {
+                "target_agent": "_<target_worker_agent>"
+              }
+            ]
+          }
+        },
+        "to": "retry_pending"
+      },
+      {
+        "from": "retry_pending",
+        "on": {
+          "kind": "state",
+          "name": "retry_requested"
+        },
+        "to": "ready"
+      },
+      {
+        "from": "retry_pending",
+        "on": {
+          "kind": "state",
+          "name": "retry_exhausted"
+        },
+        "to": "failed"
+      }
+    ]
+  }
+}

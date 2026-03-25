@@ -2,7 +2,9 @@ from datetime import datetime
 import json
 import sys
 try:
-    from .chat_completion import ChatCom  # type: ignore
+    from .agents_ccompletion import ChatCom  # type: ignore
+    
+    import ChatCom  # type: ignore
 except Exception:
     import os
     import sys
@@ -17,7 +19,10 @@ try:
 except Exception:
     import alde.agents_factory as agents_factory  # type: ignore
 from langchain_community.document_loaders import PyPDFLoader
-from alde.apply_agent_prompts import _SYSTEM_PROMPT
+try:
+    from .agents_config import get_specialized_system_prompt, get_system_prompt  # type: ignore
+except Exception:
+    from ALDE.alde.agents_config import get_specialized_system_prompt, get_system_prompt  # type: ignore
 
 def run_agent(job_data: dict, applicant_profile: dict) -> str:
     """
@@ -29,13 +34,15 @@ def run_agent(job_data: dict, applicant_profile: dict) -> str:
         str: Generiertes Bewerbungsanschreiben im strukturierten Format.
     """
     # Erst Job Posting parsen
+    parser_prompt = get_specialized_system_prompt("parser", "job_posting")
     parsed_job = ChatCom(
         _model="gpt-4.1",
-        _input_text=f"{_SYSTEM_PROMPT['_JOB_POSTING_PARSER']}\n\n{job_data}"
+        _input_text=f"{parser_prompt}\n\n{job_data}"
     ).get_response()
     
     # Dann Cover Letter generieren mit geparstem Job + Profil
-    prompt = f"""{_SYSTEM_PROMPT['_COVER_LETTER']}
+    writer_prompt = get_specialized_system_prompt("writer", "cover_letter")
+    prompt = f"""{writer_prompt}
 
 **Aktuelles Datum:** {datetime.now().strftime("%d. %B %Y")} 
 
@@ -61,7 +68,7 @@ if __name__ == "__main__":
     job_pdf_path = sys.argv[1]
     
     # Applicant Profile laden
-    applicant_profile = _SYSTEM_PROMPT['_PROFILE_PARSER']
+    applicant_profile = {"profile_prompt": get_system_prompt("_profile_parser")}
     # Job PDF laden
     job_data = PyPDFLoader(job_pdf_path).load()
     

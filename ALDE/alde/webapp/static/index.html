@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>ALDE MAS Control Plane</title>
+  <title>ALDE Workflow Control Plane</title>
   <style>
     :root {
       --bg-0: #0a1b2e;
@@ -179,41 +179,44 @@
 <body>
   <main class="shell">
     <section class="hero">
-      <p class="badge">ALDE Web Platform</p>
-      <h1>Industrial Control Plane for Multi-Agent Production</h1>
-      <p class="lead">This bootstrap delivers tenant onboarding, SSO login, authenticated agent runs, and a clear base for deploy/training/testing pipelines.</p>
+      <p class="badge">ALDE Workflow Control Plane</p>
+      <h1>Manifest-Driven Runtime for Multi-Agent Operations</h1>
+      <p class="lead">The web layer exposes tenant onboarding, authenticated agent execution, workflow validation, and runtime status visibility on top of the centralized ALDE agent engine.</p>
     </section>
 
     <section class="grid">
       <article class="card">
-        <p class="label">Auth</p>
-        <p class="value">Enterprise SSO-ready API (`/api/v1/auth/sso/login`)</p>
+        <p class="label">Runtime</p>
+        <p class="value">Manifest-driven agents, tools, and workflow policies</p>
       </article>
       <article class="card">
-        <p class="label">Tenancy</p>
-        <p class="value">Tenant bootstrap endpoint with admin token issue</p>
+        <p class="label">Auth</p>
+        <p class="value">Enterprise SSO-ready API with tenant-scoped execution</p>
       </article>
       <article class="card">
         <p class="label">Agent Runs</p>
-        <p class="value">Authenticated run endpoint backed by ALDE runtime</p>
+        <p class="value">Synchronous and async runs through `_primary_assistant` and allowed agents</p>
+      </article>
+      <article class="card">
+        <p class="label">Workflow State</p>
+        <p class="value">Validation and status endpoints expose active runtime workflows</p>
       </article>
       <article class="card">
         <p class="label">Status</p>
-        <p class="value status"><span class="dot"></span>Bootstrap healthy</p>
-      </article>
-      <article class="card">
-        <p class="label">Environment</p>
-        <p class="value">On-Prem, non-container-first, phase-1 foundation</p>
+        <p class="value status"><span class="dot"></span>Control plane healthy</p>
       </article>
       <article class="card">
         <p class="label">Next</p>
-        <p class="value">DB persistence, IdP callbacks, async workers, audit trails</p>
+        <p class="value">Operational dashboards, workflow-aware UI views, and hardened deployment paths</p>
       </article>
     </section>
 
     <section class="cta">
       <a class="btn" href="/docs">Open API Docs</a>
       <a class="link" href="/api/v1/health">Health Endpoint</a>
+      <a class="link" href="/api/v1/agents/workflows/validation">Workflow Validation</a>
+      <a class="link" href="/api/v1/agents/workflows/status">Workflow Status</a>
+      <a class="link" href="https://github.com/ben2079/ALDE/blob/main/ALDE/ARCHITECTURE_REFACTOR.md">Architecture Plan</a>
     </section>
   </main>
 </body>

@@ -5,6 +5,7 @@ from __future__ import annotations    ## ai_ide_v1756.py
 import PySide6
 import os
 import sys
+import importlib
 import base64
 import binascii
 import uuid
@@ -35,6 +36,40 @@ from pathlib import Path
 from typing import Final, List, Optional
 from io import BytesIO
 import mimetypes
+
+
+def _shutdown_loky_runtime() -> None:
+    """Best-effort cleanup for reusable loky executors before interpreter exit."""
+    get_reusable_executor = None
+    for module_name in ("joblib.externals.loky", "loky"):
+        try:
+            module = importlib.import_module(module_name)
+            get_reusable_executor = getattr(module, "get_reusable_executor", None)
+            if callable(get_reusable_executor):
+                break
+        except Exception:
+            continue
+
+    if not callable(get_reusable_executor):
+        return
+
+    try:
+        executor = get_reusable_executor()
+    except Exception:
+        return
+
+    if executor is None:
+        return
+
+    try:
+        executor.shutdown(wait=True, kill_workers=True)
+    except TypeError:
+        try:
+            executor.shutdown(wait=True)
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 def _split_data_uri(data: str) -> tuple[str | None, str]:
@@ -223,13 +258,13 @@ from PySide6.QtWidgets import (
 
 try:
     if __package__:
-        from .chat_completion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore
+        from .agents_ccompletion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore
     else:
-        from alde.chat_completion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore
+        from alde.agents_ccompletion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore
 except ImportError as e:
     msg = str(e)
     if "attempted relative import" in msg or "no known parent package" in msg:
-        from chat_completion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore  # noqa: E402
+        from agents_ccompletion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore  # noqa: E402
     else:
         raise
 
@@ -1711,7 +1746,7 @@ class AIWidget(QWidget):
 
         try:
             resp = ImageDescription(
-                _model="gpt-image-1-mini",
+                _model="gpt-5",
                 _url=url,
                 _input_text=prompt
             ).get_descript()
@@ -1748,7 +1783,7 @@ class AIWidget(QWidget):
 
         try:
             raw = ImageCreate(
-                _model="gpt-image-1-mini",
+                _model="gpt-5",
                 _input_text=prompt
             ).get_img()
         except Exception as exc:
@@ -3334,6 +3369,11 @@ class MainAIEditor(QMainWindow):
         except Exception:
             pass
 
+        try:
+            _shutdown_loky_runtime()
+        except Exception:
+            pass
+
         super().closeEvent(ev)
     
 # ═════════════════════════════  main()  ════════════════════════════════════
@@ -3388,9 +3428,9 @@ def main() -> None:
         try:
             # Import locally to keep Qt startup out of the path.
             try:
-                from .chat_completion import ChatCom  # type: ignore
+                from .agents_ccompletion import ChatCom  # type: ignore
             except Exception:
-                from chat_completion import ChatCom  # type: ignore
+                from agents_ccompletion import ChatCom  # type: ignore
 
             model_name = os.getenv("AI_IDE_MODEL", "").strip() or "gpt-4.1-mini-2025-04-14"
             reply = ChatCom(_model=model_name, _input_text=one_shot).get_response()
@@ -3403,6 +3443,10 @@ def main() -> None:
             # have a chance to persist chat history.
             try:
                 _maybe_flush_history()
+            except Exception:
+                pass
+            try:
+                _shutdown_loky_runtime()
             except Exception:
                 pass
         return
@@ -3419,6 +3463,10 @@ def main() -> None:
             app.aboutToQuit.connect(lambda: _maybe_flush_history())
         except Exception:
             pass
+    try:
+        app.aboutToQuit.connect(_shutdown_loky_runtime)
+    except Exception:
+        pass
 
     # Remove system/Qt drop shadows on context menus and ensure true rounded corners
     # (otherwise a dark rectangle can remain visible behind the radius).
@@ -3465,7 +3513,11 @@ def main() -> None:
         mini.setCentralWidget(te)
         mini.resize(800, 500)
         mini.show()
-        sys.exit(app.exec())
+        try:
+            exit_code = app.exec()
+        finally:
+            _shutdown_loky_runtime()
+        sys.exit(exit_code)
 
     win = MainAIEditor()
     if safe:
@@ -3478,7 +3530,11 @@ def main() -> None:
         except Exception:
             pass
     win.show()
-    sys.exit(app.exec())
+    try:
+        exit_code = app.exec()
+    finally:
+        _shutdown_loky_runtime()
+    sys.exit(exit_code)
 
 if __name__ == "__main__":
     main()

@@ -1,364 +1,1033 @@
-#!/usr/bin/env python3
-"""
-Test Workflow: Data Dispatcher + Cover Letter Generation
-This script demonstrates the full cover letter generation workflow.
-"""
+from __future__ import annotations
 
 import json
+import os
 import sys
+import tempfile
+import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
-# Setup path
-script_dir = Path(__file__).parent
-sys.path.insert(0, str(script_dir.parent))
 
-try:
-    from .chat_completion import ChatCom, ChatHistory
-except Exception:
-    from alde.chat_completion import ChatCom, ChatHistory
+PKG_ROOT = Path(__file__).resolve().parents[1]
+if str(PKG_ROOT) not in sys.path:
+    sys.path.insert(0, str(PKG_ROOT))
 
-# ============================================================================
-# TEST DATA
-# ============================================================================
+import alde.agents_ccompletion as chat_mod
+import alde.agents_factory as agents_factory
+import alde.tools as tools_mod
 
-SAMPLE_JOB_POSTING = {
-    "title": "Full Stack Software Engineer",
-    "location": {
-        "city": None,
-        "region": "Remote",
-        "country": "EU/DE time zone",
-        "onsite": False
-    },
-    "employment": {
-        "type": "Full-time",
-        "model": "Remote",
-        "seniority": "Mid-Senior",
-        "contract": "Permanent"
-    },
-    "mission": [
-        "Shape your role, contribute ideas, work cross-functionally",
-        "Build features with high automation and great UX",
-        "Tackle challenges holistically across backend and frontend"
-    ],
-    "responsibilities": {
-        "backend": [
-            "Implement API best practices; GraphQL familiarity preferred",
-            "Integrate and consume REST APIs",
-            "Collaborate with UX/UI to support user-oriented ideas",
-            "Use Docker; Kubernetes is a plus",
-            "Ensure efficient processes and distributed systems"
-        ],
-        "frontend": [
-            "Implement innovative, user-oriented solutions with UX/UI",
-            "Work with CSS, JavaScript, TypeScript",
-            "Develop apps with Vue/Nuxt and a responsive framework (e.g., Tailwind)",
-            "Integrate REST and GraphQL APIs"
-        ]
-    },
-    "requirements": {
-        "experience": "5+ years software engineering, full-stack focus",
-        "education": "Bachelor in STEM or equivalent bootcamp (5+ yrs experience)",
-        "attributes": [
-            "Holistic mindset, backend + frontend",
-            "Problem-solving, attention to detail",
-            "Strength in either backend or frontend, willing across stack",
-            "Strong English communication"
-        ],
-        "backend_skills": [
-            "API development & integration (GraphQL ideal)",
-            "Python (required); Go is a plus",
-            "Distributed systems understanding",
-            "Docker; Kubernetes nice to have"
-        ],
-        "frontend_skills": [
-            "CSS, JavaScript, TypeScript",
-            "Vue or Nuxt",
-            "Responsive framework (e.g., Tailwind)"
-        ]
-    },
-    "benefits": [
-        "30 days vacation",
-        "€1,500 annual education budget",
-        "Workation opportunities",
-        "International, diverse team"
-    ],
-    "notes": "Fully remote, must work within German/European time zone",
-    "company": {
-        "about": "Hamburg-based mobile marketing agency with owned/operated apps",
-        "model": "Reward users for testing/engaging with client apps",
-        "markets": ["DACH", "US", "UK", "Canada"],
-        "size": "~80 employees",
-        "culture": "Diverse and fun team"
-    }
-}
 
-SAMPLE_PROFILE = {
-    "profile_id": "profile:44e8fce720b6ef2f385478d7f1123027caa7a148abc37af870c7522f0ccf6040",
-    "personal_info": {
-        "full_name": "Example Candidate",
-        "date_of_birth": "1990-01-01",
-        "citizenship": "DE",
-        "address": "Example Street 1, 12345 Example City, Germany",
-        "phone": "(redacted)",
-        "email": "example@example.com",
-        "linkedin": None,
-        "portfolio": None
+SAMPLE_WORKFLOW_REQUEST = {
+    "action": "generate_cover_letter",
+    "job_posting": {
+        "source": "text",
+        "value": {"title": "Full Stack Software Engineer", "company": {"about": "Example Co"}},
     },
-    "professional_summary": "Angehender Fachinformatiker für Anwendungsentwicklung (IHK, laufend) mit solider Praxis in IT-Systembetrieb und Troubleshooting sowie wachsendem Schwerpunkt auf Python-Entwicklung. Ich arbeite produktnah an LLM-/RAG-Themen (Ingestion, Embeddings, FAISS-Retrieval, Tool-Calling) und verbinde dabei saubere Datenpipelines mit benutzerorientierter Umsetzung. Stärken: analytisches Vorgehen, klare Kommunikation und zuverlässige Umsetzung im Team.",
-    "experience": [
-        {
-            "title": "Servicetechniker Repair Desk",
-            "company": "Tec Repair GmbH",
-            "duration": "01/2018 – 03/2024",
-            "description": "Reparatur und Wartung von IT-Systemen, Datenübertragungen, Betriebssystem-Reparaturen, Schwerpunkt Apple-Produkte.",
-            "achievements": [
-                "Spezialist für Apple-Hardware (zertifiziert)",
-                "Einarbeitung neuer Mitarbeitender"
-            ]
-        },
-        {
-            "title": "Selbstständiger Medienberater",
-            "company": "Kabeldeutschland",
-            "duration": "12/2014 – 02/2016",
-            "description": "Beratung und Vertrieb von Medien- und Telekommunikationslösungen.",
-            "achievements": []
-        },
-        {
-            "title": "Elektriker (Schaltschrankbau/Elektromontage)",
-            "company": "Persona",
-            "duration": "06/2013 – 02/2016",
-            "description": "Elektromontage und Schaltschrankbau.",
-            "achievements": []
-        }
-    ],
-    "education": [
-        {
-            "degree": "Fachinformatiker – Anwendungsentwicklung (in Ausbildung)",
-            "institution": "Comcave.College, Saarbrücken",
-            "start": "2024-08",
-            "end": "2026-08",
-            "status": "in progress"
-        },
-        {
-            "degree": "Fachoberschule Ingenieurwesen (Elektrotechnik)",
-            "institution": "Neunkirchen/Homburg",
-            "start": "2010",
-            "end": "2012",
-            "status": "completed"
-        },
-        {
-            "degree": "Secondary School Diploma (Mittlerer Bildungsabschluss)",
-            "institution": "Maximilian-Kolbe-Schule des Bistums",
-            "start": "2006",
-            "end": "2010",
-            "status": "completed"
-        }
-    ],
-    "skills": {
-        "technical": [
-  
-            "Python 3.8+",
-            "PySide6,Qt5",
-            "FastAPI, Django",
-            "Applied AI/LLM",
-            "RAG Systems",
-            "PostgreSQL, MongoDB",
-            "Docker, Kubernetes Basics",
-            "Git, GitHub",
-            "Linux/Ubuntu",
-            "REST APIs"           
-
-        ],
-        "soft": [
-            "Analytisches Denken",
-            "Klare Kommunikation",
-            "Nutzer-Empathie",
-            "Agile Teamarbeit",
-            "Selbstorganisation"
-        ],
-        "languages": [
-            "German (native)",
-            "English (C1)"
-        ]
+    "applicant_profile": {
+        "source": "text",
+        "value": {"profile_id": "profile:test", "preferences": {"language": "de"}},
     },
-    "certifications": [
-        "Apple product certification (spezialisierte Zertifizierung)"
-    ],
-    "projects": [
-        {
-            "title": "AI-IDE / Agent-Workstation (Desktop App) mit RAG und MCP-Tools",
-            "year": "2025–2026",
-            "tech": [
-                "Python",
-                "PySide6",
-                "OpenAI API",
-                "LangChain",
-                "FAISS",
-                "LLM",
-                "HuggingFace Embeddings",
-                "MCP"
-            ],
-            "impact": "Lokale AI-IDE mit Multi Agentic Systems und RAG-Pipeline (Dokument-Ingestion → Embeddings → FAISS → Retrieval) inkl. MCP-Tool-Exposition; produktnahe UX durch GUI und persistente lokale Knowledge-Sources."
-        },
-        {
-            "title": "Inventory-forecast micro-service",
-            "year": "2025",
-            "tech": ["Python", "Pandas", "Prophet"],
-            "impact": "Reduzierte Stock-out Events um 15% in Testumgebung"
-        },
-        {
-            "title": "Ticket-classification bot",
-            "year": "2023",
-            "impact": "30% schnellere Triage für lokalen IT-Shop"
-        }
-    ],
-    "preferences": {
-        "tone": "modern",
-        "max_length": 350,
+    "options": {
         "language": "de",
-        "focus_areas": [
-            "Python/OOP/Data",
-            "LLM-Integration (Agentic Systems)",
-            "RAG / Vector Stores (FAISS)",
-            "Desktop-GUI (PySide6)",
-            "APIs/REST",
-            "Forecasting/ML Basics",
-            "IT-Systempraxis",
-            "Monitoring/Automation",
-            "Agiles Arbeiten"
-        ]
+        "tone": "modern",
+        "max_words": 350,
     },
-    "additional_information": {
-        "travel_willingness": None,
-        "work_authorization": "Germany (citizen)",
-        "marital_status": "single",
-        "drivers_license": "B",
-        "availability": "sofort bzw. 2 Wochen Kündigungsfrist"
-    }
 }
 
-# ============================================================================
-# WORKFLOW TEST
-# ============================================================================
 
-def test_workflow():
-    print("\n" + "=" * 80)
-    print("WORKFLOW TEST: Data Dispatcher + Cover Letter Generation")
-    print("=" * 80 + "\n")
-    
-    print("[STEP 1] Creating Primary Agent Request...")
-    print("-" * 80)
-    
-    # User-facing request to primary agent
-    user_request = {
-        "action": "generate_cover_letter",
-        "job_posting": {
-            "source": "text",
-            "value": SAMPLE_JOB_POSTING
-        },
-        "applicant_profile": {
-            "source": "text", 
-            "value": SAMPLE_PROFILE
-        },
-        "options": {
-            "language": "de",
-            "tone": "modern",
-            "max_words": 350,
-            "include_enclosures": True
-        }
-    }
-    
-    print(f"User Input:")
-    print(f"  - Action: {user_request['action']}")
-    print(f"  - Job Posting: {len(json.dumps(SAMPLE_JOB_POSTING))} chars")
-    print(f"  - Profile: {len(json.dumps(SAMPLE_PROFILE))} chars")
-    print(f"  - Options: {user_request['options']}")
-    
-    print("\n[STEP 2] Initializing Chat with Primary Agent...")
-    print("-" * 80)
-    
-    try:
-        # Initialize chat with primary agent
-        chat = ChatCom(
-            _model="gpt-4o-mini",
-            _input_text=json.dumps(user_request, ensure_ascii=False, indent=2),
-            _name="test_workflow"
+class _DeterministicDispatcherChatComE:
+    def __init__(self, _model: str, _messages: list, tools: list[dict], tool_choice: str) -> None:
+        self._model = _model
+        self._messages = list(_messages)
+        self._tools = list(tools)
+
+    def _response(self):
+        message = SimpleNamespace(
+            content=json.dumps(
+                {
+                    "cover_letter": {"full_text": "Sehr geehrtes Team,\n\nMotivation und Erfahrung."},
+                    "quality": {"word_count": 5, "language": "de"},
+                },
+                ensure_ascii=False,
+            ),
+            tool_calls=None,
         )
-        
-        print("✓ ChatCom initialized successfully")
-        print(f"  Assistant response type: {type(chat.assistant_msg).__name__}")
-        
-    except Exception as e:
-        print(f"✗ Error initializing ChatCom: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-    
-    print("\n[STEP 3] Getting Agent Response...")
-    print("-" * 80)
-    
-    try:
-        response = chat.get_response()
-        
-        if response:
-            print("✓ Got response from agent")
-            
-            # Try to parse as JSON if possible
-            try:
-                if isinstance(response, str) and response.strip().startswith('{'):
-                    result = json.loads(response)
-                    print("\n✓ Response is valid JSON")
-                    
-                    # Show structure
-                    if isinstance(result, dict):
-                        top_keys = list(result.keys())[:5]
-                        print(f"  Top-level keys: {top_keys}")
-                        
-                        # Show cover letter if present
-                        if "cover_letter" in result:
-                            cl = result["cover_letter"]
-                            if "full_text" in cl:
-                                print(f"\n  Generated cover letter preview ({len(cl['full_text'])} chars):")
-                                print("  " + "=" * 70)
-                                lines = cl["full_text"].split('\n')[:5]
-                                for line in lines:
-                                    print(f"  {line}")
-                                if len(cl["full_text"].split('\n')) > 5:
-                                    print(f"  ... ({len(cl['full_text'].split(chr(10))) - 5} more lines)")
-                                print("  " + "=" * 70)
-                        
-                        # Show quality metrics if present
-                        if "quality" in result:
-                            q = result["quality"]
-                            print(f"\n  Quality Metrics:")
-                            print(f"    - Word count: {q.get('word_count', 'N/A')}")
-                            print(f"    - Tone: {q.get('tone_used', 'N/A')}")
-                            print(f"    - Language: {q.get('language', 'N/A')}")
-                            print(f"    - Matched requirements: {len(q.get('matched_requirements', []))}")
-                            print(f"    - Red flags: {len(q.get('red_flags', []))}")
-                else:
-                    print(f"Response (first 200 chars): {response[:200]}")
-                    
-            except json.JSONDecodeError:
-                print(f"Response (first 300 chars):")
-                print(response[:300])
-        else:
-            print("✗ Empty response from agent")
-            return False
-            
-    except Exception as e:
-        print(f"✗ Error getting response: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
-    
-    print("\n" + "=" * 80)
-    print("✓ WORKFLOW TEST COMPLETED SUCCESSFULLY")
-    print("=" * 80 + "\n")
-    
-    return True
+        return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+
+class TestWorkflowIntegration(unittest.TestCase):
+    def setUp(self) -> None:
+        chat_mod.ChatHistory._history_ = []
+        agents_factory._WORKFLOW_SESSION_CACHE.clear()
+
+    def test_cover_letter_request_uses_configured_forced_route(self) -> None:
+        with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
+            chat = chat_mod.ChatCom(
+                _model="gpt-4o-mini",
+                _input_text=json.dumps(SAMPLE_WORKFLOW_REQUEST, ensure_ascii=False),
+                _name="test_workflow",
+            )
+
+        self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+        self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
+        resolved_payload = chat._forced_route["agent_response"]["output"]
+        self.assertEqual(resolved_payload["profile_result"]["profile"]["profile_id"], "profile:test")
+        self.assertEqual(resolved_payload["profile_result"]["parse"]["language"], "de")
+        self.assertEqual(resolved_payload["job_posting_result"]["job_posting"]["job_title"], "Full Stack Software Engineer")
+        get_client.assert_not_called()
+
+    def test_cover_letter_request_resolves_persisted_job_posting_before_routing(self) -> None:
+        stored_request = {
+            "action": "generate_cover_letter",
+            "job_posting": {
+                "source": "correlation_id",
+                "value": "sha-stored-1",
+            },
+            "job_postings_db_path": "/tmp/job_postings.json",
+            "applicant_profile": {
+                "source": "text",
+                "value": {"profile_id": "profile:test", "preferences": {"language": "de"}},
+            },
+            "options": {
+                "language": "de",
+                "tone": "modern",
+                "max_words": 350,
+            },
+        }
+
+        with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client, patch(
+            "alde.tools.get_persisted_job_posting_result",
+            return_value={
+                "agent": "job_posting_parser",
+                "correlation_id": "sha-stored-1",
+                "parse": {"is_job_posting": True},
+                "job_posting": {"job_title": "Backend Engineer", "company_name": "Stored Co"},
+                "db_updates": {"processing_state": "processed", "processed": True},
+                "file": {"content_sha256": "sha-stored-1"},
+                "link": {"thread_id": "thread-1", "message_id": "msg-1"},
+            },
+        ):
+            chat = chat_mod.ChatCom(
+                _model="gpt-4o-mini",
+                _input_text=json.dumps(stored_request, ensure_ascii=False),
+                _name="test_workflow",
+            )
+
+        self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+        self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
+        resolved_payload = chat._forced_route["agent_response"]["output"]
+        self.assertEqual(resolved_payload["job_posting_result"]["correlation_id"], "sha-stored-1")
+        self.assertEqual(resolved_payload["job_posting_result"]["job_posting"]["job_title"], "Backend Engineer")
+        self.assertNotIn("job_posting", resolved_payload)
+        self.assertNotIn("job_postings_db_path", resolved_payload)
+        self.assertEqual(resolved_payload["profile_result"]["profile"]["profile_id"], "profile:test")
+        self.assertEqual(resolved_payload["profile_result"]["parse"]["language"], "de")
+        get_client.assert_not_called()
+
+    def test_cover_letter_request_with_structured_inputs_routes_directly_to_writer(self) -> None:
+        ready_request = {
+            "action": "generate_cover_letter",
+            "job_posting_result": {
+                "agent": "job_posting_parser",
+                "correlation_id": "sha-ready-1",
+                "job_posting": {"job_title": "Platform Engineer"},
+            },
+            "applicant_profile": {
+                "source": "text",
+                "value": {"profile_id": "profile:ready", "preferences": {"language": "en"}},
+            },
+            "options": {"language": "en", "tone": "direct", "max_words": 250},
+        }
+
+        with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
+            chat = chat_mod.ChatCom(
+                _model="gpt-4o-mini",
+                _input_text=json.dumps(ready_request, ensure_ascii=False),
+                _name="test_workflow",
+            )
+
+        self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+        self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
+        resolved_payload = chat._forced_route["agent_response"]["output"]
+        self.assertEqual(resolved_payload["job_posting_result"]["correlation_id"], "sha-ready-1")
+        self.assertEqual(resolved_payload["profile_result"]["profile"]["profile_id"], "profile:ready")
+        self.assertEqual(resolved_payload["profile_result"]["parse"]["language"], "en")
+        get_client.assert_not_called()
+
+    def test_cover_letter_request_with_profile_file_routes_directly_to_writer(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            json.dump({"profile_id": "profile:file", "preferences": {"language": "fr"}}, tmp, ensure_ascii=False)
+            profile_path = tmp.name
+
+        try:
+            request = {
+                "action": "generate_cover_letter",
+                "job_posting": {
+                    "source": "text",
+                    "value": {"title": "API Engineer", "company": {"about": "Example Co"}},
+                },
+                "applicant_profile": {
+                    "source": "file",
+                    "value": profile_path,
+                },
+                "options": {"language": "fr", "tone": "formal", "max_words": 300},
+            }
+
+            with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
+                chat = chat_mod.ChatCom(
+                    _model="gpt-4o-mini",
+                    _input_text=json.dumps(request, ensure_ascii=False),
+                    _name="test_workflow",
+                )
+
+            self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+            self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
+            resolved_payload = chat._forced_route["agent_response"]["output"]
+            self.assertEqual(resolved_payload["profile_result"]["profile"]["profile_id"], "profile:file")
+            self.assertEqual(resolved_payload["profile_result"]["parse"]["language"], "fr")
+            self.assertEqual(resolved_payload["profile_result"]["profile"]["source_path"], profile_path)
+            self.assertEqual(resolved_payload["job_posting_result"]["job_posting"]["job_title"], "API Engineer")
+            get_client.assert_not_called()
+        finally:
+            os.unlink(profile_path)
+
+    def test_cover_letter_request_with_profile_file_and_job_result_routes_directly_to_writer(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            json.dump({"profile_id": "profile:file-ready", "preferences": {"language": "it"}}, tmp, ensure_ascii=False)
+            profile_path = tmp.name
+
+        try:
+            request = {
+                "action": "generate_cover_letter",
+                "job_posting_result": {
+                    "agent": "job_posting_parser",
+                    "correlation_id": "sha-file-ready",
+                    "job_posting": {"job_title": "Systems Engineer"},
+                },
+                "applicant_profile": {
+                    "source": "file",
+                    "value": {"path": profile_path},
+                },
+                "options": {"language": "it", "tone": "precise", "max_words": 280},
+            }
+
+            with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
+                chat = chat_mod.ChatCom(
+                    _model="gpt-4o-mini",
+                    _input_text=json.dumps(request, ensure_ascii=False),
+                    _name="test_workflow",
+                )
+
+            self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+            self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
+            resolved_payload = chat._forced_route["agent_response"]["output"]
+            self.assertEqual(resolved_payload["profile_result"]["profile"]["profile_id"], "profile:file-ready")
+            self.assertEqual(resolved_payload["profile_result"]["parse"]["language"], "it")
+            self.assertEqual(resolved_payload["profile_result"]["profile"]["source_path"], profile_path)
+            get_client.assert_not_called()
+        finally:
+            os.unlink(profile_path)
+
+    def test_cover_letter_request_with_persisted_profile_routes_directly_to_writer(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            json.dump(
+                {
+                    "schema": "profiles_db_v1",
+                    "profiles": {
+                        "profile:stored": {
+                            "correlation_id": "profile:stored",
+                            "source_agent": "profile_parser",
+                            "parse": {"language": "es", "errors": [], "warnings": []},
+                            "profile": {"profile_id": "profile:stored", "preferences": {"language": "es"}},
+                        }
+                    },
+                },
+                tmp,
+                ensure_ascii=False,
+            )
+            profiles_db_path = tmp.name
+
+        try:
+            request = {
+                "action": "generate_cover_letter",
+                "job_posting": {
+                    "source": "text",
+                    "value": {"title": "Platform Engineer", "company": {"about": "Stored Co"}},
+                },
+                "applicant_profile": {
+                    "source": "profile_id",
+                    "value": "profile:stored",
+                    "db_path": profiles_db_path,
+                },
+                "options": {"language": "es", "tone": "clear", "max_words": 320},
+            }
+
+            with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
+                chat = chat_mod.ChatCom(
+                    _model="gpt-4o-mini",
+                    _input_text=json.dumps(request, ensure_ascii=False),
+                    _name="test_workflow",
+                )
+
+            self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+            self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
+            resolved_payload = chat._forced_route["agent_response"]["output"]
+            self.assertEqual(resolved_payload["profile_result"]["correlation_id"], "profile:stored")
+            self.assertEqual(resolved_payload["profile_result"]["profile"]["profile_id"], "profile:stored")
+            self.assertEqual(resolved_payload["profile_result"]["parse"]["language"], "es")
+            self.assertEqual(resolved_payload["job_posting_result"]["job_posting"]["job_title"], "Platform Engineer")
+            get_client.assert_not_called()
+        finally:
+            os.unlink(profiles_db_path)
+
+    def test_cover_letter_request_with_job_posting_file_routes_directly_to_writer(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as posting_tmp, tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as profile_tmp:
+            posting_tmp.write("Support Engineer Rolle mit SQL, Kundenkontakt und ERP-Kontext.")
+            posting_path = posting_tmp.name
+            json.dump({"profile_id": "profile:file-job", "preferences": {"language": "de"}}, profile_tmp, ensure_ascii=False)
+            profile_path = profile_tmp.name
+
+        try:
+            request = {
+                "action": "generate_cover_letter",
+                "job_posting": {
+                    "source": "file",
+                    "value": posting_path,
+                },
+                "applicant_profile": {
+                    "source": "file",
+                    "value": profile_path,
+                },
+                "options": {"language": "de", "tone": "modern", "max_words": 280},
+            }
+
+            with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
+                chat = chat_mod.ChatCom(
+                    _model="gpt-4o-mini",
+                    _input_text=json.dumps(request, ensure_ascii=False),
+                    _name="test_workflow",
+                )
+
+            self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+            self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
+            resolved_payload = chat._forced_route["agent_response"]["output"]
+            self.assertEqual(resolved_payload["job_posting_result"]["file"]["path"], posting_path)
+            self.assertTrue(resolved_payload["job_posting_result"]["correlation_id"])
+            self.assertIn("SQL", resolved_payload["job_posting_result"]["job_posting"]["raw_text"])
+            self.assertEqual(resolved_payload["profile_result"]["profile"]["source_path"], profile_path)
+            get_client.assert_not_called()
+        finally:
+            os.unlink(posting_path)
+            os.unlink(profile_path)
+
+    def test_cover_letter_request_with_persisted_profile_and_job_result_routes_directly_to_writer(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            json.dump(
+                {
+                    "schema": "profiles_db_v1",
+                    "profiles": {
+                        "profile:stored-ready": {
+                            "correlation_id": "profile:stored-ready",
+                            "source_agent": "profile_parser",
+                            "parse": {"language": "nl", "errors": [], "warnings": []},
+                            "profile": {"profile_id": "profile:stored-ready", "preferences": {"language": "nl"}},
+                        }
+                    },
+                },
+                tmp,
+                ensure_ascii=False,
+            )
+            profiles_db_path = tmp.name
+
+        try:
+            request = {
+                "action": "generate_cover_letter",
+                "job_posting_result": {
+                    "agent": "job_posting_parser",
+                    "correlation_id": "sha-profile-stored-ready",
+                    "job_posting": {"job_title": "Site Reliability Engineer"},
+                },
+                "applicant_profile": {
+                    "source": "profile_id",
+                    "value": {"profile_id": "profile:stored-ready"},
+                    "profiles_db_path": profiles_db_path,
+                },
+                "options": {"language": "nl", "tone": "sharp", "max_words": 260},
+            }
+
+            with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
+                chat = chat_mod.ChatCom(
+                    _model="gpt-4o-mini",
+                    _input_text=json.dumps(request, ensure_ascii=False),
+                    _name="test_workflow",
+                )
+
+            self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+            self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
+            resolved_payload = chat._forced_route["agent_response"]["output"]
+            self.assertEqual(resolved_payload["profile_result"]["correlation_id"], "profile:stored-ready")
+            self.assertEqual(resolved_payload["profile_result"]["profile"]["profile_id"], "profile:stored-ready")
+            self.assertEqual(resolved_payload["profile_result"]["parse"]["language"], "nl")
+            get_client.assert_not_called()
+        finally:
+            os.unlink(profiles_db_path)
+
+    def test_ready_cover_letter_forced_route_uses_structured_handoff(self) -> None:
+        ready_request = {
+            "action": "generate_cover_letter",
+            "job_posting_result": {
+                "agent": "job_posting_parser",
+                "correlation_id": "sha-ready-2",
+                "job_posting": {"job_title": "Support Engineer"},
+            },
+            "applicant_profile": {
+                "source": "text",
+                "value": {"profile_id": "profile:ready-2", "preferences": {"language": "de"}},
+            },
+            "options": {"language": "de", "tone": "modern", "max_words": 280},
+        }
+
+        chat = chat_mod.ChatCom(
+            _model="gpt-4o-mini",
+            _input_text=json.dumps(ready_request, ensure_ascii=False),
+            _name="test_ready_handoff",
+        )
+
+        forced_route = dict(chat._forced_route)
+        self.assertEqual(forced_route["target_agent"], "_cover_letter_agent")
+        self.assertEqual(forced_route["handoff_protocol"], "agent_handoff_v1")
+        self.assertEqual(forced_route["agent_response"]["handoff_to"], "_cover_letter_agent")
+        self.assertEqual(forced_route["agent_response"]["agent_label"], "_primary_assistant")
+        self.assertEqual(forced_route["agent_response"]["output"]["job_posting_result"]["correlation_id"], "sha-ready-2")
+
+    def test_store_job_posting_result_tool_supports_non_pdf_sources(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            job_postings_db_path = tmp.name
+
+        try:
+            result = json.loads(
+                tools_mod.store_job_posting_result_tool(
+                    job_posting_result={
+                        "agent": "job_platform_ingest",
+                        "correlation_id": "platform:job-42",
+                        "parse": {"is_job_posting": True},
+                        "job_posting": {
+                            "job_title": "Remote Python Engineer",
+                            "company_name": "Platform Co",
+                        },
+                    },
+                    db_path=job_postings_db_path,
+                    source_agent="job_platform_ingest",
+                    source_payload={
+                        "platform": "example_jobs",
+                        "record_id": "job-42",
+                        "url": "https://jobs.example.invalid/job-42",
+                    },
+                )
+            )
+
+            stored = tools_mod.get_persisted_job_posting_result("platform:job-42", db_path=job_postings_db_path)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["correlation_id"], "platform:job-42")
+            self.assertEqual(stored["job_posting"]["job_title"], "Remote Python Engineer")
+            self.assertEqual(stored["parse"]["is_job_posting"], True)
+        finally:
+            os.unlink(job_postings_db_path)
+
+    def test_store_profile_result_tool_supports_direct_profile_storage(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            profiles_db_path = tmp.name
+
+        try:
+            result = json.loads(
+                tools_mod.store_profile_result_tool(
+                    profile_result={
+                        "agent": "profile_platform_ingest",
+                        "correlation_id": "profile:job-board-7",
+                        "parse": {"language": "de", "errors": [], "warnings": []},
+                        "profile": {
+                            "profile_id": "profile:job-board-7",
+                            "personal_info": {"full_name": "Max Mustermann"},
+                            "preferences": {"language": "de"},
+                        },
+                    },
+                    db_path=profiles_db_path,
+                    source_agent="profile_platform_ingest",
+                )
+            )
+
+            stored = tools_mod.get_persisted_profile_result("profile:job-board-7", db_path=profiles_db_path)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["correlation_id"], "profile:job-board-7")
+            self.assertEqual(stored["profile"]["profile_id"], "profile:job-board-7")
+            self.assertEqual(stored["profile"]["personal_info"]["full_name"], "Max Mustermann")
+        finally:
+            os.unlink(profiles_db_path)
+
+    def test_ingest_profile_tool_supports_request_style_profile_sources(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            profiles_db_path = tmp.name
+
+        try:
+            result = json.loads(
+                tools_mod.ingest_profile_tool(
+                    applicant_profile={
+                        "source": "text",
+                        "value": {
+                            "profile_id": "profile:platform-11",
+                            "personal_info": {"full_name": "Erika Muster"},
+                            "preferences": {"language": "de"},
+                        },
+                    },
+                    db_path=profiles_db_path,
+                    source_agent="profile_platform_ingest",
+                    source_payload={"platform": "example_profiles", "record_id": "platform-11"},
+                )
+            )
+
+            stored = tools_mod.get_persisted_profile_result("profile:platform-11", db_path=profiles_db_path)
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["correlation_id"], "profile:platform-11")
+            self.assertEqual(stored["profile"]["personal_info"]["full_name"], "Erika Muster")
+        finally:
+            os.unlink(profiles_db_path)
+
+    def test_ingest_job_posting_action_returns_store_result_without_model_call(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            job_postings_db_path = tmp.name
+
+        try:
+            request = {
+                "action": "ingest_job_posting",
+                "correlation_id": "platform:ingest-99",
+                "source_agent": "job_platform_ingest",
+                "job_postings_db_path": job_postings_db_path,
+                "job_posting": {
+                    "job_title": "Senior Data Engineer",
+                    "company_name": "Platform Co",
+                    "external_id": "ingest-99",
+                },
+                "source_payload": {
+                    "platform": "example_jobs",
+                    "record_id": "ingest-99",
+                },
+            }
+
+            with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
+                chat = chat_mod.ChatCom(
+                    _model="gpt-4o-mini",
+                    _input_text=json.dumps(request, ensure_ascii=False),
+                    _name="test_workflow",
+                )
+                response = json.loads(chat.get_response())
+
+            stored = tools_mod.get_persisted_job_posting_result("platform:ingest-99", db_path=job_postings_db_path)
+            self.assertTrue(response["ok"])
+            self.assertEqual(response["correlation_id"], "platform:ingest-99")
+            self.assertEqual(stored["job_posting"]["job_title"], "Senior Data Engineer")
+            self.assertEqual(stored["parse"]["is_job_posting"], True)
+            get_client.assert_not_called()
+        finally:
+            os.unlink(job_postings_db_path)
+
+    def test_store_profile_action_returns_store_result_without_model_call(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            profiles_db_path = tmp.name
+
+        try:
+            request = {
+                "action": "store_profile",
+                "profiles_db_path": profiles_db_path,
+                "source_agent": "profile_platform_ingest",
+                "applicant_profile": {
+                    "source": "text",
+                    "value": {
+                        "profile_id": "profile:ingest-5",
+                        "personal_info": {"full_name": "Jane Doe"},
+                        "preferences": {"language": "en"},
+                    },
+                },
+            }
+
+            with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
+                chat = chat_mod.ChatCom(
+                    _model="gpt-4o-mini",
+                    _input_text=json.dumps(request, ensure_ascii=False),
+                    _name="test_workflow",
+                )
+                response = json.loads(chat.get_response())
+
+            stored = tools_mod.get_persisted_profile_result("profile:ingest-5", db_path=profiles_db_path)
+            self.assertTrue(response["ok"])
+            self.assertEqual(response["correlation_id"], "profile:ingest-5")
+            self.assertEqual(stored["profile"]["personal_info"]["full_name"], "Jane Doe")
+            get_client.assert_not_called()
+        finally:
+            os.unlink(profiles_db_path)
+
+    def test_ingest_profile_action_returns_store_result_without_model_call(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            profiles_db_path = tmp.name
+
+        try:
+            request = {
+                "action": "ingest_profile",
+                "profiles_db_path": profiles_db_path,
+                "source_agent": "profile_platform_ingest",
+                "profile": {
+                    "profile_id": "profile:ingest-15",
+                    "personal_info": {"full_name": "Alex Example"},
+                    "preferences": {"language": "en"},
+                },
+                "source_payload": {
+                    "platform": "example_profiles",
+                    "record_id": "ingest-15",
+                },
+            }
+
+            with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
+                chat = chat_mod.ChatCom(
+                    _model="gpt-4o-mini",
+                    _input_text=json.dumps(request, ensure_ascii=False),
+                    _name="test_workflow",
+                )
+                response = json.loads(chat.get_response())
+
+            stored = tools_mod.get_persisted_profile_result("profile:ingest-15", db_path=profiles_db_path)
+            self.assertTrue(response["ok"])
+            self.assertEqual(response["correlation_id"], "profile:ingest-15")
+            self.assertEqual(stored["profile"]["personal_info"]["full_name"], "Alex Example")
+            get_client.assert_not_called()
+        finally:
+            os.unlink(profiles_db_path)
+
+    def test_ingest_job_posting_action_rejects_invalid_schema_request(self) -> None:
+        request = {
+            "action": "ingest_job_posting",
+            "source_agent": "job_platform_ingest",
+            "job_postings_db_path": "/tmp/unused-job-postings.json",
+        }
+
+        with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
+            chat = chat_mod.ChatCom(
+                _model="gpt-4o-mini",
+                _input_text=json.dumps(request, ensure_ascii=False),
+                _name="test_workflow",
+            )
+            response = json.loads(chat.get_response())
+
+        self.assertFalse(response["ok"])
+        self.assertEqual(response["error"], "invalid_action_request")
+        self.assertEqual(response["schema_name"], "platform_job_posting_ingest_request")
+        get_client.assert_not_called()
+
+    def test_execute_action_request_tool_ingests_job_posting_for_dispatcher(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            job_postings_db_path = tmp.name
+
+        try:
+            result_text, routing_request = agents_factory.execute_tool(
+                "execute_action_request",
+                {
+                    "action": "ingest_job_posting",
+                    "payload": {
+                        "correlation_id": "platform:dispatcher-21",
+                        "job_postings_db_path": job_postings_db_path,
+                        "source_agent": "job_platform_ingest",
+                        "job_posting": {
+                            "job_title": "Automation Engineer",
+                            "company_name": "Dispatcher Co",
+                        },
+                        "source_payload": {
+                            "platform": "example_jobs",
+                            "record_id": "dispatcher-21",
+                        },
+                    },
+                },
+                source_agent_label="_data_dispatcher",
+            )
+
+            result = json.loads(result_text)
+            stored = tools_mod.get_persisted_job_posting_result("platform:dispatcher-21", db_path=job_postings_db_path)
+            self.assertIsNone(routing_request)
+            self.assertTrue(result["ok"])
+            self.assertEqual(stored["job_posting"]["job_title"], "Automation Engineer")
+            self.assertEqual(stored["parse"]["is_job_posting"], True)
+        finally:
+            os.unlink(job_postings_db_path)
+
+    def test_deterministic_action_is_logged_as_real_assistant_result(self) -> None:
+        request = {
+            "action": "ingest_job_posting",
+            "payload": {
+                "correlation_id": "platform:history-1",
+                "job_postings_db_path": "/tmp/unused-job-postings.json",
+                "source_agent": "job_platform_ingest",
+                "job_posting": {
+                    "job_title": "History Engineer",
+                    "company_name": "History Co",
+                },
+            },
+        }
+
+        with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
+            chat = chat_mod.ChatCom(
+                _model="gpt-4o-mini",
+                _input_text=json.dumps(request, ensure_ascii=False),
+                _name="test_workflow",
+            )
+            response_text = chat.get_response()
+
+        assistant_entries = [
+            entry
+            for entry in chat_mod.ChatHistory._history_
+            if isinstance(entry, dict) and entry.get("role") == "assistant"
+        ]
+
+        self.assertTrue(assistant_entries)
+        latest = assistant_entries[-1]
+        self.assertEqual(latest.get("content"), response_text)
+        self.assertEqual(latest.get("data", {}).get("deterministic_action", {}).get("action"), "ingest_job_posting")
+        self.assertEqual(latest.get("data", {}).get("deterministic_action", {}).get("correlation_id"), "platform:history-1")
+        get_client.assert_not_called()
+
+    def test_forced_route_is_logged_as_prepared_route_instead_of_tool_placeholder(self) -> None:
+        with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
+            chat_mod.ChatCom(
+                _model="gpt-4o-mini",
+                _input_text=json.dumps(SAMPLE_WORKFLOW_REQUEST, ensure_ascii=False),
+                _name="test_workflow",
+            )
+
+        assistant_entries = [
+            entry
+            for entry in chat_mod.ChatHistory._history_
+            if isinstance(entry, dict) and entry.get("role") == "assistant"
+        ]
+
+        self.assertTrue(assistant_entries)
+        self.assertEqual(assistant_entries[-1].get("content"), "[forced route prepared]")
+        get_client.assert_not_called()
+
+    def test_upsert_dispatcher_job_record_tool_updates_both_stores(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as dispatcher_tmp, tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as jobs_tmp:
+            dispatcher_db_path = dispatcher_tmp.name
+            job_postings_db_path = jobs_tmp.name
+
+        try:
+            result = json.loads(
+                tools_mod.upsert_dispatcher_job_record_tool(
+                    job_posting_result={
+                        "agent": "job_platform_ingest",
+                        "correlation_id": "platform:atomic-1",
+                        "parse": {"is_job_posting": True},
+                        "job_posting": {
+                            "job_title": "ERP Integration Engineer",
+                            "company_name": "Atomic Co",
+                        },
+                        "db_updates": {"processing_state": "processed", "processed": True},
+                    },
+                    dispatcher_db_path=dispatcher_db_path,
+                    job_postings_db_path=job_postings_db_path,
+                    source_agent="job_platform_ingest",
+                    source_payload={"platform": "example_jobs", "record_id": "atomic-1"},
+                    dispatcher_updates={"thread_id": "thread-atomic"},
+                )
+            )
+
+            stored_job = tools_mod.get_persisted_job_posting_result("platform:atomic-1", db_path=job_postings_db_path)
+            dispatcher_db = tools_mod._load_dispatcher_db(dispatcher_db_path)
+            dispatcher_record = dispatcher_db["documents"]["platform:atomic-1"]
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["dispatcher_updated"])
+            self.assertEqual(stored_job["job_posting"]["job_title"], "ERP Integration Engineer")
+            self.assertEqual(dispatcher_record["processing_state"], "processed")
+            self.assertEqual(dispatcher_record["thread_id"], "thread-atomic")
+        finally:
+            os.unlink(dispatcher_db_path)
+            os.unlink(job_postings_db_path)
+
+    def test_execute_action_request_tool_supports_atomic_dispatcher_job_upsert(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as dispatcher_tmp, tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as jobs_tmp:
+            dispatcher_db_path = dispatcher_tmp.name
+            job_postings_db_path = jobs_tmp.name
+
+        try:
+            result_text, routing_request = agents_factory.execute_tool(
+                "execute_action_request",
+                {
+                    "action": "upsert_dispatcher_job_record",
+                    "payload": {
+                        "correlation_id": "platform:atomic-2",
+                        "dispatcher_db_path": dispatcher_db_path,
+                        "job_postings_db_path": job_postings_db_path,
+                        "source_agent": "job_platform_ingest",
+                        "processing_state": "processed",
+                        "job_posting_result": {
+                            "agent": "job_platform_ingest",
+                            "parse": {"is_job_posting": True},
+                            "job_posting": {
+                                "job_title": "Autonomous Workflow Engineer",
+                                "company_name": "Atomic Dispatcher Co",
+                            },
+                        },
+                    },
+                },
+                source_agent_label="_data_dispatcher",
+            )
+
+            result = json.loads(result_text)
+            stored_job = tools_mod.get_persisted_job_posting_result("platform:atomic-2", db_path=job_postings_db_path)
+            dispatcher_db = tools_mod._load_dispatcher_db(dispatcher_db_path)
+            self.assertIsNone(routing_request)
+            self.assertTrue(result["ok"])
+            self.assertEqual(stored_job["job_posting"]["job_title"], "Autonomous Workflow Engineer")
+            self.assertEqual(dispatcher_db["documents"]["platform:atomic-2"]["processing_state"], "processed")
+        finally:
+            os.unlink(dispatcher_db_path)
+            os.unlink(job_postings_db_path)
+
+    def test_forced_route_executes_via_agents_factory_path(self) -> None:
+        captured_execute_tool_calls: list[tuple[str, dict]] = []
+
+        def _fake_execute_tool(name: str, args: dict, tool_call_id: str = None, source_agent_label: str = None):
+            captured_execute_tool_calls.append((name, dict(args)))
+            if name == "route_to_agent":
+                return (
+                    "Routing to _cover_letter_agent",
+                    {
+                        "messages": [
+                            {"role": "system", "content": "writer system"},
+                            {"role": "system", "content": "Structured handoff context. {}"},
+                            {
+                                "role": "user",
+                                "content": json.dumps(
+                                    {
+                                        **SAMPLE_WORKFLOW_REQUEST,
+                                        "job_posting_result": {
+                                            "agent": "job_posting_parser",
+                                            "correlation_id": "sample-job-1",
+                                            "job_posting": {
+                                                "job_title": "Full Stack Software Engineer",
+                                                "raw_text": "Full Stack Software Engineer role at Example Co",
+                                            },
+                                        },
+                                        "profile_result": {
+                                            "agent": "profile_parser",
+                                            "correlation_id": "profile:test",
+                                            "parse": {"language": "de", "errors": [], "warnings": []},
+                                            "profile": SAMPLE_WORKFLOW_REQUEST["applicant_profile"]["value"],
+                                        },
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        ],
+                        "agent_label": "_cover_letter_agent",
+                        "tools": [],
+                        "model": "gpt-4o",
+                        "include_history": False,
+                        "handoff": {
+                            "protocol": "agent_handoff_v1",
+                            "source_agent": "_primary_assistant",
+                            "target_agent": "_cover_letter_agent",
+                            "handoff_payload": {
+                                "agent_label": "_primary_assistant",
+                                "handoff_to": "_cover_letter_agent",
+                                "output": {
+                                    **SAMPLE_WORKFLOW_REQUEST,
+                                    "job_posting_result": {
+                                        "agent": "job_posting_parser",
+                                        "correlation_id": "sample-job-1",
+                                        "job_posting": {
+                                            "job_title": "Full Stack Software Engineer",
+                                            "raw_text": "Full Stack Software Engineer role at Example Co",
+                                        },
+                                    },
+                                    "profile_result": {
+                                        "agent": "profile_parser",
+                                        "correlation_id": "profile:test",
+                                        "parse": {"language": "de", "errors": [], "warnings": []},
+                                        "profile": SAMPLE_WORKFLOW_REQUEST["applicant_profile"]["value"],
+                                    },
+                                },
+                            },
+                            "metadata": {},
+                        },
+                        "handoff_context": {
+                            "contract": {
+                                "schema": {
+                                    "result_postprocess": {
+                                        "tool": "persist_cover_letter_artifacts",
+                                        "text_writer_tool": "write_document",
+                                        "pdf_writer_tool": "md_to_pdf",
+                                        "default_write_pdf": True,
+                                    }
+                                }
+                            }
+                        },
+                        "runtime": {"instance_policy": "ephemeral", "role": "worker"},
+                    },
+                )
+            raise AssertionError(f"Unexpected tool execution: {name}")
+
+        chat = chat_mod.ChatCom(
+            _model="gpt-4o-mini",
+            _input_text=json.dumps(SAMPLE_WORKFLOW_REQUEST, ensure_ascii=False),
+            _name="test_workflow",
+        )
+
+        with patch("alde.chat_completion.ChatComE", _DeterministicDispatcherChatComE), patch(
+            "alde.agents_factory.execute_tool",
+            side_effect=_fake_execute_tool,
+        ), patch(
+            "alde.agents_factory.write_document",
+            return_value="Document saved to: /tmp/sample_cover_letter.md",
+        ), patch(
+            "alde.agents_factory.md_to_pdf",
+            return_value={"ok": True, "pdf_path": "/tmp/sample_cover_letter.pdf"},
+        ):
+            response = chat.get_response()
+
+        payload = json.loads(response)
+        self.assertEqual(payload["cover_letter"]["full_text"], "Sehr geehrtes Team,\n\nMotivation und Erfahrung.")
+        self.assertEqual(payload["quality"]["language"], "de")
+        self.assertEqual(payload["document_text_path"], "/tmp/sample_cover_letter.md")
+        self.assertEqual(payload["document_pdf_path"], "/tmp/sample_cover_letter.pdf")
+        self.assertEqual(len(captured_execute_tool_calls), 1)
+        self.assertEqual(captured_execute_tool_calls[0][0], "route_to_agent")
+        routed = captured_execute_tool_calls[0][1]
+        self.assertEqual(routed["target_agent"], "_cover_letter_agent")
+        self.assertEqual(routed["handoff_protocol"], "agent_handoff_v1")
+        self.assertEqual(routed["agent_response"]["handoff_to"], "_cover_letter_agent")
+        self.assertEqual(routed["agent_response"]["output"]["profile_result"]["profile"]["profile_id"], "profile:test")
+
+    def test_ready_forced_route_executes_via_structured_handoff_path(self) -> None:
+        captured_execute_tool_calls: list[tuple[str, dict]] = []
+
+        def _fake_execute_tool(name: str, args: dict, tool_call_id: str = None, source_agent_label: str = None):
+            captured_execute_tool_calls.append((name, dict(args)))
+            if name == "route_to_agent":
+                return (
+                    "Routing to _cover_letter_agent",
+                    {
+                        "messages": [
+                            {"role": "system", "content": "writer system"},
+                            {"role": "system", "content": "Structured handoff context. {}"},
+                            {
+                                "role": "user",
+                                "content": json.dumps(
+                                    {
+                                        "action": "generate_cover_letter",
+                                        "job_posting_result": {
+                                            "agent": "job_posting_parser",
+                                            "correlation_id": "sha-direct-1",
+                                            "job_posting": {"job_title": "Support Engineer"},
+                                        },
+                                        "profile_result": {
+                                            "agent": "profile_parser",
+                                            "correlation_id": "profile:direct-1",
+                                            "parse": {"language": "de", "errors": [], "warnings": []},
+                                            "profile": {"profile_id": "profile:direct-1", "preferences": {"language": "de"}},
+                                        },
+                                        "options": {"language": "de", "tone": "modern", "max_words": 280},
+                                    },
+                                    ensure_ascii=False,
+                                ),
+                            },
+                        ],
+                        "agent_label": "_cover_letter_agent",
+                        "tools": [],
+                        "model": "gpt-4o",
+                        "include_history": False,
+                        "handoff": {
+                            "protocol": "agent_handoff_v1",
+                            "source_agent": "_primary_assistant",
+                            "target_agent": "_cover_letter_agent",
+                            "handoff_payload": {
+                                "agent_label": "_primary_assistant",
+                                "handoff_to": "_cover_letter_agent",
+                                "output": {
+                                    "action": "generate_cover_letter",
+                                    "job_posting_result": {
+                                        "agent": "job_posting_parser",
+                                        "correlation_id": "sha-direct-1",
+                                        "file": {"path": "/tmp/source-posting.pdf"},
+                                        "job_posting": {"job_title": "Support Engineer", "company_name": "Example Co"},
+                                    },
+                                    "profile_result": {
+                                        "agent": "profile_parser",
+                                        "correlation_id": "profile:direct-1",
+                                        "profile": {"profile_id": "profile:direct-1", "preferences": {"language": "de"}},
+                                    },
+                                    "options": {"language": "de", "tone": "modern", "max_words": 280},
+                                },
+                            },
+                            "metadata": {},
+                        },
+                        "handoff_context": {
+                            "contract": {
+                                "schema": {
+                                    "result_postprocess": {
+                                        "tool": "persist_cover_letter_artifacts",
+                                        "text_writer_tool": "write_document",
+                                        "pdf_writer_tool": "md_to_pdf",
+                                        "default_write_pdf": True,
+                                    }
+                                }
+                            }
+                        },
+                        "runtime": {"instance_policy": "ephemeral", "role": "worker"},
+                    },
+                )
+            raise AssertionError(f"Unexpected tool execution: {name}")
+
+        ready_request = {
+            "action": "generate_cover_letter",
+            "job_posting_result": {
+                "agent": "job_posting_parser",
+                "correlation_id": "sha-direct-1",
+                "job_posting": {"job_title": "Support Engineer"},
+            },
+            "applicant_profile": {
+                "source": "text",
+                "value": {"profile_id": "profile:direct-1", "preferences": {"language": "de"}},
+            },
+            "options": {"language": "de", "tone": "modern", "max_words": 280},
+        }
+
+        chat = chat_mod.ChatCom(
+            _model="gpt-4o-mini",
+            _input_text=json.dumps(ready_request, ensure_ascii=False),
+            _name="test_ready_structured_route",
+        )
+
+        with patch("alde.chat_completion.ChatComE", _DeterministicDispatcherChatComE), patch(
+            "alde.agents_factory.execute_tool",
+            side_effect=_fake_execute_tool,
+        ), patch(
+            "alde.agents_factory.write_document",
+            return_value="Document saved to: /tmp/cover_letter_ready.md",
+        ), patch(
+            "alde.agents_factory.md_to_pdf",
+            return_value={"ok": True, "pdf_path": "/tmp/cover_letter_ready.pdf"},
+        ):
+            response = chat.get_response()
+
+        payload = json.loads(response)
+        self.assertEqual(payload["cover_letter"]["full_text"], "Sehr geehrtes Team,\n\nMotivation und Erfahrung.")
+        self.assertEqual(payload["document_text_path"], "/tmp/cover_letter_ready.md")
+        self.assertEqual(payload["document_pdf_path"], "/tmp/cover_letter_ready.pdf")
+        self.assertEqual(payload["document_path"], "/tmp/cover_letter_ready.pdf")
+        self.assertEqual(len(captured_execute_tool_calls), 1)
+        routed = captured_execute_tool_calls[0][1]
+        self.assertEqual(routed["target_agent"], "_cover_letter_agent")
+        self.assertEqual(routed["handoff_protocol"], "agent_handoff_v1")
+        self.assertEqual(routed["agent_response"]["handoff_to"], "_cover_letter_agent")
+        self.assertEqual(routed["agent_response"]["output"]["job_posting_result"]["correlation_id"], "sha-direct-1")
 
 
 if __name__ == "__main__":
-    success = test_workflow()
-    sys.exit(0 if success else 1)
+    unittest.main()

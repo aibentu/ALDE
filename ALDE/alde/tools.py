@@ -8,18 +8,52 @@ except ImportError as e:
         raise
 import os
 import hashlib
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import glob
 import typing
 import subprocess
 import time
 import uuid
+import importlib
 from pathlib import Path
 from typing import Callable, Any
 from dataclasses import dataclass, field
 import multiprocessing
-import queue as queue_mod
+from copy import deepcopy
+
+try:
+    from .agents_config import (  # type: ignore
+        build_agent_handoff,
+        create_agent_system_basic_config,
+        create_agent_system_persisted_config_module,
+        get_available_agent_labels,
+        get_available_tool_names,
+        get_action_request_schema_config,
+        get_tool_config,
+        get_tool_configs,
+        get_tool_group_configs,
+        normalize_tool_name,
+        validate_action_request,
+    )
+except ImportError as e:
+    msg = str(e)
+    if "attempted relative import" in msg or "no known parent package" in msg:
+        from ALDE.alde.agents_config import (  # type: ignore
+            build_agent_handoff,
+            create_agent_system_basic_config,
+            create_agent_system_persisted_config_module,
+            get_available_agent_labels,
+            get_available_tool_names,
+            get_action_request_schema_config,
+            get_tool_config,
+            get_tool_configs,
+            get_tool_group_configs,
+            normalize_tool_name,
+            validate_action_request,
+        )
+    else:
+        raise
 
 try:
     from .iter_documents import iter_documents
@@ -31,6 +65,61 @@ except ImportError as e:  # allow running directly from the repository root
         from iter_documents import iter_documents
     else:
         raise
+
+
+def _shutdown_loky_executor() -> None:
+    """Best-effort cleanup for joblib/loky reusable executors.
+
+    Some embedding and reranking stacks lazily create loky workers. If the
+    reusable executor survives until interpreter shutdown, Python 3.13 emits
+    leaked semaphore warnings from resource_tracker.
+    """
+    get_reusable_executor = None
+    for module_name in ("joblib.externals.loky", "loky"):
+        try:
+            module = importlib.import_module(module_name)
+            get_reusable_executor = getattr(module, "get_reusable_executor", None)
+            if callable(get_reusable_executor):
+                break
+        except Exception:
+            continue
+
+    if not callable(get_reusable_executor):
+        return
+
+    try:
+        executor = get_reusable_executor()
+    except Exception:
+        return
+
+    if executor is None:
+        return
+
+    try:
+        executor.shutdown(wait=True, kill_workers=True)
+    except TypeError:
+        try:
+            executor.shutdown(wait=True)
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+def _close_conn(conn: Any) -> None:
+    try:
+        if conn is not None:
+            conn.close()
+    except Exception:
+        pass
+
+
+def _close_process_handle(proc: Any) -> None:
+    try:
+        if proc is not None:
+            proc.close()
+    except Exception:
+        pass
 
 try:
     from .learning_signals import (  # type: ignore
@@ -82,7 +171,10 @@ def _safe_int(val: object, default: int = 0) -> int:
 def _load_json_file(path: str) -> object:
     try:
         with open(path, "r", encoding="utf-8") as f:
-            return json.load(f)
+            raw = f.read()
+        if not raw.strip():
+            return {}
+        return json.loads(raw)
     except json.JSONDecodeError:
         # Best-effort recovery:
         # - Prefer the adjacent atomic-write temp file (`.tmp`) if present.
@@ -111,7 +203,7 @@ def _load_json_file(path: str) -> object:
         if recovered is None:
             raise
 
-        ts = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts = _now_utc_filename_stamp()
         corrupt_path = f"{base_no_ext}.corrupt_{ts}.json"
         try:
             os.replace(path, corrupt_path)
@@ -173,16 +265,1194 @@ def _save_dispatcher_db(db_path: str, db: dict) -> None:
     _atomic_write_json(db_path, db)
 
 
-def dispatch_job_posting_pdfs(
+def _default_document_db_path(obj: str) -> str:
+    return os.path.join(_default_appdata_dir(), f"{obj}_db.json")
+
+
+def _load_document_db(db_path: str, obj: str) -> dict:
+    if not os.path.exists(db_path):
+        return {"schema": f"{obj}_db_v1", obj: {}}
+    raw = _load_json_file(db_path)
+    if isinstance(raw, dict) and isinstance(raw.get(obj), dict):
+        return raw
+    return {"schema": f"{obj}_db_v1", obj: {}}
+
+
+def _save_document_db(db_path: str, db: dict) -> None:
+    _atomic_write_json(db_path, db)
+
+
+_DOCUMENT_SECTION_KEYS: dict[str, str] = {
+    "job_postings": "job_posting",
+    "profiles": "profile",
+}
+
+
+_DOCUMENT_DEFAULT_AGENTS: dict[str, str] = {
+    "job_postings": "job_posting_parser",
+    "profiles": "profile_parser",
+}
+
+
+def _normalize_document_obj_name(obj: str | None, default: str = "documents") -> str:
+    normalized = str(obj or "").strip()
+    return normalized or default
+
+
+def _document_section_key(obj: str) -> str:
+    normalized_obj = _normalize_document_obj_name(obj)
+    return _DOCUMENT_SECTION_KEYS.get(normalized_obj, normalized_obj)
+
+
+def _document_default_agent(obj: str) -> str:
+    normalized_obj = _normalize_document_obj_name(obj)
+    return _DOCUMENT_DEFAULT_AGENTS.get(normalized_obj, f"{_document_section_key(normalized_obj)}_parser")
+
+
+def _extract_document_section(result_payload: dict[str, Any], resolved_obj: str) -> dict[str, Any]:
+    resolved_section_key = _document_section_key(resolved_obj)
+    candidate_keys = [
+        resolved_section_key,
+        resolved_obj,
+        "job_posting",
+        "profile",
+    ]
+    for candidate_key in candidate_keys:
+        candidate_value = result_payload.get(candidate_key)
+        if isinstance(candidate_value, dict):
+            return candidate_value
+    return {}
+
+
+def persist_document_result(
+    *,
+    correlation_id: str,
+    result_payload: dict[str, Any],
+    obj: str,
+    db_path: str | None = None,
+    handoff_metadata: dict[str, Any] | None = None,
+    handoff_payload: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    resolved_obj = _normalize_document_obj_name(obj)
+    resolved_section_key = _document_section_key(resolved_obj)
+    resolved_db_path = os.path.abspath(os.path.expanduser(str(db_path or _default_document_db_path(resolved_obj))))
+    db = _load_document_db(resolved_db_path, resolved_obj)
+    if not isinstance(db, dict):
+        db = {"schema": f"{resolved_obj}_db_v1", resolved_obj: {}}
+    if not isinstance(db.get(resolved_obj), dict):
+        db[resolved_obj] = {}
+
+    document_records = db[resolved_obj]
+    record = document_records.get(correlation_id) if isinstance(document_records.get(correlation_id), dict) else {}
+    record = dict(record)
+    ts = _now_utc_iso()
+
+    metadata = dict(handoff_metadata or {})
+    incoming_payload = dict(handoff_payload or {})
+    output_payload = incoming_payload.get("output") if isinstance(incoming_payload.get("output"), dict) else {}
+    parse_section = result_payload.get("parse") if isinstance(result_payload.get("parse"), dict) else {}
+    document_section = _extract_document_section(result_payload, resolved_obj)
+    db_updates = result_payload.get("db_updates") if isinstance(result_payload.get("db_updates"), dict) else {}
+    fallback_source_payload = output_payload if output_payload else result_payload
+
+    record["correlation_id"] = correlation_id
+    record["updated_at"] = ts
+    record.setdefault("created_at", ts)
+    record["source_agent"] = str(
+        incoming_payload.get("agent_label")
+        or metadata.get("source_agent")
+        or result_payload.get("agent")
+        or _document_default_agent(resolved_obj)
+    )
+    record["link"] = deepcopy(result_payload.get("link") if isinstance(result_payload.get("link"), dict) else output_payload.get("link") if isinstance(output_payload.get("link"), dict) else {})
+    record["file"] = deepcopy(result_payload.get("file") if isinstance(result_payload.get("file"), dict) else output_payload.get("file") if isinstance(output_payload.get("file"), dict) else {})
+    record["parse"] = deepcopy(parse_section)
+    record[resolved_section_key] = deepcopy(document_section)
+    record["db_updates"] = deepcopy(db_updates)
+    record["handoff_metadata"] = deepcopy(metadata)
+    record["source_payload"] = deepcopy(fallback_source_payload)
+
+    document_records[correlation_id] = record
+    _save_document_db(resolved_db_path, db)
+    return {
+        "ok": True,
+        "db_path": resolved_db_path,
+        "obj_name": resolved_obj,
+        "correlation_id": correlation_id,
+        "stored": True,
+    }
+
+
+def persist_job_posting_result(
+    *,
+    correlation_id: str,
+    result_payload: dict[str, Any],
+    db_path: str | None = None,
+    handoff_metadata: dict[str, Any] | None = None,
+    handoff_payload: dict[str, Any] | None = None,
+    obj: str = "job_postings",
+) -> dict[str, Any]:
+    return persist_document_result(
+        correlation_id=correlation_id,
+        result_payload=result_payload,
+        obj=obj,
+        db_path=db_path,
+        handoff_metadata=handoff_metadata,
+        handoff_payload=handoff_payload,
+    )
+
+
+def store_job_posting_result_tool(
+    job_posting_result: dict[str, Any] | str,
+    correlation_id: str | None = None,
+    db_path: str | None = None,
+    source_agent: str | None = None,
+    source_payload: dict[str, Any] | None = None,
+    obj_name: str | None = None,
+) -> str:
+    parsed_result = job_posting_result
+    if isinstance(parsed_result, str):
+        try:
+            parsed_result = json.loads(parsed_result)
+        except Exception:
+            return json.dumps({"ok": False, "error": "invalid_job_posting_result_json"}, ensure_ascii=False)
+    if not isinstance(parsed_result, dict):
+        return json.dumps({"ok": False, "error": "job_posting_result_must_be_object"}, ensure_ascii=False)
+
+    effective_correlation_id = str(
+        correlation_id
+        or parsed_result.get("correlation_id")
+        or ((parsed_result.get("file") or {}).get("content_sha256") if isinstance(parsed_result.get("file"), dict) else "")
+        or ((parsed_result.get("db_updates") or {}).get("content_sha256") if isinstance(parsed_result.get("db_updates"), dict) else "")
+        or ""
+    ).strip()
+    if not effective_correlation_id:
+        return json.dumps({"ok": False, "error": "missing_correlation_id"}, ensure_ascii=False)
+
+    metadata = {"source_agent": str(source_agent or parsed_result.get("agent") or "job_posting_parser")}
+    resolved_obj_name = _normalize_document_obj_name(obj_name, "job_postings")
+    result = persist_job_posting_result(
+        correlation_id=effective_correlation_id,
+        result_payload=parsed_result,
+        db_path=db_path or (str(parsed_result.get(f"{resolved_obj_name}_db_path") or "").strip() or None),
+        handoff_metadata=metadata,
+        handoff_payload=source_payload if isinstance(source_payload, dict) else None,
+        obj=resolved_obj_name,
+    )
+    return json.dumps(result, ensure_ascii=False)
+
+
+def upsert_dispatcher_job_record_tool(
+    job_posting_result: dict[str, Any] | str,
+    correlation_id: str | None = None,
+    dispatcher_db_path: str | None = None,
+    job_postings_db_path: str | None = None,
+    obj_name: str | None = None,
+    processing_state: str | None = None,
+    processed: bool | None = None,
+    failed_reason: str | None = None,
+    source_agent: str | None = None,
+    source_payload: dict[str, Any] | None = None,
+    dispatcher_updates: dict[str, Any] | None = None,
+) -> str:
+    parsed_result = job_posting_result
+    if isinstance(parsed_result, str):
+        try:
+            parsed_result = json.loads(parsed_result)
+        except Exception:
+            return json.dumps({"ok": False, "error": "invalid_job_posting_result_json"}, ensure_ascii=False)
+    if not isinstance(parsed_result, dict):
+        return json.dumps({"ok": False, "error": "job_posting_result_must_be_object"}, ensure_ascii=False)
+
+    effective_correlation_id = str(
+        correlation_id
+        or parsed_result.get("correlation_id")
+        or ((parsed_result.get("file") or {}).get("content_sha256") if isinstance(parsed_result.get("file"), dict) else "")
+        or ((parsed_result.get("job_posting") or {}).get("job_id") if isinstance(parsed_result.get("job_posting"), dict) else "")
+        or ((source_payload or {}).get("record_id") if isinstance(source_payload, dict) else "")
+        or ""
+    ).strip()
+    if not effective_correlation_id:
+        return json.dumps({"ok": False, "error": "missing_correlation_id"}, ensure_ascii=False)
+
+    resolved_obj_name = _normalize_document_obj_name(obj_name, "job_postings")
+    resolved_section_key = _document_section_key(resolved_obj_name)
+
+    resolved_dispatcher_db_path = os.path.abspath(os.path.expanduser(str(dispatcher_db_path or _default_dispatcher_db_path())))
+    resolved_job_postings_db_path = os.path.abspath(os.path.expanduser(str(job_postings_db_path or _default_document_db_path(resolved_obj_name))))
+
+    original_dispatcher_db = _load_dispatcher_db(resolved_dispatcher_db_path)
+    original_job_postings_db = _load_document_db(resolved_job_postings_db_path, resolved_obj_name)
+    next_dispatcher_db = deepcopy(original_dispatcher_db if isinstance(original_dispatcher_db, dict) else {"schema": "dispatcher_doc_db_v1", "documents": {}})
+    next_job_postings_db = deepcopy(original_job_postings_db if isinstance(original_job_postings_db, dict) else {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}})
+
+    if not isinstance(next_dispatcher_db.get("documents"), dict):
+        next_dispatcher_db["documents"] = {}
+    if not isinstance(next_job_postings_db.get(resolved_obj_name), dict):
+        next_job_postings_db[resolved_obj_name] = {}
+
+    ts = _now_utc_iso()
+    parse_section = parsed_result.get("parse") if isinstance(parsed_result.get("parse"), dict) else {}
+    job_posting_section = _extract_document_section(parsed_result, resolved_obj_name)
+    db_updates = parsed_result.get("db_updates") if isinstance(parsed_result.get("db_updates"), dict) else {}
+    metadata = {"source_agent": str(source_agent or parsed_result.get("agent") or _document_default_agent(resolved_obj_name))}
+    source_payload_dict = deepcopy(source_payload) if isinstance(source_payload, dict) else {}
+
+    job_record = next_job_postings_db[resolved_obj_name].get(effective_correlation_id) if isinstance(next_job_postings_db[resolved_obj_name].get(effective_correlation_id), dict) else {}
+    job_record = dict(job_record)
+    job_record["correlation_id"] = effective_correlation_id
+    job_record["updated_at"] = ts
+    job_record.setdefault("created_at", ts)
+    job_record["source_agent"] = str(source_agent or parsed_result.get("agent") or _document_default_agent(resolved_obj_name))
+    job_record["link"] = deepcopy(parsed_result.get("link") if isinstance(parsed_result.get("link"), dict) else {})
+    job_record["file"] = deepcopy(parsed_result.get("file") if isinstance(parsed_result.get("file"), dict) else {})
+    job_record["parse"] = deepcopy(parse_section)
+    job_record[resolved_section_key] = deepcopy(job_posting_section)
+    job_record["db_updates"] = deepcopy(db_updates)
+    job_record["handoff_metadata"] = deepcopy(metadata)
+    job_record["source_payload"] = deepcopy(source_payload_dict)
+    next_job_postings_db[resolved_obj_name][effective_correlation_id] = job_record
+
+    normalized_state = str(
+        processing_state
+        or db_updates.get("processing_state")
+        or ("processed" if (job_posting_section or parse_section.get("is_job_posting")) else "failed")
+    ).strip().lower() or "failed"
+    effective_processed = bool(processed) if processed is not None else bool(db_updates.get("processed")) if isinstance(db_updates.get("processed"), bool) else normalized_state == "processed"
+    effective_failed_reason = str(failed_reason or db_updates.get("failed_reason") or "").strip() or None
+
+    dispatcher_record = next_dispatcher_db["documents"].get(effective_correlation_id) if isinstance(next_dispatcher_db["documents"].get(effective_correlation_id), dict) else {}
+    dispatcher_record = dict(dispatcher_record)
+    dispatcher_record.setdefault("id", effective_correlation_id)
+    dispatcher_record["content_sha256"] = effective_correlation_id
+    dispatcher_record["processing_state"] = normalized_state
+    dispatcher_record["processed"] = effective_processed
+    dispatcher_record["last_seen_at"] = ts
+    if effective_processed:
+        dispatcher_record["processed_at"] = ts
+        dispatcher_record["failed_reason"] = None
+        dispatcher_record["last_error"] = None
+        dispatcher_record["last_error_at"] = None
+    else:
+        dispatcher_record["failed_reason"] = effective_failed_reason
+        dispatcher_record["last_error"] = effective_failed_reason
+        dispatcher_record["last_error_at"] = ts if effective_failed_reason else None
+    if isinstance(dispatcher_updates, dict):
+        for key, value in dispatcher_updates.items():
+            if value is None and key in {"failed_reason", "last_error", "last_error_at"}:
+                dispatcher_record[str(key)] = None
+            elif value is not None:
+                dispatcher_record[str(key)] = value
+    next_dispatcher_db["documents"][effective_correlation_id] = dispatcher_record
+
+    try:
+        _save_document_db(resolved_job_postings_db_path, next_job_postings_db)
+        try:
+            _save_document_db(resolved_dispatcher_db_path, next_dispatcher_db)
+        except Exception:
+            _save_document_db(resolved_job_postings_db_path, original_job_postings_db if isinstance(original_job_postings_db, dict) else {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}})
+            raise
+    except Exception as exc:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "atomic_upsert_failed",
+                "details": f"{type(exc).__name__}: {exc}",
+                "correlation_id": effective_correlation_id,
+            },
+            ensure_ascii=False,
+        )
+
+    return json.dumps(
+        {
+            "ok": True,
+            "stored": True,
+            "dispatcher_updated": True,
+            "correlation_id": effective_correlation_id,
+            "job_postings_db_path": resolved_job_postings_db_path,
+            "dispatcher_db_path": resolved_dispatcher_db_path,
+            "processing_state": normalized_state,
+            "processed": effective_processed,
+        },
+        ensure_ascii=False,
+    )
+
+
+def store_profile_result_tool(
+    profile_result: dict[str, Any] | str,
+    correlation_id: str | None = None,
+    db_path: str | None = None,
+    source_agent: str | None = None,
+    obj_name: str | None = None,
+) -> str:
+    parsed_result = profile_result
+    if isinstance(parsed_result, str):
+        try:
+            parsed_result = json.loads(parsed_result)
+        except Exception:
+            return json.dumps({"ok": False, "error": "invalid_profile_result_json"}, ensure_ascii=False)
+    if not isinstance(parsed_result, dict):
+        return json.dumps({"ok": False, "error": "profile_result_must_be_object"}, ensure_ascii=False)
+
+    effective_correlation_id = str(
+        correlation_id
+        or parsed_result.get("correlation_id")
+        or ((parsed_result.get("profile") or {}).get("profile_id") if isinstance(parsed_result.get("profile"), dict) else "")
+        or ""
+    ).strip()
+    if not effective_correlation_id:
+        return json.dumps({"ok": False, "error": "missing_correlation_id"}, ensure_ascii=False)
+
+    normalized_result = deepcopy(parsed_result)
+    if source_agent:
+        normalized_result["agent"] = str(source_agent)
+
+    result = persist_profile_result(
+        correlation_id=effective_correlation_id,
+        profile_result=normalized_result,
+        db_path=db_path or (str(parsed_result.get(f"{_normalize_document_obj_name(obj_name, 'profiles')}_db_path") or "").strip() or None),
+        obj=obj_name or "profiles",
+    )
+    return json.dumps(result, ensure_ascii=False)
+
+
+def ingest_profile_tool(
+    profile: dict[str, Any] | None = None,
+    applicant_profile: dict[str, Any] | None = None,
+    profile_result: dict[str, Any] | str | None = None,
+    correlation_id: str | None = None,
+    db_path: str | None = None,
+    source_agent: str | None = None,
+    source_payload: dict[str, Any] | None = None,
+    obj_name: str | None = None,
+) -> str:
+    parsed_result = profile_result
+    if isinstance(parsed_result, str):
+        try:
+            parsed_result = json.loads(parsed_result)
+        except Exception:
+            return json.dumps({"ok": False, "error": "invalid_profile_result_json"}, ensure_ascii=False)
+
+    if parsed_result is None:
+        request_payload: dict[str, Any] | None = None
+        if isinstance(applicant_profile, dict):
+            request_payload = applicant_profile
+        elif isinstance(profile, dict):
+            request_payload = {"source": "text", "value": profile}
+        if not isinstance(request_payload, dict):
+            return json.dumps({"ok": False, "error": "missing_profile_payload"}, ensure_ascii=False)
+        parsed_result = _build_profile_result_from_request(request_payload)
+
+    if not isinstance(parsed_result, dict):
+        return json.dumps({"ok": False, "error": "profile_result_must_be_object"}, ensure_ascii=False)
+
+    effective_correlation_id = str(
+        correlation_id
+        or parsed_result.get("correlation_id")
+        or ((parsed_result.get("profile") or {}).get("profile_id") if isinstance(parsed_result.get("profile"), dict) else "")
+        or ((source_payload or {}).get("profile_id") if isinstance(source_payload, dict) else "")
+        or ""
+    ).strip()
+    if not effective_correlation_id:
+        return json.dumps({"ok": False, "error": "missing_correlation_id"}, ensure_ascii=False)
+
+    normalized_result = deepcopy(parsed_result)
+    normalized_result["correlation_id"] = effective_correlation_id
+    if source_agent:
+        normalized_result["agent"] = str(source_agent)
+    if isinstance(source_payload, dict):
+        normalized_result["source_payload"] = deepcopy(source_payload)
+
+    return store_profile_result_tool(
+        profile_result=normalized_result,
+        correlation_id=effective_correlation_id,
+        db_path=db_path,
+        source_agent=source_agent,
+        obj_name=obj_name,
+    )
+
+
+def ingest_job_posting_tool(
+    job_posting: dict[str, Any] | None = None,
+    job_posting_result: dict[str, Any] | str | None = None,
+    correlation_id: str | None = None,
+    db_path: str | None = None,
+    source_agent: str | None = None,
+    source_payload: dict[str, Any] | None = None,
+    parse: dict[str, Any] | None = None,
+    obj_name: str | None = None,
+) -> str:
+    parsed_result = job_posting_result
+    if isinstance(parsed_result, str):
+        try:
+            parsed_result = json.loads(parsed_result)
+        except Exception:
+            return json.dumps({"ok": False, "error": "invalid_job_posting_result_json"}, ensure_ascii=False)
+
+    if parsed_result is None:
+        if not isinstance(job_posting, dict):
+            return json.dumps({"ok": False, "error": "missing_job_posting_payload"}, ensure_ascii=False)
+        parsed_result = {
+            "agent": str(source_agent or "job_platform_ingest"),
+            "correlation_id": correlation_id,
+            "parse": deepcopy(parse) if isinstance(parse, dict) else {"is_job_posting": True, "errors": [], "warnings": []},
+            "job_posting": deepcopy(job_posting),
+        }
+
+    if not isinstance(parsed_result, dict):
+        return json.dumps({"ok": False, "error": "job_posting_result_must_be_object"}, ensure_ascii=False)
+
+    inferred_job_posting = parsed_result.get("job_posting") if isinstance(parsed_result.get("job_posting"), dict) else {}
+    inferred_source_payload = source_payload if isinstance(source_payload, dict) else {}
+    effective_correlation_id = str(
+        correlation_id
+        or parsed_result.get("correlation_id")
+        or ((parsed_result.get("file") or {}).get("content_sha256") if isinstance(parsed_result.get("file"), dict) else "")
+        or inferred_job_posting.get("job_id")
+        or inferred_job_posting.get("external_id")
+        or inferred_source_payload.get("record_id")
+        or inferred_source_payload.get("id")
+        or inferred_source_payload.get("url")
+        or ""
+    ).strip()
+    if not effective_correlation_id:
+        return json.dumps({"ok": False, "error": "missing_correlation_id"}, ensure_ascii=False)
+
+    normalized_result = deepcopy(parsed_result)
+    normalized_result["correlation_id"] = effective_correlation_id
+    if source_agent:
+        normalized_result["agent"] = str(source_agent)
+    if not isinstance(normalized_result.get("parse"), dict):
+        normalized_result["parse"] = deepcopy(parse) if isinstance(parse, dict) else {"is_job_posting": True, "errors": [], "warnings": []}
+
+    return store_job_posting_result_tool(
+        job_posting_result=normalized_result,
+        correlation_id=effective_correlation_id,
+        db_path=db_path,
+        source_agent=source_agent,
+        source_payload=inferred_source_payload or None,
+        obj_name=obj_name,
+    )
+
+
+def get_persisted_document_result(
+    correlation_id: str,
+    *,
+    obj: str,
+    db_path: str | None = None,
+) -> dict[str, Any] | None:
+    resolved_obj = _normalize_document_obj_name(obj)
+    resolved_section_key = _document_section_key(resolved_obj)
+    resolved_db_path = os.path.abspath(os.path.expanduser(str(db_path or _default_document_db_path(resolved_obj))))
+    db = _load_document_db(resolved_db_path, resolved_obj)
+    document_records = db.get(resolved_obj) if isinstance(db, dict) else None
+    if not isinstance(document_records, dict):
+        return None
+    record = document_records.get(correlation_id)
+    if not isinstance(record, dict):
+        return None
+
+    return {
+        "agent": str(record.get("source_agent") or record.get("agent") or _document_default_agent(resolved_obj)),
+        "correlation_id": str(record.get("correlation_id") or correlation_id),
+        "link": deepcopy(record.get("link") or {}),
+        "file": deepcopy(record.get("file") or {}),
+        "parse": deepcopy(record.get("parse") or {}),
+        resolved_section_key: deepcopy(record.get(resolved_section_key) or record.get(resolved_obj) or {}),
+        "db_updates": deepcopy(record.get("db_updates") or {}),
+    }
+
+
+def persist_profile_result(
+    *,
+    correlation_id: str,
+    profile_result: dict[str, Any],
+    db_path: str | None = None,
+    obj: str = "profiles",
+) -> dict[str, Any]:
+    return persist_document_result(
+        correlation_id=correlation_id,
+        result_payload=profile_result,
+        obj=obj,
+        db_path=db_path,
+    )
+
+
+def get_persisted_profile_result(
+    correlation_id: str,
+    *,
+    db_path: str | None = None,
+    obj_name: str | None = None,
+) -> dict[str, Any] | None:
+    stored = get_persisted_document_result(
+        correlation_id,
+        db_path=db_path,
+        obj=obj_name or "profiles",
+    )
+    if not isinstance(stored, dict):
+        return None
+    return {
+        "agent": str(stored.get("agent") or "profile_parser"),
+        "correlation_id": str(stored.get("correlation_id") or correlation_id),
+        "parse": deepcopy(stored.get("parse") or {}),
+        "profile": deepcopy(stored.get("profile") or {}),
+    }
+
+
+def get_persisted_job_posting_result(
+    correlation_id: str,
+    *,
+    db_path: str | None = None,
+    obj_name: str | None = None,
+) -> dict[str, Any] | None:
+    resolution_config = dict(get_action_request_schema_config("ingest_job_posting").get("request_resolution") or {})
+    resolved_obj_name = str(obj_name or resolution_config.get("job_posting_obj_name") or "job_postings").strip() or "job_postings"
+    stored = get_persisted_document_result(
+        correlation_id,
+        db_path=db_path,
+        obj=resolved_obj_name,
+    )
+    if not isinstance(stored, dict):
+        return None
+    resolved_section_key = _document_section_key(resolved_obj_name)
+    return {
+        "agent": str(stored.get("agent") or _document_default_agent(resolved_obj_name)),
+        "correlation_id": str(stored.get("correlation_id") or correlation_id),
+        "link": deepcopy(stored.get("link") or {}),
+        "file": deepcopy(stored.get("file") or {}),
+        "parse": deepcopy(stored.get("parse") or {}),
+        "job_posting": deepcopy(stored.get(resolved_section_key) or {}),
+        "db_updates": deepcopy(stored.get("db_updates") or {}),
+    }
+
+
+def _build_profile_result_from_request(profile_payload: Any) -> dict[str, Any] | None:
+    if not isinstance(profile_payload, dict):
+        return None
+
+    source = str(profile_payload.get("source") or "").strip().lower()
+    value = profile_payload.get("value")
+
+    def _profile_result_from_profile(profile: Any, *, source_path: str | None = None) -> dict[str, Any] | None:
+        if not isinstance(profile, dict):
+            return None
+        profile_copy = deepcopy(profile)
+        if source_path:
+            profile_copy.setdefault("source_path", source_path)
+        preferences = profile_copy.get("preferences") if isinstance(profile_copy.get("preferences"), dict) else {}
+        return {
+            "agent": "profile_parser",
+            "correlation_id": profile_copy.get("profile_id"),
+            "parse": {
+                "language": preferences.get("language", "de"),
+                "errors": [],
+                "warnings": [],
+            },
+            "profile": profile_copy,
+        }
+
+    def _parse_profile_file(candidate_path: str) -> dict[str, Any] | None:
+        resolved_path = os.path.abspath(os.path.expanduser(candidate_path))
+        if not os.path.isfile(resolved_path):
+            return None
+        try:
+            loaded = _load_json_file(resolved_path)
+        except Exception:
+            try:
+                with open(resolved_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                loaded = json.loads(content)
+            except Exception:
+                return None
+        return _profile_result_from_profile(loaded, source_path=resolved_path)
+
+    if source in {"profile_result", "resolved_profile", "parsed_profile"} and isinstance(value, dict):
+        return deepcopy(value)
+
+    if source in {"profile_id", "profiles_db", "stored_profile", "persisted_profile"}:
+        correlation_id = ""
+        if isinstance(value, str):
+            correlation_id = value.strip()
+        elif isinstance(value, dict):
+            correlation_id = str(
+                value.get("correlation_id")
+                or value.get("profile_id")
+                or value.get("id")
+                or ""
+            ).strip()
+        if not correlation_id:
+            correlation_id = str(
+                profile_payload.get("correlation_id")
+                or profile_payload.get("profile_id")
+                or ""
+            ).strip()
+        if not correlation_id:
+            return None
+        db_path = str(
+            profile_payload.get("db_path")
+            or profile_payload.get("profiles_db_path")
+            or ""
+        ).strip() or None
+        stored_profile = get_persisted_profile_result(correlation_id, db_path=db_path)
+        if isinstance(stored_profile, dict):
+            return stored_profile
+        return None
+
+    if source in {"file", "path", "json_file", "structured_file", "document_file"}:
+        candidate_path = ""
+        if isinstance(value, str):
+            candidate_path = value.strip()
+        elif isinstance(value, dict):
+            candidate_path = str(
+                value.get("path")
+                or value.get("file_path")
+                or value.get("value")
+                or value.get("source_path")
+                or ""
+            ).strip()
+        if not candidate_path:
+            candidate_path = str(
+                profile_payload.get("path")
+                or profile_payload.get("file_path")
+                or profile_payload.get("source_path")
+                or ""
+            ).strip()
+        if candidate_path:
+            return _parse_profile_file(candidate_path)
+
+    if source not in {"text", "json", "dict", "object", "structured", "inline"}:
+        return None
+
+    if isinstance(value, dict):
+        return _profile_result_from_profile(value)
+    if isinstance(value, str):
+        return _profile_result_from_profile({"raw_text": value})
+    return None
+
+
+def _build_job_posting_result_from_request(
+    job_posting_payload: Any,
+    *,
+    resolution_config: dict[str, Any] | None = None,
+    fallback_payload: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    if not isinstance(job_posting_payload, dict):
+        return None
+
+    resolution = dict(resolution_config or {})
+    fallback = dict(fallback_payload or {})
+    source = str(job_posting_payload.get("source") or "").strip().lower()
+    value = job_posting_payload.get("value")
+    store_sources = {
+        str(item).strip().lower()
+        for item in (resolution.get("job_posting_store_sources") or [])
+        if str(item).strip()
+    } or {"correlation_id", "job_postings_db", "stored_job_posting", "persisted_job_posting"}
+    file_sources = {
+        str(item).strip().lower()
+        for item in (resolution.get("job_posting_file_sources") or [])
+        if str(item).strip()
+    } or {"file", "path", "text_file", "document_file", "structured_file", "json_file"}
+    inline_sources = {
+        str(item).strip().lower()
+        for item in (resolution.get("job_posting_inline_sources") or [])
+        if str(item).strip()
+    } or {"text", "json", "dict", "object", "structured", "inline"}
+    resolved_obj_name = str(
+        job_posting_payload.get("obj_name")
+        or fallback.get("obj_name")
+        or resolution.get("job_posting_obj_name")
+        or "job_postings"
+    ).strip() or "job_postings"
+    resolved_db_path_field = str(
+        (
+            f"{resolved_obj_name}_db_path"
+            if (job_posting_payload.get("obj_name") or fallback.get("obj_name"))
+            else resolution.get("job_posting_db_path_field")
+        )
+        or f"{resolved_obj_name}_db_path"
+    ).strip() or f"{resolved_obj_name}_db_path"
+
+    def _inline_result(raw_value: Any) -> dict[str, Any] | None:
+        if isinstance(raw_value, dict):
+            job_posting = deepcopy(raw_value)
+            title = str(job_posting.get("job_title") or job_posting.get("title") or job_posting.get("position") or "").strip()
+            if title:
+                job_posting["job_title"] = title
+            if not str(job_posting.get("company_name") or "").strip() and isinstance(job_posting.get("company"), dict):
+                company_name = str(job_posting["company"].get("name") or job_posting["company"].get("about") or "").strip()
+                if company_name:
+                    job_posting["company_name"] = company_name
+            correlation_id = str(
+                job_posting.get("correlation_id")
+                or job_posting.get("job_id")
+                or job_posting.get("external_id")
+                or title
+                or ""
+            ).strip() or None
+            return {
+                "agent": "job_posting_parser",
+                "correlation_id": correlation_id,
+                "parse": {"is_job_posting": True, "errors": [], "warnings": []},
+                "job_posting": job_posting,
+            }
+        if isinstance(raw_value, str):
+            raw_text = raw_value.strip()
+            if not raw_text:
+                return None
+            return {
+                "agent": "job_posting_parser",
+                "correlation_id": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
+                "parse": {"is_job_posting": True, "errors": [], "warnings": []},
+                "job_posting": {"raw_text": raw_text},
+            }
+        return None
+
+    if source in store_sources:
+        correlation_id = ""
+        if isinstance(value, str):
+            correlation_id = value.strip()
+        elif isinstance(value, dict):
+            correlation_id = str(
+                value.get("correlation_id")
+                or value.get("content_sha256")
+                or value.get("job_id")
+                or value.get("id")
+                or ""
+            ).strip()
+        if not correlation_id:
+            correlation_id = str(job_posting_payload.get("correlation_id") or job_posting_payload.get("content_sha256") or "").strip()
+        if not correlation_id:
+            return None
+        db_path = str(
+            job_posting_payload.get("db_path")
+            or job_posting_payload.get(resolved_db_path_field)
+            or fallback.get(resolved_db_path_field)
+            or ""
+        ).strip() or None
+        return get_persisted_job_posting_result(correlation_id, db_path=db_path, obj_name=resolved_obj_name)
+
+    if source in file_sources:
+        candidate_path = ""
+        if isinstance(value, str):
+            candidate_path = value.strip()
+        elif isinstance(value, dict):
+            candidate_path = str(
+                value.get("path")
+                or value.get("file_path")
+                or value.get("value")
+                or value.get("source_path")
+                or ""
+            ).strip()
+        if not candidate_path:
+            candidate_path = str(job_posting_payload.get("path") or job_posting_payload.get("file_path") or job_posting_payload.get("source_path") or "").strip()
+        if not candidate_path:
+            return None
+        resolved_path = os.path.abspath(os.path.expanduser(candidate_path))
+        if not os.path.isfile(resolved_path):
+            return None
+        content_sha256 = _sha256_file(resolved_path)
+        result = None
+        try:
+            result = _inline_result(_load_json_file(resolved_path))
+        except Exception:
+            result = None
+        if not isinstance(result, dict):
+            try:
+                with open(resolved_path, "r", encoding="utf-8") as f:
+                    result = _inline_result(f.read())
+            except Exception:
+                return None
+        if not isinstance(result, dict):
+            return None
+        result["correlation_id"] = str(result.get("correlation_id") or content_sha256)
+        result["file"] = {
+            "path": resolved_path,
+            "content_sha256": content_sha256,
+        }
+        return result
+
+    if source in inline_sources or (not source and value is not None):
+        return _inline_result(value)
+
+    return None
+
+
+def resolve_configured_request_payload(payload: Any) -> Any:
+    raw_payload = payload
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            return raw_payload
+
+    if not isinstance(payload, dict):
+        return raw_payload
+    action = str(payload.get("action") or "").strip().lower()
+    schema_config = get_action_request_schema_config(action)
+    resolution_config = dict(schema_config.get("request_resolution") or {})
+    if not resolution_config:
+        return raw_payload
+
+    enriched_payload = deepcopy(payload)
+
+    if not isinstance(enriched_payload.get("profile_result"), dict):
+        profile_result = _build_profile_result_from_request(enriched_payload.get("applicant_profile"))
+        if isinstance(profile_result, dict):
+            enriched_payload["profile_result"] = profile_result
+
+    batch_workflow_name = str(resolution_config.get("batch_workflow_name") or "").strip()
+    batch_tool_name = normalize_tool_name(str(resolution_config.get("batch_tool_name") or ""))
+    if batch_workflow_name:
+        enriched_payload.setdefault("batch_workflow_name", batch_workflow_name)
+    if batch_tool_name:
+        enriched_payload.setdefault("batch_tool_name", batch_tool_name)
+
+    if not isinstance(enriched_payload.get("job_posting_result"), dict):
+        job_posting_result = _build_job_posting_result_from_request(
+            enriched_payload.get("job_posting"),
+            resolution_config=resolution_config,
+            fallback_payload=enriched_payload,
+        )
+        if isinstance(job_posting_result, dict):
+            enriched_payload["job_posting_result"] = job_posting_result
+
+    if isinstance(enriched_payload.get("job_posting_result"), dict):
+        enriched_payload.pop("job_posting", None)
+        job_posting_db_path_field = str(resolution_config.get("job_posting_db_path_field") or "job_postings_db_path").strip() or "job_postings_db_path"
+        enriched_payload.pop(job_posting_db_path_field, None)
+        return enriched_payload
+
+    job_posting = enriched_payload.get("job_posting")
+    if not isinstance(job_posting, dict):
+        return enriched_payload
+
+    source = str(job_posting.get("source") or "").strip().lower()
+    job_posting_store_sources = {
+        str(value).strip().lower()
+        for value in (resolution_config.get("job_posting_store_sources") or [])
+        if str(value).strip()
+    }
+    job_posting_obj_name = str(
+        job_posting.get("obj_name")
+        or enriched_payload.get("obj_name")
+        or resolution_config.get("job_posting_obj_name")
+        or "job_postings"
+    ).strip() or "job_postings"
+    job_posting_db_path_field = str(
+        (
+            f"{job_posting_obj_name}_db_path"
+            if (job_posting.get("obj_name") or enriched_payload.get("obj_name"))
+            else resolution_config.get("job_posting_db_path_field")
+        )
+        or f"{job_posting_obj_name}_db_path"
+    ).strip() or f"{job_posting_obj_name}_db_path"
+    if not job_posting_store_sources:
+        job_posting_store_sources = {"correlation_id", "job_postings_db", "stored_job_posting", "persisted_job_posting"}
+    if source not in job_posting_store_sources:
+        return enriched_payload
+
+    correlation_id = ""
+    value = job_posting.get("value")
+    if isinstance(value, str):
+        correlation_id = value.strip()
+    elif isinstance(value, dict):
+        correlation_id = str(value.get("correlation_id") or value.get("content_sha256") or value.get("id") or "").strip()
+    if not correlation_id:
+        correlation_id = str(job_posting.get("correlation_id") or job_posting.get("content_sha256") or "").strip()
+    if not correlation_id:
+        return enriched_payload
+
+    db_path = str(
+        job_posting.get("db_path")
+        or enriched_payload.get(job_posting_db_path_field)
+        or ""
+    ).strip() or None
+
+    stored_result = get_persisted_job_posting_result(
+        correlation_id,
+        db_path=db_path,
+        obj_name=job_posting_obj_name,
+    )
+    if not isinstance(stored_result, dict):
+        return enriched_payload
+
+    enriched_job_posting = dict(enriched_payload.get("job_posting") or {})
+    enriched_job_posting["resolved_from_store"] = True
+    enriched_job_posting["resolved_correlation_id"] = correlation_id
+    enriched_job_posting["resolved_obj_name"] = job_posting_obj_name
+    if db_path:
+        enriched_payload[job_posting_db_path_field] = db_path
+    enriched_payload["job_posting"] = enriched_job_posting
+    enriched_payload["job_posting_result"] = stored_result
+    return enriched_payload
+
+
+def execute_deterministic_action_request(payload: Any) -> str | None:
+    raw_payload = payload
+    if isinstance(payload, str):
+        try:
+            payload = json.loads(payload)
+        except Exception:
+            return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    action = str(payload.get("action") or "").strip().lower()
+    if not action:
+        return None
+
+    schema_config = get_action_request_schema_config(action)
+    resolution_config = dict(schema_config.get("request_resolution") or {}) if isinstance(schema_config, dict) else {}
+    if schema_config:
+        validation = validate_action_request(action, payload)
+        if not validation.get("valid"):
+            return json.dumps(
+                {
+                    "ok": False,
+                    "error": "invalid_action_request",
+                    "action": action,
+                    "schema_name": validation.get("schema_name") or "",
+                    "errors": list(validation.get("errors") or []),
+                    "warnings": list(validation.get("warnings") or []),
+                },
+                ensure_ascii=False,
+            )
+
+    if action in {"ingest_profile", "store_profile", "store_profile_result", "persist_profile"}:
+        resolved_profile_obj_name = str(
+            payload.get("obj_name")
+            or resolution_config.get("profile_obj_name")
+            or "profiles"
+        ).strip() or "profiles"
+        resolved_profile_db_path_field = str(
+            (
+                f"{resolved_profile_obj_name}_db_path"
+                if payload.get("obj_name")
+                else resolution_config.get("profile_db_path_field")
+            )
+            or f"{resolved_profile_obj_name}_db_path"
+        ).strip() or f"{resolved_profile_obj_name}_db_path"
+        return ingest_profile_tool(
+            profile=payload.get("profile") if isinstance(payload.get("profile"), dict) else None,
+            applicant_profile=payload.get("applicant_profile") if isinstance(payload.get("applicant_profile"), dict) else None,
+            profile_result=payload.get("profile_result"),
+            correlation_id=payload.get("correlation_id"),
+            db_path=payload.get(resolved_profile_db_path_field) or payload.get("profiles_db_path") or payload.get("db_path"),
+            source_agent=payload.get("source_agent"),
+            source_payload=payload.get("source_payload") if isinstance(payload.get("source_payload"), dict) else None,
+            obj_name=resolved_profile_obj_name,
+        )
+
+    if action in {"ingest_job_posting", "store_job_posting", "store_job_posting_result"}:
+        resolved_job_posting_obj_name = str(
+            payload.get("obj_name")
+            or resolution_config.get("job_posting_obj_name")
+            or "job_postings"
+        ).strip() or "job_postings"
+        resolved_job_posting_db_path_field = str(
+            (
+                f"{resolved_job_posting_obj_name}_db_path"
+                if payload.get("obj_name")
+                else resolution_config.get("job_posting_db_path_field")
+            )
+            or f"{resolved_job_posting_obj_name}_db_path"
+        ).strip() or f"{resolved_job_posting_obj_name}_db_path"
+        return ingest_job_posting_tool(
+            job_posting=payload.get("job_posting") if isinstance(payload.get("job_posting"), dict) else None,
+            job_posting_result=payload.get("job_posting_result"),
+            correlation_id=payload.get("correlation_id"),
+            db_path=payload.get(resolved_job_posting_db_path_field) or payload.get("job_postings_db_path") or payload.get("db_path"),
+            source_agent=payload.get("source_agent"),
+            source_payload=payload.get("source_payload") if isinstance(payload.get("source_payload"), dict) else None,
+            parse=payload.get("parse") if isinstance(payload.get("parse"), dict) else None,
+            obj_name=resolved_job_posting_obj_name,
+        )
+
+    if action in {"upsert_dispatcher_job_record", "upsert_job_record"}:
+        resolved_job_posting_obj_name = str(
+            payload.get("obj_name")
+            or resolution_config.get("job_posting_obj_name")
+            or "job_postings"
+        ).strip() or "job_postings"
+        resolved_job_posting_db_path_field = str(
+            (
+                f"{resolved_job_posting_obj_name}_db_path"
+                if payload.get("obj_name")
+                else resolution_config.get("job_posting_db_path_field")
+            )
+            or f"{resolved_job_posting_obj_name}_db_path"
+        ).strip() or f"{resolved_job_posting_obj_name}_db_path"
+        return upsert_dispatcher_job_record_tool(
+            job_posting_result=payload.get("job_posting_result") if payload.get("job_posting_result") is not None else payload.get("job_posting") or {},
+            correlation_id=payload.get("correlation_id"),
+            dispatcher_db_path=payload.get("dispatcher_db_path"),
+            job_postings_db_path=payload.get(resolved_job_posting_db_path_field) or payload.get("job_postings_db_path") or payload.get("db_path"),
+            obj_name=resolved_job_posting_obj_name,
+            processing_state=payload.get("processing_state"),
+            processed=payload.get("processed") if isinstance(payload.get("processed"), bool) else None,
+            failed_reason=payload.get("failed_reason"),
+            source_agent=payload.get("source_agent"),
+            source_payload=payload.get("source_payload") if isinstance(payload.get("source_payload"), dict) else None,
+            dispatcher_updates=payload.get("dispatcher_updates") if isinstance(payload.get("dispatcher_updates"), dict) else None,
+        )
+
+    return None
+
+
+def execute_action_request_tool(
+    action_request: dict[str, Any] | str | None = None,
+    action: str | None = None,
+    payload: dict[str, Any] | None = None,
+) -> str:
+    request_payload = action_request
+    if isinstance(request_payload, str):
+        try:
+            request_payload = json.loads(request_payload)
+        except Exception:
+            return json.dumps({"ok": False, "error": "invalid_action_request_json"}, ensure_ascii=False)
+
+    if request_payload is None:
+        request_payload = dict(payload or {})
+        if action:
+            request_payload.setdefault("action", str(action))
+
+    if not isinstance(request_payload, dict):
+        return json.dumps({"ok": False, "error": "action_request_must_be_object"}, ensure_ascii=False)
+
+    result = execute_deterministic_action_request(request_payload)
+    if result is None:
+        return json.dumps(
+            {
+                "ok": False,
+                "error": "unknown_or_unsupported_action",
+                "action": str(request_payload.get("action") or "").strip().lower(),
+            },
+            ensure_ascii=False,
+        )
+    return result
+
+
+def build_agent_system_configs_tool(
+    system_name: str | None = None,
+    action_request: dict[str, Any] | str | None = None,
+    persist_path: str | None = None,
+    write_file: bool | None = None,
+    builder_request: dict[str, Any] | str | None = None,
+) -> str:
+    request_payload = action_request if action_request is not None else builder_request
+    if isinstance(request_payload, str):
+        try:
+            request_payload = json.loads(request_payload)
+        except Exception:
+            return json.dumps({"ok": False, "error": "invalid_action_request_json"}, ensure_ascii=False)
+
+    if request_payload is None:
+        request_payload = {}
+
+    if not isinstance(request_payload, dict):
+        return json.dumps({"ok": False, "error": "action_request_must_be_object"}, ensure_ascii=False)
+
+    resolved_system_name = str(system_name or request_payload.get("system_name") or "").strip()
+    if not resolved_system_name:
+        return json.dumps({"ok": False, "error": "system_name_is_required"}, ensure_ascii=False)
+
+    resolved_write_file = bool(request_payload.get("write_file")) if write_file is None else bool(write_file)
+    persisted_module = create_agent_system_persisted_config_module(resolved_system_name, request_payload)
+    resolved_persist_path = str(persist_path or request_payload.get("persist_path") or persisted_module.get("relative_path") or "").strip()
+    if resolved_write_file and not resolved_persist_path:
+        return json.dumps({"ok": False, "error": "persist_path_is_required_when_write_file_is_true"}, ensure_ascii=False)
+
+    if resolved_persist_path:
+        resolved_path = Path(resolved_persist_path)
+        if not resolved_path.is_absolute():
+            resolved_path = Path(__file__).resolve().parent / resolved_path
+        persisted_module["written_path"] = str(resolved_path)
+        persisted_module["relative_path"] = str(resolved_path.relative_to(Path(__file__).resolve().parent)) if resolved_path.is_relative_to(Path(__file__).resolve().parent) else str(resolved_path)
+        if resolved_write_file:
+            resolved_path.parent.mkdir(parents=True, exist_ok=True)
+            resolved_path.write_text(str(persisted_module.get("content") or ""), encoding="utf-8")
+            persisted_module["written"] = True
+        else:
+            persisted_module["written"] = False
+
+    config_bundle = create_agent_system_basic_config(resolved_system_name, request_payload)
+    config_bundle["persisted_module"] = persisted_module
+    return json.dumps(config_bundle, ensure_ascii=False)
+
+
+def update_dispatcher_document_status(
+    *,
+    correlation_id: str,
+    processing_state: str,
+    db_path: str | None = None,
+    processed: bool | None = None,
+    failed_reason: str | None = None,
+    extra_updates: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    resolved_db_path = os.path.abspath(os.path.expanduser(str(db_path or _default_dispatcher_db_path())))
+    db = _load_dispatcher_db(resolved_db_path)
+    if not isinstance(db, dict):
+        db = {"schema": "dispatcher_doc_db_v1", "documents": {}}
+    if not isinstance(db.get("documents"), dict):
+        db["documents"] = {}
+
+    docs = db["documents"]
+    record = docs.get(correlation_id) if isinstance(docs.get(correlation_id), dict) else {}
+    record = dict(record)
+
+    normalized_state = str(processing_state or "").strip().lower() or "failed"
+    effective_processed = bool(processed) if processed is not None else normalized_state == "processed"
+    ts = _now_utc_iso()
+
+    record.setdefault("id", correlation_id)
+    record["content_sha256"] = correlation_id
+    record["processing_state"] = normalized_state
+    record["processed"] = effective_processed
+    record["last_seen_at"] = ts
+
+    if effective_processed:
+        record["processed_at"] = ts
+        record["failed_reason"] = None
+        record["last_error"] = None
+        record["last_error_at"] = None
+    else:
+        reason = str(failed_reason or "").strip() or None
+        record["failed_reason"] = reason
+        record["last_error"] = reason
+        record["last_error_at"] = ts if reason else None
+
+    if isinstance(extra_updates, dict):
+        for key, value in extra_updates.items():
+            if value is None and key in {"failed_reason", "last_error", "last_error_at"}:
+                record[key] = None
+            elif value is not None:
+                record[str(key)] = value
+
+    docs[correlation_id] = record
+    _save_dispatcher_db(resolved_db_path, db)
+    return {
+        "ok": True,
+        "db_path": resolved_db_path,
+        "correlation_id": correlation_id,
+        "processing_state": normalized_state,
+        "processed": effective_processed,
+    }
+
+
+def dispatch_docs(
     scan_dir: str,
     db: dict | None = None,
     db_path: str | None = None,
+    obj: str | None = None,
+    obj_name: str | None = None,
     thread_id: str | None = None,
     dispatcher_message_id: str | None = None,
     recursive: bool = True,
     extensions: list | None = None,
     max_files: int | None = None,
-    parser_agent_name: str = "_job_posting_parser",
+    agent_name: str = "_job_posting_parser",
     dry_run: bool = False,
 ) -> dict:
     """Discover PDFs, fingerprint them, check/update a small DB, and prepare parser handoffs.
@@ -190,11 +1460,27 @@ def dispatch_job_posting_pdfs(
     This is intentionally deterministic and does not read/parse PDF contents.
     """
 
-    ts = datetime.utcnow().isoformat() + "Z"
+    ts = _now_utc_iso()
+    dispatch_policy = dict((get_tool_config("dispatch_documents") or {}).get("dispatch_policy") or {})
     scan_dir_original = str(scan_dir or "")
     scan_dir = os.path.abspath(os.path.expanduser(scan_dir_original))
     thread_id = (thread_id or "UNKNOWN")
     dispatcher_message_id = (dispatcher_message_id or "UNKNOWN")
+    agent_name = str(
+        agent_name
+        or dispatch_policy.get("default_target_agent")
+        or "_job_posting_parser"
+    ).strip() or "_job_posting_parser"
+    resolved_obj_name = str(
+        obj_name
+        or obj
+        or dispatch_policy.get("obj_name")
+        or "job_postings"
+    ).strip() or "job_postings"
+    resolved_obj_db_path_field = str(
+        dispatch_policy.get("obj_db_path_field")
+        or f"{resolved_obj_name}_db_path"
+    ).strip() or f"{resolved_obj_name}_db_path"
 
     if extensions is None:
         extensions = [".pdf", ".PDF"]   
@@ -431,9 +1717,26 @@ def dispatch_job_posting_pdfs(
             })
             continue
 
+        metadata_defaults = dict(dispatch_policy.get("metadata_defaults") or {})
+        obj_db_path = None
+        obj_db_default = metadata_defaults.get(resolved_obj_db_path_field)
+        if not isinstance(obj_db_default, dict):
+            obj_db_default = {}
+        resolver_name = str(obj_db_default.get("resolver") or "").strip()
+        resolver_obj_name = str(obj_db_default.get("obj_name") or resolved_obj_name).strip() or resolved_obj_name
+        if resolver_name in {
+            "default_document_db_path",
+            f"default_{resolved_obj_name}_db_path",
+            f"default_{resolver_obj_name}_db_path",
+        }:
+            obj_db_path = _default_document_db_path(resolver_obj_name)
+        elif isinstance(obj_db_default.get("value"), str) and str(obj_db_default.get("value") or "").strip():
+            obj_db_path = os.path.abspath(os.path.expanduser(str(obj_db_default.get("value"))))
+
         payload = {
-            "type": "job_posting_pdf",
+            "type": str(dispatch_policy.get("document_type") or "file"),
             "correlation_id": sha,
+            "obj_name": resolved_obj_name,
             "link": {"thread_id": thread_id, "message_id": "PENDING"},
             "file": {
                 "path": item["path"],
@@ -446,7 +1749,7 @@ def dispatch_job_posting_pdfs(
                 "existing_record_id": (rec or {}).get("id") if isinstance(rec, dict) else None,
                 "processing_state": "queued" if not dry_run else ((rec or {}).get("processing_state") if isinstance(rec, dict) else "new"),
             },
-            "requested_actions": ["parse", "extract_text", "store_job_posting", "mark_processed_on_success"],
+            "requested_actions": list(dispatch_policy.get("requested_actions") or ["parse", "extract_text", "store_job_posting", "mark_processed_on_success"]),
         }
 
         if dry_run:
@@ -457,9 +1760,33 @@ def dispatch_job_posting_pdfs(
             "content_sha256": sha,
             "link": {"thread_id": thread_id, "message_id": "PENDING"},
         })
+        handoff_metadata = {
+            "correlation_id": sha,
+            "dispatcher_message_id": dispatcher_message_id,
+            "dispatcher_db_path": resolved_db_path,
+            "obj_name": resolved_obj_name,
+            resolved_obj_db_path_field: obj_db_path,
+        }
+        if resolved_obj_db_path_field != "job_postings_db_path":
+            handoff_metadata["job_postings_db_path"] = obj_db_path
+
+        handoff = build_agent_handoff(
+            source_agent_label=str(dispatch_policy.get("source_agent") or "_data_dispatcher"),
+            target_agent=agent_name,
+            protocol=str(dispatch_policy.get("handoff_protocol") or "agent_handoff_v1"),
+            agent_response={
+                "agent_label": str(dispatch_policy.get("source_agent") or "_data_dispatcher"),
+                "output": payload,
+                "handoff_to": agent_name,
+            },
+            handoff_metadata=handoff_metadata,
+        )
         handoff_messages.append({
-            "target_agent": parser_agent_name,
-            "message_text": json.dumps(payload, ensure_ascii=False),
+            "target_agent": agent_name,
+            "handoff_protocol": handoff["protocol"],
+            "message_text": handoff["message_text"],
+            "handoff_payload": handoff["handoff_payload"],
+            "handoff_metadata": handoff["metadata"],
             "correlation_id": sha,
             "dispatcher_message_id": dispatcher_message_id,
         })
@@ -496,14 +1823,14 @@ def dispatch_job_posting_pdfs(
             "recursive": bool(recursive),
             "extensions": list(ext_set),
             "max_files": max_files,
-            "parser_agent_name": parser_agent_name,
+            "parser_agent_name": agent_name,
             "dry_run": bool(dry_run),
         },
     }
     return report
 
 
-def batch_generate_cover_letters(
+def batch_generate_new_docs(
     scan_dir: str,
     profile_path: str,
     db_path: str,
@@ -515,7 +1842,7 @@ def batch_generate_cover_letters(
     write_pdf: bool = True,
     rerun_processed: bool = False,
 ) -> dict:
-    """Batch-generate cover letters for all job-offer PDFs in a directory.
+    """Batch-generate new documents for all job-offer PDFs in a directory.
 
     Thin wrapper around `alde.batch_cover_letters.batch_generate` so it can be used
     via the unified tool dispatcher (tool calling).
@@ -749,6 +2076,9 @@ def _run_vectordb_in_micromamba(
     manifest_file: str | None = None,
     root_dir: str | None = None,
     autobuild: bool | None = None,
+    chunk_strategy: str | None = None,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
 ) -> list | str:
     """Run vectorstore query in the repo-local micromamba GPU env."""
     timeout_s = _effective_vstore_timeout_s(autobuild)
@@ -782,6 +2112,12 @@ def _run_vectordb_in_micromamba(
         cmd.extend(["--root_dir", str(root_dir)])
     if autobuild is not None:
         cmd.extend(["--autobuild", "1" if bool(autobuild) else "0"])
+    if chunk_strategy:
+        cmd.extend(["--chunk_strategy", str(chunk_strategy)])
+    if chunk_size is not None:
+        cmd.extend(["--chunk_size", str(int(chunk_size))])
+    if overlap is not None:
+        cmd.extend(["--overlap", str(int(overlap))])
     # Worker protocol should stay single-line JSON to make parsing robust.
     cmd.extend(["--pretty", "0"])
 
@@ -851,8 +2187,11 @@ def _shrink_vectordb_result(result: object, k: int) -> object:
                         content = content[:_TOOL_MAX_CONTENT_CHARS] + "\n…[truncated]"
                     out = {
                         "rank": it.get("rank"),
+                        "distance": it.get("distance", it.get("score")),
                         "score": it.get("score"),
+                        "score_kind": it.get("score_kind"),
                         "source": it.get("source"),
+                        "entry_ref": it.get("entry_ref"),
                         "title": it.get("title"),
                         "page": it.get("page"),
                         "content": content,
@@ -896,7 +2235,10 @@ def _vectordb_worker(
     manifest_file: str | None,
     root_dir: str | None,
     autobuild: bool | None,
-    result_q,
+    chunk_strategy: str | None,
+    chunk_size: int | None,
+    overlap: int | None,
+    result_conn,
 ) -> None:
     """Run VectorStore build/query in a child process.
 
@@ -948,14 +2290,25 @@ def _vectordb_worker(
         if do_autobuild:
             # Default build root is the project root.
             default_root = GetPath().get_path(parg=f"{__file__}", opt="p")
-            db.build(root_dir or default_root)
+            db.build(
+                root_dir or default_root,
+                chunk_strategy=chunk_strategy,
+                chunk_size=chunk_size,
+                overlap=overlap,
+            )
         result = db.query(query, k=int(k))
         result = _shrink_vectordb_result(result, int(k))
-        result_q.put({"ok": True, "result": result})
+        result_conn.send({"ok": True, "result": result})
     except BaseException as e:
         # Must catch BaseException so we also report SystemExit in case
         # underlying code tries to sys.exit().
-        result_q.put({"ok": False, "error": f"{type(e).__name__}: {e}"})
+        try:
+            result_conn.send({"ok": False, "error": f"{type(e).__name__}: {e}"})
+        except Exception:
+            pass
+    finally:
+        _shutdown_loky_executor()
+        _close_conn(result_conn)
 
 
 def _default_appdata_dir() -> str:
@@ -1059,9 +2412,13 @@ def _vdb_admin_worker(
     operation: str,
     store: str | None,
     root_dir: str | None,
+    doc_types: list[str] | str | None,
+    chunk_strategy: str | None,
+    chunk_size: int | None,
+    overlap: int | None,
     force: bool,
     remove_store_dir: bool,
-    result_q,
+    result_conn,
 ) -> None:
     """Run vdb administrative operations in a child process."""
     try:
@@ -1123,17 +2480,17 @@ def _vdb_admin_worker(
                             }
                         )
             stores.sort(key=lambda x: x.get("name", ""))
-            result_q.put({"ok": True, "result": {"operation": "list", "stores": stores}})
+            result_conn.send({"ok": True, "result": {"operation": "list", "stores": stores}})
             return
 
         if op in {"create", "init", "new"}:
             if not _is_safe_store_dir(store_dir):
-                result_q.put({"ok": False, "error": f"Refusing to create unsafe store_dir: {store_dir}"})
+                result_conn.send({"ok": False, "error": f"Refusing to create unsafe store_dir: {store_dir}"})
                 return
             os.makedirs(store_dir, exist_ok=True)
             if not os.path.exists(manifest_file):
                 _atomic_write_json(manifest_file, [])
-            result_q.put(
+            result_conn.send(
                 {
                     "ok": True,
                     "result": {
@@ -1146,9 +2503,9 @@ def _vdb_admin_worker(
 
         if op in {"status", "info"}:
             if not _is_safe_store_dir(store_dir):
-                result_q.put({"ok": False, "error": f"Refusing unsafe store_dir: {store_dir}"})
+                result_conn.send({"ok": False, "error": f"Refusing unsafe store_dir: {store_dir}"})
                 return
-            result_q.put(
+            result_conn.send(
                 {
                     "ok": True,
                     "result": {
@@ -1168,7 +2525,7 @@ def _vdb_admin_worker(
 
         if op in {"build", "index", "rebuild"}:
             if not _is_safe_store_dir(store_dir):
-                result_q.put({"ok": False, "error": f"Refusing unsafe store_dir: {store_dir}"})
+                result_conn.send({"ok": False, "error": f"Refusing unsafe store_dir: {store_dir}"})
                 return
             os.makedirs(store_dir, exist_ok=True)
             if not os.path.exists(manifest_file):
@@ -1181,13 +2538,23 @@ def _vdb_admin_worker(
                 else GetPath().get_path(parg=f"{__file__}", opt="p")
             )
             db = VectorStore(store_path=store_dir, manifest_file=manifest_file)
-            db.build(resolved_root)
-            result_q.put(
+            db.build(
+                resolved_root,
+                doc_types=doc_types,
+                chunk_strategy=chunk_strategy,
+                chunk_size=chunk_size,
+                overlap=overlap,
+            )
+            result_conn.send(
                 {
                     "ok": True,
                     "result": {
                         "operation": "build",
                         "root_dir": resolved_root,
+                        "doc_types": doc_types,
+                        "chunk_strategy": chunk_strategy,
+                        "chunk_size": chunk_size,
+                        "overlap": overlap,
                         "store": {"name": store_name, "dir": store_dir, "manifest": manifest_file},
                     },
                 }
@@ -1196,7 +2563,7 @@ def _vdb_admin_worker(
 
         if op in {"wipe", "reset", "delete"}:
             if not force:
-                result_q.put(
+                result_conn.send(
                     {
                         "ok": False,
                         "error": "Refusing wipe without force=true.",
@@ -1204,7 +2571,7 @@ def _vdb_admin_worker(
                 )
                 return
             if not _is_safe_store_dir(store_dir):
-                result_q.put({"ok": False, "error": f"Refusing unsafe store_dir: {store_dir}"})
+                result_conn.send({"ok": False, "error": f"Refusing unsafe store_dir: {store_dir}"})
                 return
 
             if remove_store_dir:
@@ -1218,7 +2585,7 @@ def _vdb_admin_worker(
                         if os.path.exists(p):
                             os.remove(p)
 
-            result_q.put(
+            result_conn.send(
                 {
                     "ok": True,
                     "result": {
@@ -1230,15 +2597,25 @@ def _vdb_admin_worker(
             )
             return
 
-        result_q.put({"ok": False, "error": f"Unsupported operation: {operation!r}"})
+        result_conn.send({"ok": False, "error": f"Unsupported operation: {operation!r}"})
     except BaseException as e:
-        result_q.put({"ok": False, "error": f"{type(e).__name__}: {e}"})
+        try:
+            result_conn.send({"ok": False, "error": f"{type(e).__name__}: {e}"})
+        except Exception:
+            pass
+    finally:
+        _shutdown_loky_executor()
+        _close_conn(result_conn)
 
 
 def _run_vdb_admin_subprocess(
     operation: str,
     store: str | None = None,
     root_dir: str | None = None,
+    doc_types: list[str] | str | None = None,
+    chunk_strategy: str | None = None,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
     force: bool = False,
     remove_store_dir: bool = False,
 ) -> dict | str:
@@ -1255,37 +2632,47 @@ def _run_vdb_admin_subprocess(
         else:
             ctx = multiprocessing.get_context("spawn")
 
-    result_q = ctx.Queue(maxsize=1)
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
     proc = ctx.Process(
         target=_vdb_admin_worker,
         args=(
             operation,
             store,
             root_dir,
+            doc_types,
+            chunk_strategy,
+            chunk_size,
+            overlap,
             bool(force),
             bool(remove_store_dir),
-            result_q,
+            child_conn,
         ),
         daemon=True,
     )
-    proc.start()
-    proc.join(_VDB_WORKER_TIMEOUT_S)
-
-    if proc.is_alive():
-        proc.terminate()
-        proc.join(5)
-        return (
-            f"vdb_worker timed out after {_VDB_WORKER_TIMEOUT_S:.0f}s. "
-            "Set AI_IDE_VDB_WORKER_TIMEOUT_S for longer build operations."
-        )
-
-    if proc.exitcode not in (0, None):
-        return f"vdb_worker crashed in subprocess (exitcode={proc.exitcode})."
-
     try:
-        payload = result_q.get_nowait()
-    except queue_mod.Empty:
-        return "vdb_worker failed: no result returned."
+        proc.start()
+        _close_conn(child_conn)
+        proc.join(_VDB_WORKER_TIMEOUT_S)
+
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(5)
+            return (
+                f"vdb_worker timed out after {_VDB_WORKER_TIMEOUT_S:.0f}s. "
+                "Set AI_IDE_VDB_WORKER_TIMEOUT_S for longer build operations."
+            )
+
+        if proc.exitcode not in (0, None):
+            return f"vdb_worker crashed in subprocess (exitcode={proc.exitcode})."
+
+        if not parent_conn.poll(0.1):
+            return "vdb_worker failed: no result returned."
+
+        payload = parent_conn.recv()
+    finally:
+        _close_conn(child_conn)
+        _close_conn(parent_conn)
+        _close_process_handle(proc)
 
     if isinstance(payload, dict) and payload.get("ok") is True:
         return payload.get("result")
@@ -1303,6 +2690,9 @@ def _run_vectordb_subprocess(
     manifest_file: str | None = None,
     root_dir: str | None = None,
     autobuild: bool | None = None,
+    chunk_strategy: str | None = None,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
 ) -> list | str:
     """Execute vector DB work in a spawned subprocess with timeout."""
     # Explicit GPU-only mode: never attempt local (potentially CPU) execution.
@@ -1315,6 +2705,9 @@ def _run_vectordb_subprocess(
             manifest_file=manifest_file,
             root_dir=root_dir,
             autobuild=autobuild,
+            chunk_strategy=chunk_strategy,
+            chunk_size=chunk_size,
+            overlap=overlap,
         )
 
     timeout_s = _effective_vstore_timeout_s(autobuild)
@@ -1333,32 +2726,50 @@ def _run_vectordb_subprocess(
         else:
             ctx = multiprocessing.get_context("spawn")
 
-    result_q = ctx.Queue(maxsize=1)
+    parent_conn, child_conn = ctx.Pipe(duplex=False)
     proc = ctx.Process(
         target=_vectordb_worker,
-        args=(kind, query, int(k), store_dir, manifest_file, root_dir, autobuild, result_q),
+        args=(
+            kind,
+            query,
+            int(k),
+            store_dir,
+            manifest_file,
+            root_dir,
+            autobuild,
+            chunk_strategy,
+            chunk_size,
+            overlap,
+            child_conn,
+        ),
         daemon=True,
     )
-    proc.start()
-    proc.join(timeout_s)
-
-    if proc.is_alive():
-        proc.terminate()
-        proc.join(5)
-        return (
-            f"{kind} timed out after {timeout_s:.0f}s. "
-            "Set AI_IDE_VSTORE_TOOL_TIMEOUT_AUTOBUILD_S (autobuild) or "
-            "AI_IDE_VSTORE_TOOL_TIMEOUT_S (standard), or disable heavy queries."
-        )
-
-    # If the child crashed (e.g., segfault), exitcode will be negative.
-    if proc.exitcode not in (0, None):
-        return f"{kind} crashed in subprocess (exitcode={proc.exitcode})."
-
     try:
-        payload = result_q.get_nowait()
-    except queue_mod.Empty:
-        return f"{kind} failed: no result returned."
+        proc.start()
+        _close_conn(child_conn)
+        proc.join(timeout_s)
+
+        if proc.is_alive():
+            proc.terminate()
+            proc.join(5)
+            return (
+                f"{kind} timed out after {timeout_s:.0f}s. "
+                "Set AI_IDE_VSTORE_TOOL_TIMEOUT_AUTOBUILD_S (autobuild) or "
+                "AI_IDE_VSTORE_TOOL_TIMEOUT_S (standard), or disable heavy queries."
+            )
+
+        # If the child crashed (e.g., segfault), exitcode will be negative.
+        if proc.exitcode not in (0, None):
+            return f"{kind} crashed in subprocess (exitcode={proc.exitcode})."
+
+        if not parent_conn.poll(0.1):
+            return f"{kind} failed: no result returned."
+
+        payload = parent_conn.recv()
+    finally:
+        _close_conn(child_conn)
+        _close_conn(parent_conn)
+        _close_process_handle(proc)
 
     if isinstance(payload, dict) and payload.get("ok") is True:
         result = payload.get("result")
@@ -1371,6 +2782,9 @@ def _run_vectordb_subprocess(
                 manifest_file=manifest_file,
                 root_dir=root_dir,
                 autobuild=autobuild,
+                chunk_strategy=chunk_strategy,
+                chunk_size=chunk_size,
+                overlap=overlap,
             )
         return result
     if isinstance(payload, dict):
@@ -1386,13 +2800,24 @@ def _run_vectordb_subprocess(
                 manifest_file=manifest_file,
                 root_dir=root_dir,
                 autobuild=autobuild,
+                chunk_strategy=chunk_strategy,
+                chunk_size=chunk_size,
+                overlap=overlap,
             )
         return f"{kind} error: {err}"
     return f"{kind} error: invalid result payload"
 
 
+def _now_utc_datetime() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _now_utc_filename_stamp() -> str:
+    return _now_utc_datetime().strftime("%Y%m%d_%H%M%S")
+
+
 def _now_utc_iso() -> str:
-    return datetime.utcnow().isoformat() + "Z"
+    return _now_utc_datetime().isoformat().replace("+00:00", "Z")
 
 
 def _result_error_text(tool_name: str, result: object) -> str:
@@ -1441,6 +2866,9 @@ def _run_retrieval_with_events(
     manifest_file: str | None = None,
     root_dir: str | None = None,
     autobuild: bool | None = None,
+    chunk_strategy: str | None = None,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
 ) -> list | str:
     event_id = str(uuid.uuid4())
     query_event: dict[str, Any] = {
@@ -1455,6 +2883,9 @@ def _run_retrieval_with_events(
         "store_dir": store_dir,
         "manifest_file": manifest_file,
         "root_dir": root_dir,
+        "chunk_strategy": chunk_strategy,
+        "chunk_size": chunk_size,
+        "overlap": overlap,
         "policy_snapshot": {
             "k": int(k),
             "fetch_k": 0,
@@ -1473,6 +2904,9 @@ def _run_retrieval_with_events(
         manifest_file=manifest_file,
         root_dir=root_dir,
         autobuild=autobuild,
+        chunk_strategy=chunk_strategy,
+        chunk_size=chunk_size,
+        overlap=overlap,
     )
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
@@ -1503,6 +2937,9 @@ def memorydb(
     manifest_file: str | None = None,
     root_dir: str | None = None,
     autobuild: bool | None = None,
+    chunk_strategy: str | None = None,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
 ) -> list | str:
     # Run in subprocess to protect the GUI process from native crashes.
     return _run_retrieval_with_events(
@@ -1513,6 +2950,9 @@ def memorydb(
         manifest_file=manifest_file,
         root_dir=root_dir,
         autobuild=autobuild,
+        chunk_strategy=chunk_strategy,
+        chunk_size=chunk_size,
+        overlap=overlap,
     )
 
 def vectordb(
@@ -1522,6 +2962,9 @@ def vectordb(
     manifest_file: str | None = None,
     root_dir: str | None = None,
     autobuild: bool | None = None,
+    chunk_strategy: str | None = None,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
 ) -> list | str:
     # Run in subprocess to protect the GUI process from native crashes.
     return _run_retrieval_with_events(
@@ -1532,6 +2975,9 @@ def vectordb(
         manifest_file=manifest_file,
         root_dir=root_dir,
         autobuild=autobuild,
+        chunk_strategy=chunk_strategy,
+        chunk_size=chunk_size,
+        overlap=overlap,
     )
 
 
@@ -1539,6 +2985,10 @@ def vdb_worker(
     operation: str,
     store: str | None = None,
     root_dir: str | None = None,
+    doc_types: list[str] | str | None = None,
+    chunk_strategy: str | None = None,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
     force: bool = False,
     remove_store_dir: bool = False,
 ) -> dict | str:
@@ -1550,6 +3000,10 @@ def vdb_worker(
         operation=operation,
         store=store,
         root_dir=root_dir,
+        doc_types=doc_types,
+        chunk_strategy=chunk_strategy,
+        chunk_size=chunk_size,
+        overlap=overlap,
         force=force,
         remove_store_dir=remove_store_dir,
     )
@@ -1815,257 +3269,104 @@ def tool(name: str, desc: str, params: list[ParamSpec] = None,
     return ToolSpec(name=name, description=desc, 
                     parameters=params or [], implementation=impl)
 
+
 # NOTE: Keep this module import-safe.
-# Do not import `agents_registry` here; it can have import-time side effects and
-# absolute imports break when running `python -m alde.*`.
+_TOOL_RUNTIME_REFS: dict[str, Any] = {
+    "default_save_dir": _DEFAULT_SAVE_DIR,
+    "agent_labels": get_available_agent_labels(),
+}
 
-UNIFIED_TOOLS: list[ToolSpec] = [
-    tool("memorydb",
-        "Query the memory vector database (code snippets / notes).",
-        [
-         param("query", "string", "Free-text query or identifier.", True),
-         param("k", "integer", "Number of results.", default=3),
-         param(
-             "store_dir",
-             "string",
-             "Vector-store directory OR store id/name under AppData. Examples: '/abs/path/VSM_3_Data', './AppData/VSM_3_Data', '3', 'VSM_3_Data'.",
-         ),
-         param("manifest_file", "string", "Optional manifest.json path (default: <store_dir>/manifest.json)."),
-         param("root_dir", "string", "Root directory to index when autobuild is enabled."),
-         param("autobuild", "boolean", "Override AI_IDE_VSTORE_AUTOBUILD for this call.", default=None),
-        ],
-        impl=memorydb ),
 
-    tool("vectordb",
-        "Query the job-offer vector database.",
-        [
-         param("query", "string", "Free-text query or filename.", True),
-         param("k", "integer", "Number of results.", default=3),
-         param(
-             "store_dir",
-             "string",
-             "Vector-store directory OR store id/name under AppData. Examples: '/abs/path/VSM_1_Data', './AppData/VSM_1_Data', '1', 'VSM_1_Data'.",
-         ),
-         param("manifest_file", "string", "Optional manifest.json path (default: <store_dir>/manifest.json)."),
-         param("root_dir", "string", "Root directory to index when autobuild is enabled."),
-         param("autobuild", "boolean", "Override AI_IDE_VSTORE_AUTOBUILD for this call.", default=None),
-        ],
-        impl=vectordb ),  
+_TOOL_IMPLEMENTATIONS: dict[str, Callable | None] = {
+    "memorydb": memorydb,
+    "vectordb": vectordb,
+    "vdb_worker": vdb_worker,
+    "build_agent_system_configs": build_agent_system_configs_tool,
+    "execute_action_request": execute_action_request_tool,
+    "upsert_dispatcher_job_record": upsert_dispatcher_job_record_tool,
+    "ingest_profile": ingest_profile_tool,
+    "ingest_job_posting": ingest_job_posting_tool,
+    "store_job_posting_result": store_job_posting_result_tool,
+    "store_profile_result": store_profile_result_tool,
+    "write_document": write_document,
+    "read_document": read_document,
+    "update_document": update_document,
+    "delete_document": delete_document,
+    "list_documents": list_documents,
+    "md_to_pdf": md_to_pdf,
+    "calendar": calendar,
+    "send_mail": send_mail,
+    "dml_tool": dml_tool,
+    "dsl_tool": dsl_tool,
+    "code_tool": code_tool,
+    "iter_documents": iter_documents,
+    "dispatch_documents": dispatch_docs,
+    "dispatch_docs": dispatch_docs,
+    "fetch_url": fetch_url,
+    "fetch_data": fetch_data,
+    "call_api": call_api,
+    "call": call,
+    "accept_call": accept_call,
+    "reject_call": reject_call,
+    "route_to_agent": None,
+}
 
-    tool(
-        "vdb_worker",
-        "Create/list/build/wipe vector store directories under AppData (runs in a subprocess).",
-        [
-            param(
-                "operation",
-                "string",
-                "Operation to run: list|create|status|build|wipe.",
-                required=True,
-                enum=["list", "create", "status", "build", "wipe"],
-            ),
-            param(
-                "store",
-                "string",
-                "Store id/name. Examples: '1' => VSM_1_Data, 'my_store' => VSM_my_store_Data. Empty => auto-next.",
-            ),
-            param(
-                "root_dir",
-                "string",
-                "Root directory to index (only used for build). Default: project root.",
-            ),
-            param(
-                "force",
-                "boolean",
-                "Required for wipe operations.",
-                default=False,
-            ),
-            param(
-                "remove_store_dir",
-                "boolean",
-                "If true and operation=wipe: delete the whole store directory. Otherwise remove only index+manifest files.",
-                default=False,
-            ),
-        ],
-        impl=vdb_worker,
-    ),
-    
-    tool("write_document",
-         "Persist the generated document to disk.",
-         [param("content", "string", "text to write to disk.", True),
-          param("path", "string", "Directory to store the file.", default=_DEFAULT_SAVE_DIR),
-          param("titel", "string", "Optional file title for filename prefix.")],
-         impl=write_document),
-    
-    tool("read_document",
-         "Read the content of a document from disk.",
-         [param("file_path", "string", "The absolute path to the file to read.", True)],
-         impl=read_document),
-    
-    tool("update_document",
-         "Update a document's metadata.",
-         [ParamSpec(
-             name="data",
-             type="array",
-             description="List of documents to search through.",
-             required=True,
-             items={"type": "object"},
-         ),
-          param("item", "string", "The metadata field name to match and update.", True),
-          param("updatestr", "string", "The new value to set for the matched field.", True)],
-         impl=update_document),
-    
-    tool("delete_document",
-         "Delete a document from disk.",
-         [param("file_path", "string", "The absolute path to the file to delete.", True)],
-         impl=delete_document),
-    
-    tool("list_documents",
-         "List all documents in a directory.",
-         [param("directory", "string", "Directory path to list.", default=_DEFAULT_SAVE_DIR)],
-         impl=list_documents),
 
-    tool(
-        "md_to_pdf",
-        "Convert a Markdown file to a clean PDF (ReportLab).",
-        [
-            param("md_path", "string", "Path to the input Markdown file.", True),
-            param("pdf_path", "string", "Path to the output PDF file.", True),
-            param("title", "string", "Optional PDF title."),
-            param("author", "string", "Optional PDF author."),
-            param("pagesize", "string", "Page size.", enum=["A4", "LETTER"], default="A4"),
-            param("margin_left_mm", "number", "Left margin in mm.", default=18),
-            param("margin_right_mm", "number", "Right margin in mm.", default=18),
-            param("margin_top_mm", "number", "Top margin in mm.", default=16),
-            param("margin_bottom_mm", "number", "Bottom margin in mm.", default=16),
-        ],
-        impl=md_to_pdf,
-    ),
-    
-    tool("calendar",
-         "Schedule an event in the calendar.", 
-         [param("event", "string", "Name or description of the event.", True),
-          param("date", "string", "Date of the event (e.g., '2025-12-01').", True),
-          param("time", "string", "Time of the event (e.g., '14:00').", True)],
-         impl=calendar),
-    
-    tool("send_mail",
-         "Send an email to a recipient.",
-         [param("recipient", "string", "Email address of the recipient.", True),
-          param("subject", "string", "Subject line of the email.", True),
-          param("body", "string", "Body content of the email.", True)],
-         impl=send_mail),
-    
-    tool("dml_tool",
-         "Data Manipulation Language tool.",
-         [param("operation", "string", "The operation to perform.", True),
-          param("data", "string", "The data to operate on.", True)],
-         impl=dml_tool),
-    
-    tool("dsl_tool",
-         "Data Scripting Language tool for scripting operations.",
-         [param("operation", "string", "The operation to perform.", True),
-          param("data", "string", "The data to operate on.", True)],
-         impl=dsl_tool),
-    
-    tool("code_tool",
-         "Code Manipulation Language tool for code operations.",
-         [param("operation", "string", "The code operation to perform.", True),
-          param("data", "string", "The code or data to operate on.", True)],
-         impl=code_tool),
+def _param_spec_from_config(config: dict[str, Any]) -> ParamSpec:
+    enum = config.get("enum")
+    enum_ref = config.get("enum_ref")
+    if enum_ref:
+        enum = list(_TOOL_RUNTIME_REFS.get(str(enum_ref), []))
 
-    tool("iter_documents",
-         "Recursively load supported documents from a root directory and returns a list of documents.",
-         [param("root", "string", "Root directory to scan.", True)],
-         impl=iter_documents),
+    default = config.get("default")
+    default_ref = config.get("default_ref")
+    if default_ref:
+        default = _TOOL_RUNTIME_REFS.get(str(default_ref))
 
-    tool(
-        "dispatch_job_posting_pdfs",
-        "Discover PDFs in a directory, fingerprint them (SHA-256), check/update a small DB, and prepare handoff payloads for a parser agent.",
-        [
-            param("scan_dir", "string", "Directory to scan for PDFs.", True),
-            ParamSpec(
-                name="db",
-                type="object",
-                description="Optional DB adapter/config. Supported: { 'path': '/abs/path/to/db.json' }",
-                required=False,
-            ),
-            param("db_path", "string", "Optional DB JSON path (file-based DB). Overrides db.path.", False),
-            param("thread_id", "string", "Thread id for link.thread_id (or UNKNOWN).", False),
-            param("dispatcher_message_id", "string", "Dispatcher message id for reporting (or UNKNOWN).", False),
-            param("recursive", "boolean", "Recurse into subdirectories.", False, default=True),
-            ParamSpec(
-                name="extensions",
-                type="array",
-                description="File extensions to include (default: ['.pdf', '.PDF']).",
-                required=False,
-                items={"type": "string"},
-            ),
-            param("max_files", "integer", "Optional max number of PDFs to scan.", False),
-            param("parser_agent_name", "string", "Target agent name for handoff messages.", False, default="_job_posting_parser"),
-            param("dry_run", "boolean", "If true: do not update DB and do not create handoff messages.", False, default=False),
-        ],
-        impl=dispatch_job_posting_pdfs,
-    ),
+    return ParamSpec(
+        name=str(config.get("name") or ""),
+        type=str(config.get("type") or "string"),
+        description=str(config.get("description") or ""),
+        required=bool(config.get("required", False)),
+        enum=enum,
+        items=config.get("items"),
+        default=default,
+    )
 
-    tool(
-        "batch_generate_cover_letters",
-        "Generate cover letters for all job-offer PDFs in scan_dir using applicant profile + dispatcher DB; writes .md files to out_dir.",
-        [
-            param("scan_dir", "string", "Directory to scan for PDFs.", True),
-            param("profile_path", "string", "Path to applicant_profile.json.", True),
-            param("db_path", "string", "Path to dispatcher_doc_db.json.", True),
-            param("out_dir", "string", "Output directory for generated cover letters (default: scan_dir/Cover_letters).", False),
-            param("model", "string", "OpenAI model id.", False, default="gpt-4o-mini"),
-            param("max_files", "integer", "Optional max number of PDFs to process.", False),
-            param("max_text_chars", "integer", "Max extracted text chars per PDF to send to the model.", False, default=20000),
-            param("dry_run", "boolean", "If true: do not call the model and do not write files.", False, default=False),
-            param("write_pdf", "boolean", "If true: also write each cover letter as a PDF (requires reportlab).", False, default=True),
-            param("rerun_processed", "boolean", "If true: also regenerate cover letters for PDFs already marked processed in the dispatcher DB.", False, default=False),
-        ],
-        impl=batch_generate_cover_letters,
-    ),
-    
-    tool("fetch_url",
-         "Fetch content from a URL.",
-         [param("url", "string", "The URL to fetch content from.", True)],
-         impl=fetch_url),
-    
-    tool("fetch_data",
-         "Fetch data from a specified source.",
-         [param("source", "string", "The data source to fetch from.", True),
-          param("query", "string", "The query to execute on the source.", True)],
-         impl=fetch_data),
-    
-    tool("call_api",
-         "Call an external API endpoint.",
-         [param("endpoint", "string", "The API endpoint URL.", True),
-          param("method", "string", "HTTP method to use.", enum=["GET", "POST"], default="GET"),
-          param("payload", "string", "JSON payload for POST requests.")],
-         impl=call_api),
-    
-    tool("call",
-         "Initiate a phone call.",
-         [param("phone_number", "string", "The phone number to call.", True),
-          param("message", "string", "Optional message to deliver.")],
-         impl=call),
-    
-    tool("accept_call",
-         "Accept an incoming call.",
-         [param("call_id", "string", "The ID of the call to accept.", True)],
-         impl=accept_call), 
-    
-    tool("reject_call",
-         "Reject an incoming call.",
-         [param("call_id", "string", "The ID of the call to reject.", True),
-          param("reason", "string", "Optional reason for rejecting the call.")],
-         impl=reject_call),
-    
-    tool("route_to_agent",
-         "Route the request to a specialized agent.",
-            [param("target_agent", "string", "The target agent to route to.", required=True),
-          param("message_text", "string", "The message_text to pass to the agent.", required=True)],
-         impl=None)  # Handled by dispatcher
-]
+
+def _tool_spec_from_config(config: dict[str, Any]) -> ToolSpec:
+    name = normalize_tool_name(str(config.get("name") or ""))
+    implementation_name = config.get("implementation_name")
+    if implementation_name is None and "implementation_name" in config:
+        implementation = None
+    else:
+        implementation_key = str(implementation_name or name)
+        implementation = _TOOL_IMPLEMENTATIONS.get(implementation_key)
+
+    return ToolSpec(
+        name=name,
+        description=str(config.get("description") or ""),
+        parameters=[_param_spec_from_config(param_config) for param_config in (config.get("parameters") or [])],
+        implementation=implementation,
+    )
+
+
+def _build_unified_tools() -> list[ToolSpec]:
+    return [_tool_spec_from_config(tool_config) for tool_config in get_tool_configs()]
+
+
+def create_tool_registry(specs: list[ToolSpec]) -> dict[str, dict]:
+    return {spec.name: spec.to_tool_definition() for spec in specs}
+
+
+def create_function_dispatcher(specs: list[ToolSpec]) -> dict[str, Callable]:
+    return {spec.name: spec.implementation for spec in specs if spec.implementation}
+
+
+UNIFIED_TOOLS: list[ToolSpec] = _build_unified_tools()
+tool_registry: dict[str, dict] = create_tool_registry(UNIFIED_TOOLS)
+function_dispatcher: dict[str, Callable] = create_function_dispatcher(UNIFIED_TOOLS)
+_tool_specs_by_name: dict[str, ToolSpec] = {normalize_tool_name(spec.name): spec for spec in UNIFIED_TOOLS}
 # ---------------------------------------------------------------------------
 # Tool groups (toolsets)lt
 # ---------------------------------------------------------------------------
@@ -2073,37 +3374,55 @@ UNIFIED_TOOLS: list[ToolSpec] = [
 #   tools: ["@rag", "@docs_rw", "route_to_agent"]
 # Expansion is handled in agents_factory.get_agent_tools().
 
-TOOL_GROUPS: dict[str, list[str]] = {
-    # Retrieval / context
-    "rag": ["memorydb", "vectordb"],
-    # Document CRUD
-    "docs_rw": [
-        "read_document",
-        "write_document",
-        "update_document",
-        "delete_document",
-        "list_documents",
-        "md_to_pdf",
-    ],
-    # Web/data access
-    "web": ["fetch_url", "fetch_data", "call_api"],
-    # Comms / scheduling
-    "comms": ["send_mail", "calendar", "call", "accept_call", "reject_call"],
-    # Local utilities
-    "code": ["code_tool", "iter_documents"],
-    # Dispatcher workflow
-    "dispatcher": ["dispatch_job_posting_pdfs", "batch_generate_cover_letters", "vdb_worker"],
-}
+TOOL_GROUPS: dict[str, list[str]] = get_tool_group_configs()
+
+
+def get_tool_registry() -> dict[str, dict]:
+    return tool_registry
+
+
+def get_function_dispatcher() -> dict[str, Callable]:
+    return function_dispatcher
+
+
+def get_tool_spec(name: str) -> ToolSpec | None:
+    return _tool_specs_by_name.get(normalize_tool_name(name))
+
+
+def get_agent_tools(tool_names: list[str]) -> list[dict]:
+    resolved: list[dict] = []
+    if not tool_names:
+        return resolved
+
+    for item in tool_names:
+        if isinstance(item, dict):
+            if item.get("type") == "function" and isinstance(item.get("function"), dict):
+                resolved.append(item)
+            continue
+
+        if not isinstance(item, str):
+            continue
+
+        if item.startswith("@"):
+            group = item[1:].strip()
+            for tool_name in (TOOL_GROUPS.get(group) or []):
+                normalized_name = normalize_tool_name(tool_name)
+                if normalized_name in tool_registry:
+                    resolved.append(tool_registry[normalized_name])
+            continue
+
+        normalized_name = normalize_tool_name(item)
+        if normalized_name in tool_registry:
+            resolved.append(tool_registry[normalized_name])
+
+    return resolved
 
 
 def list_tool_names() -> list[str]:
     """Return all available tool names (from UNIFIED_TOOLS)."""
     out: list[str] = []
-    for spec in UNIFIED_TOOLS:
-        try:
-            name = getattr(spec, "name", None)
-            if isinstance(name, str) and name and name not in out:
-                out.append(name)
-        except Exception:
-            continue
+    for name in get_available_tool_names():
+        normalized_name = normalize_tool_name(name)
+        if normalized_name and normalized_name not in out:
+            out.append(normalized_name)
     return out

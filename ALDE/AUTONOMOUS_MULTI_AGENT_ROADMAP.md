@@ -1,7 +1,13 @@
 # Autonomous Multi-Agent Learning Roadmap (ALDE)
 
 ## 1) Zielbild
-Dieses Roadmap-Dokument beschreibt, wie ALDE von regelbasiertem Retrieval zu einem adaptiven, autonomen Multi-Agent-System weiterentwickelt wird, das aus Interaktionen lernt (quasi-unsupervised), ohne die Stabilitaet des aktuellen Workflows zu verlieren.
+Dieses Roadmap-Dokument beschreibt, wie ALDE von regelbasiertem Retrieval zu einem adaptiven, autonomen Multi-Agent-System weiterentwickelt wird, das aus Interaktionen lernt (unsupervised), ohne die Stabilitaet des aktuellen Workflows zu verlieren.
+
+Aktueller Ausgangspunkt fuer diese Roadmap:
+- Die Agent-Laufzeit ist bereits manifestbasiert zentralisiert.
+- `alde/agents_config.py` ist die Source of Truth fuer Runtime-Instruktionen, Rollen, Skill-Profile, Tool-Policy und Workflow-Definitionen.
+- `alde/agents_factory.py` und `alde/chat_completion.py` konsumieren diese Definitionen bereits fuer Routing, Tool-Ausfuehrung, History-Shaping und scoped instance reuse.
+- Diese Roadmap beschreibt die naechste Ausbaustufe: adaptive Learning- und Policy-Schichten auf dem bestehenden Runtime-Fundament.
 
 Leitziele:
 - Besseres Retrieval durch adaptive Strategiewahl (k, fetch_k, rerank, source-prior).
@@ -12,9 +18,10 @@ Leitziele:
 ## 2) Ausgangslage im aktuellen Code
 Relevante Komponenten:
 - `alde/vstores.py`: Indexaufbau, Retrieval, Reranking, Manifest, Query-Output.
-- `alde/tools.py`: Tool-Entry-Points (`memorydb`, `vectordb`), Worker-Orchestrierung.
-- `alde/agents_registry.py`, `alde/agents_factory.py`: Agent-Konfiguration und Routing.
-- `alde/chat_completion.py`, `alde/ai_ide_v1756.py`: Tool-Call-Ausfuehrung und Session-Verlauf.
+- `alde/tools.py`: Tool-Entry-Points (`memorydb`, `vectordb`) und Runtime-Tool-Adapter.
+- `alde/agents_config.py`: Manifeste, Rollen, Skill-Profile, Tool-Policy und Workflow-Schemas.
+- `alde/agents_registry.py`, `alde/agents_factory.py`: Manifest-gebundenes Routing, Tool-Ausfuehrung, Workflow-Scopes.
+- `alde/chat_completion.py`, `alde/ai_ide_v1756.py`: Tool-Call-Ausfuehrung, Session-Verlauf und Runtime-Metadaten.
 - `AppData/VSM_3_Data/history.json`: wertvolle Lernquelle fuer erfolgreiche/erfolglose Retrievals.
 
 ## 3) Architekturziel (Learning Loop)
@@ -132,7 +139,7 @@ Stabilitaet:
 
 ### Phase 1 (1-2 Wochen): Instrumentierung
 Deliverables:
-- `learning_events.jsonl` Writer in `alde/tools.py` und Tool-Call-Pipeline.
+- `learning_events.jsonl` Writer in `alde/tools.py`, `alde/agents_factory.py` und der Tool-Call-Pipeline.
 - Query/Outcome Events mit minimalem Schema.
 - KPI-Dashboard als einfache Reports (`/AppData/generated/metrics_*.json`).
 

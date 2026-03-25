@@ -1,0 +1,10 @@
+{
+  "agent_label": "_<agent_label>",
+  "canonical_name": "<canonical_agent_name>",
+  "model": "gpt-4o-mini",
+  "tools": [],
+  "defaults": {},
+  "workflow": {
+    "definition": "<workflow_name>"
+  }
+}

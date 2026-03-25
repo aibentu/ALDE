@@ -6,20 +6,20 @@ The **multi-agent cover letter generation workflow** is now fully implemented, d
 
 ### Components Created/Updated
 
-#### 1. **System Prompts** (apply_agent_prompts.py)
-✅ `_primary_agent` - NEW: Orchestrator prompt (6,785 chars)
+#### 1. **Manifest Runtime Config** (agents_config.py)
+✅ `_primary_assistant` - Planner/router manifest
 ✅ `_profile_parser` - Applicant profile extraction
 ✅ `_job_posting_parser` - Job posting extraction
-✅ `_cover_letter_generator` - Final letter generation
+✅ `_cover_letter_agent` - Final letter generation
 ✅ `_data_dispatcher` - File discovery and routing
 
 #### 2. **Agent Registry** (agents_registry.py)
-✅ **_primary_agent** (NEW)
+✅ **_primary_assistant**
   - Tools: `route_to_agent`, `load_dispatcher_db`, `read_document`, `write_document`
   - Role: User-facing orchestrator, delegates to specialized agents
 
 ✅ **_data_dispatcher**
-  - Tools: `@dispatcher` (dispatch_files, vdb_worker, etc.), `route_to_agent`
+  - Tools: `@dispatcher` (`dispatch_documents`, `batch_generate_documents`, `vdb_worker`), `route_to_agent`
   - Role: Discovers PDFs, checks DB status, prepares handoffs
 
 ✅ **_profile_parser**
@@ -30,14 +30,14 @@ The **multi-agent cover letter generation workflow** is now fully implemented, d
   - Tools: `load_dispatcher_db`, `save_dispatcher_db`, `route_to_agent`
   - Role: Extracts job posting into structured JSON
 
-✅ **_cover_letter_generator**
+✅ **_cover_letter_agent**
   - Tools: `@rag` (memorydb, vectordb), `write_document`, `load_dispatcher_db`
   - Role: Generates final cover letter from profile + job
 
 #### 3. **Tools Updated** (tools.py)
-✅ `dispatch_files` (renamed from `dispatch_job_posting_pdfs`)
-  - New parameter: `extract_content: bool = True`
-  - Now includes `file.content` field with extracted PDF text
+✅ `dispatch_documents` (normalized tool name for dispatcher scans)
+  - Canonical dispatcher tool name lives in `agents_config.py`
+  - Legacy aliases resolve through tool-name normalization
   - Default agent: `_job_posting_parser` (updated)
   - `message_text` is now a dict (not JSON string)
 
@@ -51,6 +51,12 @@ The **multi-agent cover letter generation workflow** is now fully implemented, d
   - Tool references per agent
 
 #### 5. **Documentation** (NEW)
+✅ **WORKFLOW_CHECKPOINT_AND_TEMPLATES.md**
+  - Checkpoint delta for the current workflow-policy state
+  - Required schema for workflow bindings
+  - Maximal and minimal workflow configuration examples
+  - Reusable templates for worker leaf, workflow service, and primary router patterns
+
 ✅ **ORCHESTRATOR_USAGE.md** (8,797 bytes)
   - Complete usage guide
   - Input contract with examples
@@ -77,7 +83,7 @@ The **multi-agent cover letter generation workflow** is now fully implemented, d
 └─────────────────────────────────────────────────────────────┘
                         ↓
 ┌─────────────────────────────────────────────────────────────┐
-│         _primary_agent (Orchestrator)                       │
+│       _primary_assistant (Orchestrator)                     │
 │  - Validates input                                          │
 │  - Routes to specialized agents                             │
 │  - Aggregates results                                       │
@@ -99,14 +105,14 @@ The **multi-agent cover letter generation workflow** is now fully implemented, d
                 (Both results aggregated)
                            ↓
     ┌─────────────────────────────────────────────────┐
-    │  _cover_letter_generator                        │
+    │  _cover_letter_agent                            │
     │  - Match requirements to skills                 │
     │  - Generate tailored letter                     │
     │  - Quality metrics (matched_requirements, etc)  │
     └─────────────────────────────────────────────────┘
                            ↓
     ┌─────────────────────────────────────────────────┐
-    │  _primary_agent (Result Presentation)           │
+    │  _primary_assistant (Result Presentation)       │
     │  - Validates metrics                            │
     │  - Saves to file system                         │
     │  - Returns structured output                    │
@@ -192,11 +198,11 @@ The **multi-agent cover letter generation workflow** is now fully implemented, d
 python alde/agents_registry.py
 
 # Output should show:
-# _primary_agent (5 tools)
+# _primary_assistant (5 tools)
 # _data_dispatcher (2 tools)
 # _profile_parser (2 tools)
 # _job_posting_parser (3 tools)
-# _cover_letter_generator (3 tools)
+# _cover_letter_agent (3 tools)
 ```
 
 ---
@@ -205,9 +211,9 @@ python alde/agents_registry.py
 
 ```
 alde/
-├── apply_agent_prompts.py          # System prompts (6 agents)
+├── agents_config.py                # Runtime instructions, manifests, and workflows
 ├── agents_registry.py              # Agent definitions & registry
-├── tools.py                        # dispatch_files tool (renamed)
+├── tools.py                        # tool registry adapter over central config
 ├── DB_CONTRACT.md                  # Data contract (updated)
 ├── ORCHESTRATOR_USAGE.md           # Detailed usage guide (NEW)
 ├── QUICKSTART.md                   # Quick reference (NEW)
@@ -221,16 +227,16 @@ alde/
 ### For Users
 1. Read [QUICKSTART.md](QUICKSTART.md) for common scenarios
 2. Check [ORCHESTRATOR_USAGE.md](ORCHESTRATOR_USAGE.md) for detailed reference
-3. Call `_primary_agent` with your job posting + profile
+3. Call `_primary_assistant` with your job posting + profile
 4. Review generated letter + quality metrics
 5. Download or send to recruiter
 
 ### For Developers
 1. Review [agents_registry.py](agents_registry.py) to see all agents
-2. Read [apply_agent_prompts.py](apply_agent_prompts.py) for system prompts
+2. Read [agents_config.py](agents_config.py) for runtime instructions, manifests, and workflows
 3. Check [DB_CONTRACT.md](DB_CONTRACT.md) for data flow
-4. Extend agents by adding new prompts or tools
-5. Integrate `_primary_agent` into your UI/API
+4. Extend agents by adding manifest overrides, prompt fragments, or tools
+5. Integrate `_primary_assistant` into your UI/API
 
 ---
 
@@ -248,21 +254,21 @@ alde/
 ## Success Metrics
 
 ✅ **All agents registered** (5 agents in registry)
-✅ **All prompts defined** (6 system prompts loaded)
-✅ **Tools configured** (dispatch_files, route_to_agent, etc.)
+✅ **All manifests defined** (prompt, role, policy, and workflow data loaded)
+✅ **Tools configured** (`dispatch_documents`, `batch_generate_documents`, `route_to_agent`, etc.)
 ✅ **Database contract** (Comprehensive mapping documented)
 ✅ **Documentation complete** (2 user guides + this summary)
 ✅ **Error handling** (Graceful degradation for all failure modes)
-✅ **Backward compatible** (Old code continues to work)
+✅ **Compatibility layer available** (legacy prompt imports still resolve)
 
 ---
 
 ## Version Information
 
-- **Workflow Version**: 1.0
-- **Primary Agent Version**: 1.0
-- **Model**: gpt-4o-mini
-- **Last Updated**: 21 January 2026
+- **Workflow Version**: 1.1
+- **Primary Agent Version**: 1.1
+- **Primary Model**: gpt-4o
+- **Last Updated**: 17 March 2026
 
 ---
 

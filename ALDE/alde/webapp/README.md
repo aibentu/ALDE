@@ -1,20 +1,21 @@
-# ALDE Webapp Bootstrap
+# ALDE Webapp Control Plane
 
-This package starts the production-web migration from `ai_ide_v1756` into a multi-tenant API-first platform.
+This package exposes the ALDE runtime as a multi-tenant API-first control plane.
 
-## Scope in this first implementation step
+## Scope in this implementation step
 
-- Tenant bootstrap registration endpoint
+- Tenant registration endpoint
 - SSO login endpoint
 - OIDC start + callback endpoints
 - ID token signature verification through JWKS
 - Refresh token rotation + revocation
 - Bearer token auth for API calls
-- Authenticated multi-agent run endpoint (hooks existing `alde.agents_factory`)
+- Authenticated agent run endpoint backed by the manifest-driven `alde.agents_factory` runtime
 - Async run queue + job status polling
 - Optional external Redis/RQ queue backend for async jobs
 - Audit trail endpoint
-- Fine-grained RBAC checks per role/agent/tools
+- Fine-grained RBAC checks per role, agent, and tool metadata
+- Workflow validation and workflow status visibility endpoints
 - Web landing page + OpenAPI docs
 
 ## Run locally
@@ -28,6 +29,25 @@ Open:
 
 - `http://localhost:8080/`
 - `http://localhost:8080/docs`
+
+## Architecture references
+
+The web layer is intentionally API-first and sits on top of the existing ALDE runtime.
+
+For runtime structure and the ongoing configuration refactor, use these repo documents:
+
+- `../../ARCHITECTURE_REFACTOR.md`
+- `../../AGENT_SEQUENCE_STATE_DIAGRAM.md`
+- `../../AUTONOMOUS_MULTI_AGENT_ROADMAP.md`
+
+The webapp should consume stable runtime entrypoints and avoid introducing its own duplicate agent or tool configuration layer.
+
+Current runtime assumptions:
+
+- Agent identity is manifest-driven from `alde/agents_config.py`
+- `_primary_assistant` is the interactive planner/router entrypoint
+- Deterministic workflow state and validation live in the runtime, not in the web layer
+- The webapp should treat workflow status and validation as read-only operational views
 
 ## Database and migrations
 
@@ -78,7 +98,7 @@ curl -sS -X POST http://localhost:8080/api/v1/auth/sso/login \
   }'
 ```
 
-3. Run agent request with bearer token:
+3. Run an agent request with bearer token:
 
 ```bash
 curl -sS -X POST http://localhost:8080/api/v1/agents/runs \
@@ -91,7 +111,7 @@ curl -sS -X POST http://localhost:8080/api/v1/agents/runs \
   }'
 ```
 
-4. Submit async run and poll job status:
+4. Submit an async run and poll job status:
 
 ```bash
 curl -sS -X POST http://localhost:8080/api/v1/agents/runs/async \
@@ -101,22 +121,32 @@ curl -sS -X POST http://localhost:8080/api/v1/agents/runs/async \
 
 curl -sS -H "Authorization: Bearer <TOKEN>" \
   http://localhost:8080/api/v1/agents/jobs/<JOB_ID>
+```
 
-Queue health check:
+5. Inspect workflow validation and latest workflow state:
+
+```bash
+curl -sS -H "Authorization: Bearer <TOKEN>" \
+  http://localhost:8080/api/v1/agents/workflows/validation
+
+curl -sS -H "Authorization: Bearer <TOKEN>" \
+  'http://localhost:8080/api/v1/agents/workflows/status?target_agent=_data_dispatcher&limit=10'
+```
+
+6. Check queue and API health:
 
 ```bash
 curl -sS http://localhost:8080/api/v1/health
 ```
-```
 
-5. Read audit events:
+7. Read audit events:
 
 ```bash
 curl -sS -H "Authorization: Bearer <TOKEN>" \
   'http://localhost:8080/api/v1/audit/events?limit=50'
 ```
 
-6. Refresh access token and revoke a refresh session:
+8. Refresh access token and revoke a refresh session:
 
 ```bash
 curl -sS -X POST http://localhost:8080/api/v1/auth/token/refresh \
@@ -152,8 +182,72 @@ Role mapping from OIDC claims:
 Security validation details:
 
 - OIDC callback validates `id_token` signature against JWKS.
-- `aud` is checked against `ALDE_WEB_OIDC_AUDIENCE` (fallback: `ALDE_WEB_OIDC_CLIENT_ID`).
-- `iss` and `exp` are verified (if `ALDE_WEB_OIDC_VERIFY_EXP=1`).
+- `aud` is checked against `ALDE_WEB_OIDC_AUDIENCE` with fallback to `ALDE_WEB_OIDC_CLIENT_ID`.
+- `iss` and `exp` are verified when `ALDE_WEB_OIDC_VERIFY_EXP=1`.
+
+Optional local callback mocking:
+
+```bash
+export ALDE_WEB_OIDC_DEV_MOCK=1
+# then call callback with code pattern:
+# mock-<sub>-<email>-<name>-<group1|group2>
+```
+
+## External queue worker (Redis/RQ)
+
+Default behavior uses an in-process worker thread. For production scale-out, switch to Redis/RQ:
+
+```bash
+export ALDE_WEB_QUEUE_BACKEND=rq
+export ALDE_WEB_REDIS_URL='redis://localhost:6379/0'
+export ALDE_WEB_RQ_QUEUE='alde-agent-runs'
+export ALDE_WEB_RQ_JOB_TIMEOUT_SECONDS=120
+export ALDE_WEB_RQ_RESULT_TTL_SECONDS=600
+export ALDE_WEB_RQ_FAILURE_TTL_SECONDS=86400
+export ALDE_WEB_RQ_RETRY_MAX=2
+export ALDE_WEB_RQ_RETRY_INTERVALS='2,5'
+```
+
+Start API and worker separately:
+
+```bash
+uvicorn alde.webapp.main:app --reload --port 8080
+python -m alde.webapp.rq_worker
+```
+
+If Redis is unavailable, enqueue falls back to the in-process worker to avoid request loss.
+
+## Queue benchmark and multi-worker test
+
+Run benchmark with auto-managed local `redislite` backend:
+
+```bash
+python -m alde.webapp.benchmark_queue --workers 2 --jobs 40 --output-json AppData/generated/queue_bench_w2.json
+```
+
+Run larger multi-worker profile:
+
+```bash
+python -m alde.webapp.benchmark_queue --workers 4 --jobs 120 --timeout-seconds 180 --output-json AppData/generated/queue_bench_w4.json
+```
+
+Use an external Redis URL explicitly:
+
+```bash
+python -m alde.webapp.benchmark_queue --redis-url 'redis://localhost:6379/0' --workers 4 --jobs 120
+```
+
+## Important note
+
+Persistence is SQLAlchemy-backed and migration-ready. For production, use PostgreSQL with strict backup, retention, and regular migration rollouts.
+2. Redirect user to returned `authorization_url`
+3. Provider redirects to `GET /api/v1/auth/oidc/callback?state=...&code=...`
+
+Role mapping from OIDC claims:
+
+
+Security validation details:
+
 
 Optional local callback mocking:
 

@@ -65,6 +65,9 @@ def _run(
     manifest_file: str | None = None,
     root_dir: str | None = None,
     autobuild: bool | None = None,
+    chunk_strategy: str | None = None,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
 ) -> dict[str, Any]:
     try:
         import importlib
@@ -110,7 +113,12 @@ def _run(
                     build_root = store_path
                 else:
                     build_root = pkg_root
-            db.build(str(build_root))
+            db.build(
+                str(build_root),
+                chunk_strategy=chunk_strategy,
+                chunk_size=chunk_size,
+                overlap=overlap,
+            )
 
         result = db.query(query, k=int(k))
         return {"ok": True, "result": result}
@@ -127,6 +135,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--manifest_file", type=str, default=None, help="manifest.json path (optional)")
     p.add_argument("--root_dir", type=str, default=None, help="Root directory to index when autobuild is enabled")
     p.add_argument("--autobuild", type=str, default=None, help="Override autobuild (1/0)")
+    p.add_argument("--chunk_strategy", type=str, default=None, help="Chunking strategy for autobuild: recursive|character|markdown")
+    p.add_argument("--chunk_size", type=int, default=None, help="Chunk size for autobuild")
+    p.add_argument("--overlap", type=int, default=None, help="Chunk overlap for autobuild")
     p.add_argument("--pretty", type=str, default="1", help="Pretty-print JSON output (1/0, default: 1)")
     args = p.parse_args(argv)
 
@@ -141,6 +152,9 @@ def main(argv: list[str] | None = None) -> int:
         manifest_file=args.manifest_file,
         root_dir=args.root_dir,
         autobuild=autobuild_val,
+        chunk_strategy=args.chunk_strategy,
+        chunk_size=args.chunk_size,
+        overlap=args.overlap,
     )
     sys.stdout.write(json.dumps(payload, ensure_ascii=False, indent=2 if pretty else None))
     sys.stdout.write("\n")

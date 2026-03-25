@@ -1,0 +1,65 @@
+{
+  "agent_runtime_config": {
+    "agent_label": "_<agent_label>",
+    "canonical_name": "<canonical_agent_name>",
+    "model": "gpt-4o-mini",
+    "tools": [
+      "@doc_rw"
+    ],
+    "defaults": {},
+    "workflow": {
+      "definition": "<worker_leaf_workflow_name>"
+    }
+  },
+  "agent_manifest_overrides": {
+    "agent_label": "_<agent_label>",
+    "role": "worker",
+    "skill_profile": "structured_parser",
+    "instance_policy": "ephemeral",
+    "routing_policy": {
+      "mode": "worker",
+      "can_route": false
+    },
+    "history_policy": {
+      "followup_history_depth": 6,
+      "include_routed_history": false,
+      "routed_history_depth": 0
+    }
+  },
+  "workflow_config": {
+    "workflow_name": "<worker_leaf_workflow_name>",
+    "description": "Leaf workflow for a worker agent without downstream routing.",
+    "entry_state": "active",
+    "states": {
+      "active": {
+        "actor": {
+          "kind": "agent",
+          "name": "_<agent_label>"
+        },
+        "terminal": false
+      },
+      "complete": {
+        "actor": {
+          "kind": "state",
+          "name": "workflow_complete"
+        },
+        "terminal": true
+      }
+    },
+    "transitions": [
+      {
+        "from": "active",
+        "on": {
+          "kind": "state",
+          "name": "followup_complete",
+          "conditions": {
+            "result": {
+              "exists": true
+            }
+          }
+        },
+        "to": "complete"
+      }
+    ]
+  }
+}

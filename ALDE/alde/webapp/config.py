@@ -8,7 +8,7 @@ from dataclasses import dataclass
 class Settings:
     """Runtime settings for the ALDE web backend."""
 
-    app_name: str = os.getenv("ALDE_WEB_APP_NAME", "ALDE Multi-Agent Platform")
+    app_name: str = os.getenv("ALDE_WEB_APP_NAME", "ALDE Workflow Control Plane")
     api_prefix: str = os.getenv("ALDE_WEB_API_PREFIX", "/api/v1")
     token_ttl_minutes: int = int(os.getenv("ALDE_WEB_TOKEN_TTL_MIN", "60"))
     token_secret: str = os.getenv("ALDE_WEB_TOKEN_SECRET", "change-me-in-production")

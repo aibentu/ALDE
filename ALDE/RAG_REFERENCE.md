@@ -153,7 +153,7 @@ manager = get_global_rag_manager()
 
 # Kontext für Agent abrufen
 context = manager.retrieve_for_agent(
-    agent_name="_cover_letter_generator",
+    agent_name="_cover_letter_agent",
     query="Best practices for cover letters",
     k=5
 )
@@ -363,7 +363,7 @@ for i, result in enumerate(results, 1):
 # 5. Agent-Integration
 manager = init_global_rag_manager()
 context = manager.retrieve_for_agent(
-    "_cover_letter_generator",
+    "_cover_letter_agent",
     query,
     k=3
 )

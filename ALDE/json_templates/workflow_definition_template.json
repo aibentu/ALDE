@@ -1,0 +1,40 @@
+{
+  "workflow_name": "<workflow_name>",
+  "description": "Optional human-readable description.",
+  "entry_state": "active",
+  "retry_policy": {
+    "max_attempts": 0,
+    "backoff_seconds": []
+  },
+  "states": {
+    "active": {
+      "actor": {
+        "kind": "agent",
+        "name": "_<agent_label>"
+      },
+      "terminal": false
+    },
+    "complete": {
+      "actor": {
+        "kind": "state",
+        "name": "workflow_complete"
+      },
+      "terminal": true
+    }
+  },
+  "transitions": [
+    {
+      "from": "active",
+      "on": {
+        "kind": "state",
+        "name": "followup_complete",
+        "conditions": {
+          "result": {
+            "exists": true
+          }
+        }
+      },
+      "to": "complete"
+    }
+  ]
+}

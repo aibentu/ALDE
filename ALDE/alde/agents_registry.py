@@ -10,32 +10,24 @@ This module must be safe to import (no side effects). It only defines
 """
 
 try:
-    from .apply_agent_prompts import SYSTEM_PROMPT  # type: ignore
+    from .agents_config import get_agents_registry_data  # type: ignore
 except Exception:
-    from apply_agent_prompts import SYSTEM_PROMPT  # type: ignore
+    from ALDE.alde.agents_config import get_agents_registry_data  # type: ignore
 
-model = "gpt-4o-mini"
+
+class AgentRegistryService:
+    def load_object_registry(self, object_name: str | None = None) -> dict[str, dict]:
+        registry_data = get_agents_registry_data()
+        if not object_name:
+            return registry_data
+
+        selected_registry = registry_data.get(object_name)
+        if not selected_registry:
+            return {}
+        return {object_name: selected_registry}
+
+
+AGENT_REGISTRY_SERVICE = AgentRegistryService()
 
 # Public registry consumed by agents_factory.execute_route_to_agent.
-AGENTS_REGISTRY: dict[str, dict] = {
-    "_primary_assistant": {
-        "model": 'gpt-4o',
-        "system": SYSTEM_PROMPT.get("_primary_assistant", ""),
-        "tools": ["memorydb", "route_to_agent","@doc_rw"],
-    },
-    "_data_dispatcher": {
-        "model": model,
-        "system": SYSTEM_PROMPT.get("_data_dispatcher", ""),
-        "tools": ["@dispatcher", "route_to_agent"],
-    },
-    "_job_posting_parser": {
-        "model": model,
-        "system": SYSTEM_PROMPT.get("_job_posting_parser", ""),
-        "tools": ["@doc_rw", "route_to_agent"],
-    },
-    "_cover_letter_agent": {
-        "model": 'gpt-4o',
-        "system": SYSTEM_PROMPT.get("_cover_letter_agent", ""),
-        "tools": ["@doc_rw", "route_to_agent"],
-    },
-}
+AGENTS_REGISTRY: dict[str, dict] = AGENT_REGISTRY_SERVICE.load_object_registry()

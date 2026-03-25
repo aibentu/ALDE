@@ -1,0 +1,160 @@
+{
+  "agent_runtime_config": {
+    "agent_label": "_primary_assistant",
+    "canonical_name": "primary_assistant",
+    "model": "gpt-4o",
+    "tools": [
+      "memorydb",
+      "route_to_agent",
+      "@doc_rw"
+    ],
+    "defaults": {},
+    "workflow": {
+      "definition": "primary_assistant_router"
+    }
+  },
+  "agent_manifest_overrides": {
+    "agent_label": "_primary_assistant",
+    "role": "planner_router",
+    "skill_profile": "conversation_router",
+    "instance_policy": "session_scoped",
+    "routing_policy": {
+      "mode": "planner_router",
+      "can_route": true
+    },
+    "history_policy": {
+      "followup_history_depth": 15,
+      "include_routed_history": true,
+      "routed_history_depth": 12
+    }
+  },
+  "workflow_config": {
+    "workflow_name": "primary_assistant_router",
+    "description": "Interactive planner/router workflow with declarative delegation branches.",
+    "entry_state": "assistant_ready",
+    "retry_policy": {
+      "max_attempts": 2,
+      "backoff_seconds": [
+        1,
+        2
+      ]
+    },
+    "states": {
+      "assistant_ready": {
+        "actor": {
+          "kind": "agent",
+          "name": "_primary_assistant"
+        },
+        "terminal": false
+      },
+      "delegated": {
+        "actor": {
+          "kind": "tool",
+          "name": "route_to_agent"
+        },
+        "terminal": false
+      },
+      "assistant_retry_pending": {
+        "actor": {
+          "kind": "state",
+          "name": "retry_pending"
+        },
+        "terminal": false
+      },
+      "assistant_failed": {
+        "actor": {
+          "kind": "state",
+          "name": "workflow_failed"
+        },
+        "terminal": true
+      },
+      "workflow_complete": {
+        "actor": {
+          "kind": "state",
+          "name": "workflow_complete"
+        },
+        "terminal": true
+      }
+    },
+    "transitions": [
+      {
+        "from": "assistant_ready",
+        "on": {
+          "kind": "tool",
+          "name": "route_to_agent",
+          "conditions": {
+            "target_agent": {
+              "in": [
+                "_data_dispatcher",
+                "_parser_agent",
+                "_writer_agent"
+              ]
+            }
+          }
+        },
+        "to": "delegated"
+      },
+      {
+        "from": "delegated",
+        "on": {
+          "kind": "state",
+          "name": "routed_agent_complete",
+          "conditions": {
+            "target_agent": {
+              "in": [
+                "_data_dispatcher",
+                "_parser_agent",
+                "_writer_agent"
+              ]
+            }
+          }
+        },
+        "to": "workflow_complete"
+      },
+      {
+        "from": [
+          "assistant_ready",
+          "delegated"
+        ],
+        "on": {
+          "kind": "state",
+          "name": [
+            "model_failed",
+            "routed_agent_failed"
+          ],
+          "conditions": {
+            "any": [
+              {
+                "error": {
+                  "exists": true
+                }
+              },
+              {
+                "result": {
+                  "exists": true
+                }
+              }
+            ]
+          }
+        },
+        "to": "assistant_retry_pending"
+      },
+      {
+        "from": "assistant_retry_pending",
+        "on": {
+          "kind": "state",
+          "name": "retry_requested"
+        },
+        "to": "assistant_ready"
+      },
+      {
+        "from": "assistant_retry_pending",
+        "on": {
+          "kind": "state",
+          "name": "retry_exhausted"
+        },
+        "to": "assistant_failed"
+      }
+    ]
+  }
+}

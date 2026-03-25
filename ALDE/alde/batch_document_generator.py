@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import textwrap
+from copy import deepcopy
 from pathlib import Path
 from datetime import datetime, timezone
 from typing import Any
@@ -77,14 +78,14 @@ def _try_chathistory_log(
         return
 
 try:
-    from .apply_agent_prompts import SYSTEM_PROMPT  # type: ignore
+    from .agents_config import get_batch_workflow_config, get_specialized_system_prompt, validate_batch_workflow_config  # type: ignore
 except Exception:
-    from apply_agent_prompts import SYSTEM_PROMPT  # type: ignore
+    from ALDE.alde.agents_config import get_batch_workflow_config, get_specialized_system_prompt, validate_batch_workflow_config  # type: ignore
 
 try:
-    from .tools import dispatch_job_posting_pdfs, _load_dispatcher_db, _save_dispatcher_db, write_document  # type: ignore
+    from .tools import dispatch_docs, _load_dispatcher_db, _save_dispatcher_db, write_document  # type: ignore
 except Exception:
-    from tools import dispatch_job_posting_pdfs, _load_dispatcher_db, _save_dispatcher_db, write_document  # type: ignore
+    from alde.tools import dispatch_docs, _load_dispatcher_db, _save_dispatcher_db, write_document  # type: ignore
 
 try:
     from pypdf import PdfReader  # type: ignore
@@ -218,9 +219,15 @@ def _json_loads_loose(s: str) -> Any:
         raise
 
 
-def _job_payload_from_scan_item(item: dict, thread_id: str, message_id: str) -> dict:
+def _job_payload_from_scan_item(
+    item: dict,
+    thread_id: str,
+    message_id: str,
+    *,
+    requested_actions: list[str] | None = None,
+) -> dict:
     return {
-        "type": "job_posting_pdf",
+        "type": "file",
         "correlation_id": item.get("content_sha256"),
         "link": {"thread_id": thread_id, "message_id": message_id},
         "file": {
@@ -234,7 +241,7 @@ def _job_payload_from_scan_item(item: dict, thread_id: str, message_id: str) -> 
             "existing_record_id": (item.get("db") or {}).get("existing_record_id"),
             "processing_state": (item.get("db") or {}).get("processing_state") or "new",
         },
-        "requested_actions": ["parse", "extract_text", "store_job_posting", "mark_processed_on_success"],
+        "requested_actions": list(requested_actions or ["parse", "extract_text", "store_file", "mark_processed_on_success"]),
     }
 
 
@@ -273,7 +280,138 @@ def _normalize_chat_model_name(model: str) -> tuple[str, str | None]:
     return requested, None
 
 
-def batch_generate(
+def _payload_value(payload: dict[str, Any], key: str) -> Any:
+    current: Any = payload
+    for segment in str(key or "").split("."):
+        if not segment:
+            continue
+        if not isinstance(current, dict):
+            return None
+        current = current.get(segment)
+    return current
+
+
+def _resolve_batch_template(value: Any, context: dict[str, Any]) -> Any:
+    if isinstance(value, list):
+        return [_resolve_batch_template(item, context) for item in value]
+    if not isinstance(value, dict):
+        return deepcopy(value)
+
+    special_keys = {"literal", "from_context", "from_profile", "default"}
+    if any(key in value for key in special_keys):
+        if "literal" in value:
+            return deepcopy(value.get("literal"))
+        default = deepcopy(value.get("default"))
+        if "from_context" in value:
+            resolved = _payload_value(context, str(value.get("from_context") or ""))
+            return deepcopy(default if resolved is None else resolved)
+        if "from_profile" in value:
+            profile = context.get("profile") if isinstance(context.get("profile"), dict) else {}
+            resolved = _payload_value(profile, str(value.get("from_profile") or ""))
+            return deepcopy(default if resolved is None else resolved)
+    return {key: _resolve_batch_template(item, context) for key, item in value.items()}
+
+
+def _resolve_batch_tool(tool_name: str) -> Any:
+    normalized = str(tool_name or "").strip()
+    if normalized in {"dispatch_documents", "dispatch_docs"}:
+        return dispatch_docs
+    if normalized == "write_document":
+        return write_document
+    if normalized == "internal_text_pdf":
+        return _write_pdf
+    raise KeyError(f"Unsupported batch workflow tool: {tool_name}")
+
+
+def _build_profile_result(profile: dict[str, Any], workflow_config: dict[str, Any]) -> dict[str, Any]:
+    profile_config = dict(workflow_config.get("profile_result") or {})
+    correlation_id_path = str(profile_config.get("correlation_id_path") or "profile_id")
+    language_path = str(profile_config.get("language_path") or "preferences.language")
+    correlation_id = _payload_value(profile, correlation_id_path)
+    language = _payload_value(profile, language_path) or profile_config.get("default_language") or "de"
+    return {
+        "agent": str(profile_config.get("agent") or "profile_parser"),
+        "correlation_id": correlation_id,
+        "parse": {"language": language, "errors": [], "warnings": []},
+        "profile": profile,
+    }
+
+
+def _run_model_stage(
+    client: OpenAI,
+    *,
+    model: str,
+    stage_config: dict[str, Any],
+    context: dict[str, Any],
+) -> Any:
+    prompt_config = dict(stage_config.get("prompt") or {})
+    agent_type = str(prompt_config.get("agent_type") or "").strip()
+    task_name = str(prompt_config.get("task_name") or "").strip()
+    system_prompt = get_specialized_system_prompt(agent_type, task_name)
+    if not system_prompt:
+        raise KeyError(f"Missing specialized system prompt for {agent_type}:{task_name}")
+
+    if "input_template" in stage_config:
+        stage_input = _resolve_batch_template(stage_config.get("input_template"), context)
+    else:
+        stage_input = _resolve_batch_template(stage_config.get("input"), context)
+
+    stage_name = str(stage_config.get("name") or f"{agent_type}:{task_name}")
+    history = dict(stage_config.get("history") or {})
+    history_stage = str(history.get("request_stage") or stage_name)
+    history_name = str(history.get("tool_name") or stage_name)
+    temperature = float(stage_config.get("temperature") or 0.2)
+
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": json.dumps(stage_input, ensure_ascii=False)},
+    ]
+    _try_chathistory_log(
+        "openai.chat.completions.create request",
+        messages=messages,
+        data={"model": model, "n_messages": len(messages), "temperature": temperature, "stage": history_stage},
+        name_tool=history_name,
+    )
+    try:
+        raw_response = client.chat.completions.create(model=model, messages=messages, temperature=temperature)
+    except Exception as exc:
+        _try_chathistory_log(
+            "openai.chat.completions.create error",
+            messages=messages,
+            data={"model": model, "stage": history_stage, "error": f"{type(exc).__name__}: {exc}"},
+            name_tool=history_name,
+        )
+        raise
+
+    response_text = (raw_response.choices[0].message.content or "").strip()
+    _try_chathistory_log(
+        "openai.chat.completions.create response",
+        messages=messages,
+        data={"model": model, "response_id": getattr(raw_response, "id", None), "stage": str(history.get("response_stage") or history_stage)},
+        generated=response_text,
+        name_tool=history_name,
+    )
+
+    response_format = str(stage_config.get("response_format") or "json").strip().lower()
+    result: Any = response_text if response_format == "text" else _json_loads_loose(response_text)
+    store_as = str(stage_config.get("store_as") or "").strip()
+    if store_as:
+        context[store_as] = deepcopy(result)
+    stage_results = context.setdefault("stage_results", {})
+    if isinstance(stage_results, dict):
+        stage_results[stage_name] = deepcopy(result)
+    return result
+
+
+def _apply_record_updates(record: dict[str, Any], update_template: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    updated = dict(record)
+    updates = _resolve_batch_template(update_template, context)
+    if isinstance(updates, dict):
+        updated.update(updates)
+    return updated
+
+
+def batch_document_generator(
     scan_dir: str,
     profile_path: str,
     dispatcher_db_path: str,
@@ -284,6 +422,7 @@ def batch_generate(
     dry_run: bool = False,
     write_pdf: bool = True,
     rerun_processed: bool = False,
+    workflow_name: str = "cover_letter_batch_generation",
 ) -> dict:
     model_requested = model
     model, model_warning = _normalize_chat_model_name(model)
@@ -297,6 +436,18 @@ def batch_generate(
     out_dir = os.path.abspath(os.path.expanduser(out_dir or os.path.join(scan_dir, "Cover_letters")))
     os.makedirs(out_dir, exist_ok=True)
     out_dir_real = os.path.realpath(out_dir)
+
+    workflow_config = get_batch_workflow_config(workflow_name)
+    validation = validate_batch_workflow_config(workflow_name, workflow_config)
+    if not validation.get("valid"):
+        raise ValueError("Invalid batch workflow config '" + workflow_name + "': " + "; ".join(validation.get("errors") or []))
+
+    dispatcher_config = dict(workflow_config.get("dispatcher") or {})
+    filter_config = dict(workflow_config.get("filters") or {})
+    job_payload_config = dict(workflow_config.get("job_payload") or {})
+    stages = [dict(stage or {}) for stage in (workflow_config.get("stages") or [])]
+    document_output = dict(workflow_config.get("document_output") or {})
+    dispatcher_record = dict(workflow_config.get("dispatcher_record") or {})
 
     profile = _load_json(profile_path)
 
@@ -320,24 +471,17 @@ def batch_generate(
             raise RuntimeError(f"openai unavailable: {_OPENAI_IMPORT_ERROR}")
         client = OpenAI()
 
-    # Build a profile_result wrapper that matches the cover letter agent's input contract.
-    profile_id = None
-    if isinstance(profile, dict):
-        profile_id = profile.get("profile_id")
-    profile_result = {
-        "agent": "profile_parser",
-        "correlation_id": profile_id,
-        "parse": {"language": (profile.get("preferences", {}) or {}).get("language", "de"), "errors": [], "warnings": []},
-        "profile": profile,
-    }
+    # Build a profile_result wrapper that matches the configured writer input contract.
+    profile_result = _build_profile_result(profile if isinstance(profile, dict) else {}, workflow_config)
 
-    # Scan PDFs and get items to process.
-    scan_report = dispatch_job_posting_pdfs(
+    # Scan docs and get items to process.
+    dispatch_tool = _resolve_batch_tool(str(dispatcher_config.get("tool_name") or "dispatch_documents"))
+    scan_report = dispatch_tool(
         scan_dir=scan_dir,
         db_path=dispatcher_db_path,
-        thread_id="batch",
-        dispatcher_message_id="batch",
-        recursive=True,
+        thread_id=str(dispatcher_config.get("thread_id") or "batch"),
+        dispatcher_message_id=str(dispatcher_config.get("dispatcher_message_id") or "batch"),
+        recursive=bool(dispatcher_config.get("recursive", True)),
         max_files=max_files,
         dry_run=dry_run,
     )
@@ -346,9 +490,11 @@ def batch_generate(
     to_process = []
     # In this project DB, many items may remain in "queued" (classified as known_processing).
     # For batch generation, include those as well.
-    buckets = ["new", "known_unprocessed", "known_processing"]
+    buckets = [str(bucket) for bucket in (dispatcher_config.get("bucket_order") or ["new", "known_unprocessed", "known_processing"]) if str(bucket).strip()]
     if rerun_processed:
-        buckets.append("known_processed")
+        rerun_bucket = str(dispatcher_config.get("rerun_bucket") or "known_processed").strip()
+        if rerun_bucket:
+            buckets.append(rerun_bucket)
 
     for bucket in buckets:
         items = classified.get(bucket) or []
@@ -359,6 +505,8 @@ def batch_generate(
     docs = db.setdefault("documents", {})
 
     results: list[dict] = []
+    skip_basenames = {str(name) for name in (filter_config.get("skip_basenames") or []) if str(name).strip()}
+    skip_output_dir_inputs = bool(filter_config.get("skip_output_dir_inputs", True))
 
     for item in to_process:
         try:
@@ -368,11 +516,11 @@ def batch_generate(
 
             pdf_path = os.path.abspath(os.path.expanduser(pdf_path))
             # Never treat our generated outputs as inputs.
-            if os.path.realpath(pdf_path).startswith(out_dir_real + os.sep):
+            if skip_output_dir_inputs and os.path.realpath(pdf_path).startswith(out_dir_real + os.sep):
                 continue
 
             base = os.path.basename(pdf_path)
-            if base == "Muster_Anschreiben.pdf":
+            if base in skip_basenames:
                 continue
 
             sha = item.get("content_sha256")
@@ -411,114 +559,62 @@ def batch_generate(
             text = _extract_pdf_text(pdf_path)
             if max_text_chars and isinstance(text, str) and len(text) > int(max_text_chars):
                 text = text[: int(max_text_chars)]
-            job_payload = _job_payload_from_scan_item(item, thread_id="batch", message_id="PENDING")
-            job_payload["extracted_text"] = text
+            job_payload = _job_payload_from_scan_item(
+                item,
+                thread_id=str(dispatcher_config.get("thread_id") or "batch"),
+                message_id="PENDING",
+                requested_actions=[str(action) for action in (job_payload_config.get("requested_actions") or []) if str(action).strip()] or None,
+            )
+            if bool(job_payload_config.get("include_extracted_text", True)):
+                job_payload["extracted_text"] = text
 
             if client is None:
                 raise RuntimeError("OpenAI client unavailable (dry_run=True)")
 
-            # 1) Parse job posting into structured JSON.
-            parser_system = SYSTEM_PROMPT.get("_job_posting_parser_agent") or SYSTEM_PROMPT.get("_job_posting_parser")
-            if not parser_system:
-                raise KeyError("Missing system prompt for job posting parser (expected '_job_posting_parser' or legacy '_job_posting_parser_agent')")
-            parser_messages = [
-                {"role": "system", "content": parser_system},
-                {"role": "user", "content": json.dumps(job_payload, ensure_ascii=False)},
-            ]
-            _try_chathistory_log(
-                "openai.chat.completions.create request",
-                messages=parser_messages,
-                data={"model": model, "n_messages": len(parser_messages), "temperature": 0.2, "stage": "job_posting_parser"},
-                name_tool="job_posting_parser",
-            )
-            try:
-                parsed_job_raw = client.chat.completions.create(model=model, messages=parser_messages, temperature=0.2)
-            except Exception as exc:
-                _try_chathistory_log(
-                    "openai.chat.completions.create error",
-                    messages=parser_messages,
-                    data={"model": model, "stage": "job_posting_parser", "error": f"{type(exc).__name__}: {exc}"},
-                    name_tool="job_posting_parser",
-                )
-                raise
-            job_posting_text = (parsed_job_raw.choices[0].message.content or "").strip()
-            _try_chathistory_log(
-                "openai.chat.completions.create response",
-                messages=parser_messages,
-                data={"model": model, "response_id": getattr(parsed_job_raw, "id", None), "stage": "job_posting_parser"},
-                generated=job_posting_text,
-                name_tool="job_posting_parser",
-            )
-            job_posting_result = _json_loads_loose(job_posting_text)
-
-            # 2) Generate cover letter JSON.
-            options = {
-                "language": (profile.get("preferences", {}) or {}).get("language", "de"),
-                "tone": (profile.get("preferences", {}) or {}).get("tone", "modern"),
-                "max_words": (profile.get("preferences", {}) or {}).get("max_length", 350),
-                "date": datetime.now().strftime("%Y-%m-%d"),
-                "city": None,
-                "include_enclosures": True,
+            doc_id = os.path.splitext(base)[0]
+            context: dict[str, Any] = {
+                "profile": deepcopy(profile),
+                "profile_result": deepcopy(profile_result),
+                "job_payload": deepcopy(job_payload),
+                "current_date": datetime.now().strftime("%Y-%m-%d"),
+                "out_dir": out_dir,
+                "write_pdf": write_pdf,
+                "doc_id": doc_id,
+                "dispatcher_db_path": dispatcher_db_path,
+                "job_postings_db_path": "",
+                "item": deepcopy(item),
+                "stage_results": {},
             }
-            cover_input = {
-                "job_posting_result": job_posting_result,
-                "profile_result": profile_result,
-                "options": options,
-            }
-            cover_messages = [
-                {"role": "system", "content": SYSTEM_PROMPT["_cover_letter_agent"]},
-                {"role": "user", "content": json.dumps(cover_input, ensure_ascii=False)},
-            ]
-            _try_chathistory_log(
-                "openai.chat.completions.create request",
-                messages=cover_messages,
-                data={"model": model, "n_messages": len(cover_messages), "temperature": 0.2, "stage": "cover_letter"},
-                name_tool="cover_letter",
-            )
-            try:
-                cover_raw = client.chat.completions.create(model=model, messages=cover_messages, temperature=0.2)
-            except Exception as exc:
-                _try_chathistory_log(
-                    "openai.chat.completions.create error",
-                    messages=cover_messages,
-                    data={"model": model, "stage": "cover_letter", "error": f"{type(exc).__name__}: {exc}"},
-                    name_tool="cover_letter",
-                )
-                raise
-            cover_text = (cover_raw.choices[0].message.content or "").strip()
-            _try_chathistory_log(
-                "openai.chat.completions.create response",
-                messages=cover_messages,
-                data={"model": model, "response_id": getattr(cover_raw, "id", None), "stage": "cover_letter"},
-                generated=cover_text,
-                name_tool="cover_letter",
-            )
-            cover_result = _json_loads_loose(cover_text)
+            for stage_config in stages:
+                _run_model_stage(client, model=model, stage_config=stage_config, context=context)
 
-            full_text = (((cover_result or {}).get("cover_letter") or {}).get("full_text"))
+            full_text = _resolve_batch_template(
+                {"from_context": "cover_letter_result.cover_letter.full_text"},
+                context,
+            )
             if not full_text or not isinstance(full_text, str):
                 raise ValueError("cover_letter_missing_full_text")
 
-            doc_id = os.path.splitext(base)[0]
-
-            saved = write_document(content=full_text, path=out_dir, doc_id=doc_id)
+            text_writer = _resolve_batch_tool(str(document_output.get("text_writer_tool") or "write_document"))
+            text_writer_input = _resolve_batch_template(document_output.get("text_writer_input") or {}, context)
+            saved = text_writer(**text_writer_input)
             saved_text_path = str(saved).split(": ", 1)[-1].strip()
+            context["saved_text_path"] = saved_text_path
 
             saved_pdf_path: str | None = None
-            if write_pdf:
-                saved_pdf_path = _write_pdf(content=full_text, out_dir=out_dir, doc_id=doc_id)
+            pdf_enabled = bool(_resolve_batch_template({"from_context": str(document_output.get("enabled_context_path") or "write_pdf"), "default": False}, context))
+            if pdf_enabled and str(document_output.get("pdf_writer") or "").strip():
+                pdf_writer = _resolve_batch_tool(str(document_output.get("pdf_writer") or ""))
+                pdf_writer_input = _resolve_batch_template(document_output.get("pdf_writer_input") or {}, context)
+                saved_pdf_path = pdf_writer(**pdf_writer_input)
+            context["saved_pdf_path"] = saved_pdf_path
+            context["saved_document_path"] = saved_pdf_path or saved_text_path
+            context["utc_now"] = _utc_now_iso_z()
 
             # Update DB record
             if isinstance(docs, dict):
                 rec = docs.get(sha) if isinstance(docs.get(sha), dict) else {}
-                rec = dict(rec)
-                rec["processed"] = True
-                rec["processing_state"] = "processed"
-                rec["processed_at"] = _utc_now_iso_z()
-                rec["cover_letter_text_path"] = saved_text_path
-                rec["cover_letter_pdf_path"] = saved_pdf_path
-                rec["cover_letter_path"] = saved_pdf_path or saved_text_path
-                rec["last_error"] = None
+                rec = _apply_record_updates(rec, dict(dispatcher_record.get("success_updates") or {}), context)
                 docs[sha] = rec
                 _save_dispatcher_db(dispatcher_db_path, db)
 
@@ -526,21 +622,20 @@ def batch_generate(
                 "pdf": pdf_path,
                 "sha": sha,
                 "status": "ok",
-                "cover_letter_text": saved_text_path,
-                "cover_letter_pdf": saved_pdf_path,
-                "cover_letter": saved_pdf_path or saved_text_path,
+                "document_text": saved_text_path,
+                "document_pdf": saved_pdf_path,
+                "document ": saved_pdf_path or saved_text_path,
             })
 
         except Exception as exc:
             sha = (item or {}).get("content_sha256")
+            error_context = {
+                "error_message": f"{type(exc).__name__}: {exc}",
+                "utc_now": _utc_now_iso_z(),
+            }
             if (not dry_run) and sha and isinstance(docs, dict):
                 rec = docs.get(sha) if isinstance(docs.get(sha), dict) else {}
-                rec = dict(rec)
-                rec["processed"] = False
-                rec["processing_state"] = "failed"
-                rec["failed_reason"] = f"{type(exc).__name__}: {exc}"
-                rec["last_error"] = f"{type(exc).__name__}: {exc}"
-                rec["last_error_at"] = _utc_now_iso_z()
+                rec = _apply_record_updates(rec, dict(dispatcher_record.get("failure_updates") or {}), error_context)
                 docs[sha] = rec
                 _save_dispatcher_db(dispatcher_db_path, db)
             results.append({"pdf": item.get("path"), "sha": sha, "status": "error", "error": f"{type(exc).__name__}: {exc}"})
@@ -549,6 +644,7 @@ def batch_generate(
         "scan_dir": scan_dir,
         "out_dir": out_dir,
         "dispatcher_db": dispatcher_db_path,
+        "workflow_name": workflow_name,
         "model_requested": model_requested,
         "model_used": model,
         "warnings": warnings_out,
@@ -559,11 +655,12 @@ def batch_generate(
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Batch-generate cover letters for all job-offer PDFs in a directory")
+    ap = argparse.ArgumentParser(description="Batch-generate files for a batch of input_files")
     ap.add_argument("--scan-dir", required=True)
     ap.add_argument("--profile", required=True)
     ap.add_argument("--db", required=True)
     ap.add_argument("--out-dir", default=None)
+    ap.add_argument("--workflow-name", default="cover_letter_batch_generation")
     ap.add_argument("--model", default="gpt-4o-mini")
     ap.add_argument("--max-files", type=int, default=None)
     ap.add_argument("--max-text-chars", type=int, default=20000)
@@ -571,11 +668,12 @@ def main() -> None:
     ap.add_argument("--write-pdf", action="store_true", help="Also write each cover letter as a PDF (requires reportlab)")
     args = ap.parse_args()
 
-    report = batch_generate(
+    report = batch_document_generator(
         scan_dir=args.scan_dir,
         profile_path=args.profile,
         dispatcher_db_path=args.db,
         out_dir=args.out_dir,
+        workflow_name=args.workflow_name,
         model=args.model,
         max_files=args.max_files,
         max_text_chars=args.max_text_chars,
@@ -583,6 +681,10 @@ def main() -> None:
         write_pdf=args.write_pdf,
     )
     print(json.dumps(report, ensure_ascii=False, indent=2))
+
+
+def batch_document_generate(*args: Any, **kwargs: Any) -> dict:
+    return batch_document_generator(*args, **kwargs)
 
 
 if __name__ == "__main__":

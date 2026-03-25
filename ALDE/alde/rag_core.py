@@ -47,6 +47,7 @@ from pathlib import Path
 from typing import Any, List, Optional, Tuple
 from dataclasses import dataclass, asdict
 from datetime import datetime
+from datetime import datetime, timezone
 import logging
 
 # ────────────────────── Optional Imports ──────────────────────
@@ -102,21 +103,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
 def _try_chathistory_log(event: str, *, data: dict | None = None) -> None:
     """Best-effort ChatHistory logging; never breaks RAG flows."""
     try:
         try:
-            from .chat_completion import ChatHistory  # type: ignore
+            from .ccompletion import ChatHistory  # type: ignore
         except Exception:
-            from alde.chat_completion import ChatHistory  # type: ignore
+                from ccompletion import ChatHistory  # type: ignore
         ChatHistory().log(
             _role="tool",
             _content=event,
             _obj="model",
             _data=data or {},
             _thread_name="model",
-            _name_tool="openai.embeddings.create",
-        )
+            _name_tool="openai.embeddings.create",  
+        ),            
+        return _utc_now_iso()
+
     except Exception:
         return
 
@@ -128,7 +134,7 @@ class EmbeddingConfig:
     """Configuration for embedding generation."""
     model_name: str = DEFAULT_MODEL
     backend: str = "auto"  # "auto", "openai", "sentence-transformers", "huggingface"
-    device: str = "cpu"  # "cpu" or "cuda"
+    device: str = ""  # "cpu" or "cuda"
     normalize_embeddings: bool = True
     batch_size: int = 32
     show_progress_bar: bool = False
@@ -383,7 +389,7 @@ class DocumentChunker:
                         "title": title,
                         "chunk_index": chunk_index,
                         "size": len(current_chunk),
-                        "timestamp": datetime.utcnow().isoformat()
+                        "timestamp": _utc_now_iso()
                     })
                     chunk_index += 1
                 
@@ -403,7 +409,7 @@ class DocumentChunker:
                 "title": title,
                 "chunk_index": chunk_index,
                 "size": len(current_chunk),
-                "timestamp": datetime.now().isoformat()
+                "timestamp": _utc_now_iso()
             })
         
         logger.debug(f"Chunked '{source}': {len(chunks)} chunks")
@@ -448,7 +454,7 @@ class VectorStoreManager:
         
         return {
             "schema": "rag_manifest_v1",
-            "created": datetime.now().isoformat(),
+            "created": _utc_now_iso(),
             "documents": {},
             "chunk_count": 0,
             "indexed_sources": []
@@ -552,7 +558,7 @@ class VectorStoreManager:
             "source": source,
             "title": title,
             "chunk_count": len(chunks),
-            "added": datetime.now().isoformat()
+            "added": _utc_now_iso()
         }
         self.manifest["chunk_count"] = self.manifest.get("chunk_count", 0) + len(chunks)
         if source not in self.manifest["indexed_sources"]:
