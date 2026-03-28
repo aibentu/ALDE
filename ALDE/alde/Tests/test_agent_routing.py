@@ -578,7 +578,8 @@ class TestAgentRouting(unittest.TestCase):
                                     "correlation_id": "sha-1",
                                     "dispatcher_message_id": "disp-1",
                                     "dispatcher_db_path": "/tmp/dispatcher.json",
-                                    "job_postings_db_path": "/tmp/job_postings.json",
+                                    "obj_name": "job_postings",
+                                    "obj_db_path": "/tmp/job_postings.json",
                                 },
                             }
                         ],
@@ -618,7 +619,7 @@ class TestAgentRouting(unittest.TestCase):
         self.assertEqual(captured_calls[0]["messages"][1]["role"], "system")
         self.assertIn("Structured handoff context", captured_calls[0]["messages"][1]["content"])
         self.assertIn('"correlation_id": "sha-1"', captured_calls[0]["messages"][2]["content"])
-        self.assertIn('"job_postings_db_path": "/tmp/job_postings.json"', captured_calls[0]["messages"][1]["content"])
+        self.assertIn('"obj_db_path": "/tmp/job_postings.json"', captured_calls[0]["messages"][1]["content"])
         tool_entries = [entry for entry in chat_mod.ChatHistory._history_ if entry.get("role") == "tool"]
         self.assertTrue(any("handoff_results" in str(entry.get("content") or "") for entry in tool_entries))
 
@@ -664,14 +665,15 @@ class TestAgentRouting(unittest.TestCase):
                 "metadata": {
                     "correlation_id": "corr-2-meta",
                     "dispatcher_db_path": "/tmp/dispatcher.json",
-                    "job_postings_db_path": "/tmp/job_postings.json",
+                    "obj_name": "job_postings",
+                    "obj_db_path": "/tmp/job_postings.json",
                 },
             },
             "handoff_context": {
                 "source_agent": "_data_dispatcher",
                 "contract": {
                     "schema": {
-                        "result_postprocess": {"tool": "upsert_dispatcher_job_record"}
+                        "result_postprocess": {"tool": "upsert_object_record"}
                     }
                 },
             },
@@ -679,7 +681,7 @@ class TestAgentRouting(unittest.TestCase):
 
         self.assertEqual(
             agents_factory.ROUTING_HANDOFF_VIEW_SERVICE.load_result_postprocess(routing_request),
-            {"tool": "upsert_dispatcher_job_record"},
+            {"tool": "upsert_object_record"},
         )
         self.assertEqual(
             agents_factory.ROUTING_HANDOFF_VIEW_SERVICE.load_target_agent(routing_request),
@@ -711,7 +713,8 @@ class TestAgentRouting(unittest.TestCase):
                 "metadata": {
                     "correlation_id": "corr-meta",
                     "dispatcher_db_path": "/tmp/dispatcher.json",
-                    "job_postings_db_path": "/tmp/job_postings.json",
+                    "obj_name": "job_postings",
+                    "obj_db_path": "/tmp/job_postings.json",
                 },
             },
             "handoff_context": {
@@ -719,7 +722,7 @@ class TestAgentRouting(unittest.TestCase):
                 "contract": {
                     "schema": {
                         "result_postprocess": {
-                            "tool": "upsert_dispatcher_job_record",
+                            "tool": "upsert_object_record",
                             "source_agent": "source_agent",
                         }
                     }
@@ -734,10 +737,12 @@ class TestAgentRouting(unittest.TestCase):
         )
 
         self.assertTrue(result_object.load_valid_request())
-        self.assertEqual(result_object.object_name, "upsert_dispatcher_job_record")
+        self.assertEqual(result_object.object_name, "upsert_object_record")
+        self.assertEqual(result_object.obj_name, "job_postings")
         self.assertEqual(result_object.correlation_id, "corr-meta")
         self.assertEqual(result_object.load_source_agent(), "_data_dispatcher")
         self.assertEqual(result_object.dispatcher_db_path, "/tmp/dispatcher.json")
+        self.assertEqual(result_object.obj_db_path, "/tmp/job_postings.json")
 
     def test_persist_document_artifacts_uses_output_override_and_job_posting_doc_id(self) -> None:
         parsed_result = {
@@ -805,7 +810,7 @@ class TestAgentRouting(unittest.TestCase):
                 },
                 "handoff_to": "_job_posting_parser",
             },
-            handoff_metadata={"correlation_id": "corr-7", "dispatcher_db_path": "/tmp/dispatcher.json", "job_postings_db_path": "/tmp/job_postings.json"},
+            handoff_metadata={"correlation_id": "corr-7", "dispatcher_db_path": "/tmp/dispatcher.json", "obj_name": "job_postings", "obj_db_path": "/tmp/job_postings.json"},
         )
 
         report = agents_config.validate_handoff_for_target(
@@ -865,7 +870,8 @@ class TestAgentRouting(unittest.TestCase):
                                 "correlation_id": "sha-2",
                                 "dispatcher_message_id": "disp-2",
                                 "dispatcher_db_path": "/tmp/dispatcher.json",
-                                "job_postings_db_path": "/tmp/job_postings.json",
+                                "obj_name": "job_postings",
+                                "obj_db_path": "/tmp/job_postings.json",
                             },
                         },
                         ensure_ascii=False,
@@ -876,7 +882,7 @@ class TestAgentRouting(unittest.TestCase):
         )
 
         with patch("alde.chat_completion.ChatComE", _ParserChatComE), patch(
-            "alde.agents_factory.upsert_dispatcher_job_record_tool",
+            "alde.agents_factory.upsert_object_record_tool",
             return_value={"ok": True},
         ) as upsert_record:
             result = agents_factory._handle_tool_calls(agent_msg, agent_label="_data_dispatcher")
@@ -885,12 +891,13 @@ class TestAgentRouting(unittest.TestCase):
         upsert_record.assert_called_once()
         self.assertEqual(upsert_record.call_args.kwargs["correlation_id"], "sha-2")
         self.assertEqual(upsert_record.call_args.kwargs["dispatcher_db_path"], "/tmp/dispatcher.json")
-        self.assertEqual(upsert_record.call_args.kwargs["job_postings_db_path"], "/tmp/job_postings.json")
+        self.assertEqual(upsert_record.call_args.kwargs["obj_db_path"], "/tmp/job_postings.json")
+        self.assertEqual(upsert_record.call_args.kwargs["obj_name"], "job_postings")
         self.assertEqual(upsert_record.call_args.kwargs["processing_state"], "processed")
         self.assertTrue(upsert_record.call_args.kwargs["processed"])
         self.assertEqual(upsert_record.call_args.kwargs["source_agent"], "_job_posting_parser")
         self.assertEqual(
-            upsert_record.call_args.kwargs["job_posting_result"]["db_updates"]["processing_state"],
+            upsert_record.call_args.kwargs["object_result"]["db_updates"]["processing_state"],
             "processed",
         )
 
@@ -932,14 +939,15 @@ class TestAgentRouting(unittest.TestCase):
                                     "link": {"thread_id": "thread-2", "message_id": "PENDING"},
                                     "file": {"path": "/tmp/posting.pdf", "content_sha256": "sha-2b"},
                                     "db": {"processing_state": "queued"},
-                                    "requested_actions": ["parse", "store_job_posting"],
+                                    "requested_actions": ["parse", "store_object_result"],
                                 },
                             },
                             "handoff_metadata": {
                                 "correlation_id": "sha-2b",
                                 "dispatcher_message_id": "disp-2b",
                                 "dispatcher_db_path": "/tmp/dispatcher.json",
-                                "job_postings_db_path": "/tmp/job_postings.json",
+                                "obj_name": "job_postings",
+                                "obj_db_path": "/tmp/job_postings.json",
                             },
                         },
                         ensure_ascii=False,
@@ -950,8 +958,8 @@ class TestAgentRouting(unittest.TestCase):
         )
 
         with patch("alde.chat_completion.ChatComE", _ParserChatComE), patch(
-            "alde.agents_factory.upsert_dispatcher_job_record_tool",
-            return_value={"ok": True, "job_postings_db_path": "/tmp/job_postings.json"},
+            "alde.agents_factory.upsert_object_record_tool",
+            return_value={"ok": True, "obj_db_path": "/tmp/job_postings.json"},
         ) as upsert_record:
             result = agents_factory._handle_tool_calls(agent_msg, agent_label="_data_dispatcher")
 
@@ -959,8 +967,9 @@ class TestAgentRouting(unittest.TestCase):
         upsert_record.assert_called_once()
         self.assertEqual(upsert_record.call_args.kwargs["correlation_id"], "sha-2b")
         self.assertEqual(upsert_record.call_args.kwargs["dispatcher_db_path"], "/tmp/dispatcher.json")
-        self.assertEqual(upsert_record.call_args.kwargs["job_postings_db_path"], "/tmp/job_postings.json")
-        self.assertEqual(upsert_record.call_args.kwargs["job_posting_result"]["job_posting"]["job_title"], "Python Engineer")
+        self.assertEqual(upsert_record.call_args.kwargs["obj_db_path"], "/tmp/job_postings.json")
+        self.assertEqual(upsert_record.call_args.kwargs["obj_name"], "job_postings")
+        self.assertEqual(upsert_record.call_args.kwargs["object_result"]["job_posting"]["job_title"], "Python Engineer")
         self.assertEqual(upsert_record.call_args.kwargs["processing_state"], "processed")
         self.assertTrue(upsert_record.call_args.kwargs["processed"])
 
@@ -1001,7 +1010,8 @@ class TestAgentRouting(unittest.TestCase):
                                 "correlation_id": "sha-3",
                                 "dispatcher_message_id": "disp-3",
                                 "dispatcher_db_path": "/tmp/dispatcher.json",
-                                "job_postings_db_path": "/tmp/job_postings.json",
+                                "obj_name": "job_postings",
+                                "obj_db_path": "/tmp/job_postings.json",
                             },
                         },
                         ensure_ascii=False,
@@ -1012,7 +1022,7 @@ class TestAgentRouting(unittest.TestCase):
         )
 
         with patch("alde.chat_completion.ChatComE", _FailingParserChatComE), patch(
-            "alde.agents_factory.upsert_dispatcher_job_record_tool",
+            "alde.agents_factory.upsert_object_record_tool",
             return_value={"ok": True},
         ) as upsert_record:
             result = agents_factory._handle_tool_calls(agent_msg, agent_label="_data_dispatcher")
@@ -1021,11 +1031,12 @@ class TestAgentRouting(unittest.TestCase):
         upsert_record.assert_called_once()
         self.assertEqual(upsert_record.call_args.kwargs["correlation_id"], "sha-3")
         self.assertEqual(upsert_record.call_args.kwargs["dispatcher_db_path"], "/tmp/dispatcher.json")
-        self.assertEqual(upsert_record.call_args.kwargs["job_postings_db_path"], "/tmp/job_postings.json")
+        self.assertEqual(upsert_record.call_args.kwargs["obj_db_path"], "/tmp/job_postings.json")
+        self.assertEqual(upsert_record.call_args.kwargs["obj_name"], "job_postings")
         self.assertEqual(upsert_record.call_args.kwargs["processing_state"], "failed")
         self.assertFalse(upsert_record.call_args.kwargs["processed"])
         self.assertIn("parser backend unavailable", upsert_record.call_args.kwargs["failed_reason"])
-        self.assertEqual(upsert_record.call_args.kwargs["job_posting_result"]["error"], failure_text)
+        self.assertEqual(upsert_record.call_args.kwargs["object_result"]["error"], failure_text)
 
     def test_dispatcher_action_history_exposes_snapshot_metadata(self) -> None:
         history = agents_factory.get_history()
@@ -1048,7 +1059,7 @@ class TestAgentRouting(unittest.TestCase):
                     "execute_action_request",
                     json.dumps(
                         {
-                            "action": "ingest_job_posting",
+                            "action": "ingest_object",
                             "payload": {
                                 "correlation_id": "platform:42",
                                 "job_posting": {"job_title": "Platform Engineer"},
@@ -1085,7 +1096,7 @@ class TestAgentRouting(unittest.TestCase):
         self.assertEqual(snapshot["current_state"], "workflow_complete")
         self.assertEqual(snapshot["actor"]["name"], "execute_action_request")
         self.assertEqual(snapshot["event"]["tool_name"], "execute_action_request")
-        self.assertEqual(snapshot["event"]["action"], "ingest_job_posting")
+        self.assertEqual(snapshot["event"]["action"], "ingest_object")
         self.assertEqual(snapshot["event"]["correlation_id"], "platform:42")
 
     def test_dispatcher_execute_action_request_returns_tool_result_without_followup_model_call(self) -> None:
@@ -1100,7 +1111,7 @@ class TestAgentRouting(unittest.TestCase):
                     "execute_action_request",
                     json.dumps(
                         {
-                            "action": "ingest_job_posting",
+                            "action": "ingest_object",
                             "payload": {
                                 "correlation_id": "platform:654",
                                 "job_posting": {"job_title": "Controls Engineer"},

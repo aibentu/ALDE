@@ -156,7 +156,7 @@ class TestWorkflowVisibility(unittest.TestCase):
         transitions = workflow.get("transitions") or []
 
         self.assertEqual(states["action_executed"]["actor"]["name"], "execute_action_request")
-        self.assertEqual(states["job_record_upserted"]["actor"]["name"], "upsert_dispatcher_job_record")
+        self.assertEqual(states["job_record_upserted"]["actor"]["name"], "upsert_object_record")
         self.assertTrue(
             any(
                 transition.get("from") == "dispatcher_ready"
@@ -168,7 +168,7 @@ class TestWorkflowVisibility(unittest.TestCase):
         self.assertTrue(
             any(
                 transition.get("from") == "dispatcher_ready"
-                and (transition.get("on") or {}).get("name") == "upsert_dispatcher_job_record"
+                and (transition.get("on") or {}).get("name") == "upsert_object_record"
                 and transition.get("to") == "job_record_upserted"
                 for transition in transitions
             )
@@ -182,7 +182,7 @@ class TestWorkflowVisibility(unittest.TestCase):
             ((retry_transition.get("on") or {}).get("conditions") or {}).get("any") or []
         )[0]["tool_name"]["in"]
         self.assertIn("execute_action_request", guarded_tools)
-        self.assertIn("upsert_dispatcher_job_record", guarded_tools)
+        self.assertIn("upsert_object_record", guarded_tools)
 
     def test_workflow_status_helpers_preserve_snapshot_metadata(self) -> None:
         history = agents_factory.get_history()
@@ -212,7 +212,7 @@ class TestWorkflowVisibility(unittest.TestCase):
                                 "kind": "tool",
                                 "name": "execute_action_request",
                                 "tool_name": "execute_action_request",
-                                "action": "ingest_job_posting",
+                                "action": "ingest_object",
                                 "target_agent": None,
                                 "correlation_id": "platform:42",
                             },
@@ -227,7 +227,7 @@ class TestWorkflowVisibility(unittest.TestCase):
         self.assertIsNotNone(latest)
         snapshot = latest["workflow"]["snapshot"]
         self.assertEqual(snapshot["actor"]["name"], "execute_action_request")
-        self.assertEqual(snapshot["event"]["action"], "ingest_job_posting")
+        self.assertEqual(snapshot["event"]["action"], "ingest_object")
         self.assertEqual(snapshot["event"]["correlation_id"], "platform:42")
 
     def test_workflow_history_helpers_ignore_non_workflow_entries(self) -> None:
@@ -286,14 +286,14 @@ class TestWorkflowVisibility(unittest.TestCase):
             phase="tool_result",
             event_kind="tool",
             event_name="execute_action_request",
-            payload={"action": "ingest_job_posting"},
+            payload={"action": "ingest_object"},
         )
 
         self.assertIsNotNone(workflow_data)
         event = workflow_data["workflow"]["event"]
         self.assertEqual(event["kind"], "tool")
         self.assertEqual(event["name"], "execute_action_request")
-        self.assertEqual(event["payload"], {"action": "ingest_job_posting"})
+        self.assertEqual(event["payload"], {"action": "ingest_object"})
 
     def test_workflow_history_data_promotes_tool_actor_on_tool_failed_state(self) -> None:
         session = agents_factory._create_workflow_session("_data_dispatcher")

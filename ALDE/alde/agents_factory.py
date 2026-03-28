@@ -46,7 +46,7 @@ try:
         get_tool_spec,
         memorydb,
         md_to_pdf,
-        upsert_dispatcher_job_record_tool,
+        upsert_object_record_tool,
         vectordb,
         write_document,
     )
@@ -60,7 +60,7 @@ except ImportError as e:
             get_tool_spec,
             memorydb,
             md_to_pdf,
-            upsert_dispatcher_job_record_tool,
+            upsert_object_record_tool,
             vectordb,
             write_document,
         )
@@ -1848,11 +1848,43 @@ class RoutingHandoffViewService:
             or ""
         ).strip()
 
+    def load_object_name(self, routing_request: dict[str, Any] | None) -> str:
+        metadata = self.load_metadata(routing_request)
+        handoff_payload = self.load_payload(routing_request)
+        output_payload = handoff_payload.get("output") if isinstance(handoff_payload.get("output"), dict) else {}
+        for candidate in (
+            metadata.get("obj_name"),
+            output_payload.get("obj_name"),
+            handoff_payload.get("obj_name"),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        if isinstance(metadata.get("job_postings_db_path"), str) and str(metadata.get("job_postings_db_path") or "").strip():
+            return "job_postings"
+        if isinstance(metadata.get("profiles_db_path"), str) and str(metadata.get("profiles_db_path") or "").strip():
+            return "profiles"
+        return "documents"
+
+    def load_object_db_path(self, routing_request: dict[str, Any] | None, *, resolved_obj_name: str | None = None) -> str:
+        metadata = self.load_metadata(routing_request)
+        obj_name = str(resolved_obj_name or self.load_object_name(routing_request) or "documents").strip() or "documents"
+        candidate_keys = ["obj_db_path", f"{obj_name}_db_path", "job_postings_db_path", "profiles_db_path"]
+        seen: set[str] = set()
+        for key in candidate_keys:
+            if key in seen:
+                continue
+            seen.add(key)
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return ""
+
     def load_dispatcher_paths(self, routing_request: dict[str, Any] | None) -> tuple[str, str]:
         metadata = self.load_metadata(routing_request)
+        resolved_obj_name = self.load_object_name(routing_request)
         return (
             str(metadata.get("dispatcher_db_path") or "").strip(),
-            str(metadata.get("job_postings_db_path") or "").strip(),
+            self.load_object_db_path(routing_request, resolved_obj_name=resolved_obj_name),
         )
 
 
@@ -2302,7 +2334,8 @@ class RoutingResultObject:
         self.target_agent_label = ROUTING_HANDOFF_VIEW_SERVICE.load_target_agent(self.request)
         self.source_agent_label = ROUTING_HANDOFF_VIEW_SERVICE.load_source_agent(self.request)
         self.correlation_id = ROUTING_HANDOFF_VIEW_SERVICE.load_correlation_id(self.request)
-        self.dispatcher_db_path, self.job_postings_db_path = ROUTING_HANDOFF_VIEW_SERVICE.load_dispatcher_paths(self.request)
+        self.obj_name = ROUTING_HANDOFF_VIEW_SERVICE.load_object_name(self.request)
+        self.dispatcher_db_path, self.obj_db_path = ROUTING_HANDOFF_VIEW_SERVICE.load_dispatcher_paths(self.request)
 
     def load_valid_request(self) -> bool:
         return bool(self.request)
@@ -2443,17 +2476,18 @@ class RoutingResultPostprocessService:
                 fallback_result_text=result_text,
             )
 
-        if result_object.object_name != "upsert_dispatcher_job_record":
+        if result_object.object_name not in {"upsert_object_record", "upsert_dispatcher_job_record"}:
             return None
 
-        if not result_object.correlation_id or not result_object.dispatcher_db_path or not result_object.job_postings_db_path:
+        if not result_object.correlation_id or not result_object.dispatcher_db_path or not result_object.obj_db_path:
             return None
 
-        result = upsert_dispatcher_job_record_tool(
-            job_posting_result=result_object.load_upsert_payload(),
+        result = upsert_object_record_tool(
+            object_result=result_object.load_upsert_payload(),
             correlation_id=result_object.correlation_id,
             dispatcher_db_path=result_object.dispatcher_db_path,
-            job_postings_db_path=result_object.job_postings_db_path,
+            obj_db_path=result_object.obj_db_path,
+            obj_name=result_object.obj_name,
             processing_state=result_object.load_processing_state(),
             processed=result_object.load_processed(),
             failed_reason=result_object.load_failed_reason(),

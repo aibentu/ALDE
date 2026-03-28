@@ -4,6 +4,7 @@ from copy import deepcopy
 import json
 from pprint import pformat
 from alde.agents_persisted_config import (
+    ACTION_REQUEST_NAME_ALIASES,
     ACTION_REQUEST_SCHEMA_CONFIGS,
     AGENT_MANIFEST_OVERRIDES,
     AGENT_ROLE_CONFIGS,
@@ -594,17 +595,79 @@ def resolve_forced_route(agent_name: str, input_text: Any, available_agents: set
 
 
 class ActionRequestSchemaService:
+    def normalize_object_name(self, object_name: str) -> str:
+        normalized_action = str(object_name or "").strip().lower()
+        return ACTION_REQUEST_NAME_ALIASES.get(normalized_action, normalized_action)
+
+    def load_candidate_object_configs(self, object_name: str) -> list[tuple[str, dict[str, Any]]]:
+        normalized_action = self.normalize_object_name(object_name)
+        candidates: list[tuple[str, dict[str, Any]]] = []
+        for schema_name, config in ACTION_REQUEST_SCHEMA_CONFIGS.items():
+            actions = {self.normalize_object_name(str(value or "")) for value in (config.get("actions") or [])}
+            if normalized_action in actions:
+                candidates.append((schema_name, config))
+        return candidates
+
+    def load_object_match_score(self, payload: dict[str, Any], config: dict[str, Any]) -> int:
+        score = 0
+        conditions = config.get("conditions") or {}
+        if conditions and _config_conditions_match(payload, conditions):
+            score += 100
+
+        for key_path in config.get("required_paths") or []:
+            if _config_payload_value(payload, str(key_path)) not in (None, "", []):
+                score += 3
+        for key_path in config.get("recommended_paths") or []:
+            if _config_payload_value(payload, str(key_path)) not in (None, "", []):
+                score += 1
+
+        request_resolution = config.get("request_resolution") if isinstance(config.get("request_resolution"), dict) else {}
+        for resolution_object in (request_resolution.get("objects") or []):
+            if not isinstance(resolution_object, dict):
+                continue
+            for field_name in (
+                resolution_object.get("request_field"),
+                resolution_object.get("result_field"),
+            ):
+                if field_name and _config_payload_value(payload, str(field_name)) not in (None, "", []):
+                    score += 10
+
+        action_execution = config.get("action_execution") if isinstance(config.get("action_execution"), dict) else {}
+        for field_name in (
+            action_execution.get("object_payload_field"),
+            action_execution.get("request_payload_field"),
+            action_execution.get("result_payload_field"),
+        ):
+            if field_name and _config_payload_value(payload, str(field_name)) not in (None, "", []):
+                score += 10
+        return score
+
     def list_object_configs(self) -> dict[str, dict[str, Any]]:
         return deepcopy(ACTION_REQUEST_SCHEMA_CONFIGS)
 
-    def load_object_config(self, object_name: str) -> dict[str, Any]:
-        normalized_action = str(object_name or "").strip().lower()
-        for schema_name, config in ACTION_REQUEST_SCHEMA_CONFIGS.items():
-            actions = {str(value or "").strip().lower() for value in (config.get("actions") or [])}
-            if normalized_action in actions:
+    def load_object_config(self, object_name: str, payload: Any | None = None) -> dict[str, Any]:
+        candidates = self.load_candidate_object_configs(object_name)
+        if not candidates:
+            return {}
+
+        if isinstance(payload, dict) and len(candidates) > 1:
+            normalized_payload = deepcopy(payload)
+            normalized_payload["action"] = self.normalize_object_name(str(normalized_payload.get("action") or object_name))
+            scored_candidates = [
+                (self.load_object_match_score(normalized_payload, config), schema_name, config)
+                for schema_name, config in candidates
+            ]
+            scored_candidates.sort(key=lambda item: item[0], reverse=True)
+            if scored_candidates and scored_candidates[0][0] > 0:
+                _, schema_name, config = scored_candidates[0]
                 schema = deepcopy(config)
                 schema.setdefault("name", schema_name)
                 return schema
+
+        schema_name, config = candidates[0]
+        schema = deepcopy(config)
+        schema.setdefault("name", schema_name)
+        return schema
         return {}
 
     def build_missing_object_config(self, object_name: str) -> dict[str, Any]:
@@ -630,8 +693,12 @@ def get_action_request_schema_configs() -> dict[str, dict[str, Any]]:
     return ACTION_REQUEST_SCHEMA_SERVICE.list_object_configs()
 
 
-def get_action_request_schema_config(action_name: str) -> dict[str, Any]:
-    return ACTION_REQUEST_SCHEMA_SERVICE.load_object_config(action_name)
+def normalize_action_request_name(action_name: str) -> str:
+    return ACTION_REQUEST_SCHEMA_SERVICE.normalize_object_name(action_name)
+
+
+def get_action_request_schema_config(action_name: str, payload: Any | None = None) -> dict[str, Any]:
+    return ACTION_REQUEST_SCHEMA_SERVICE.load_object_config(action_name, payload)
 
 
 def create_action_request_schema_config(action_name: str, config_updates: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -639,8 +706,11 @@ def create_action_request_schema_config(action_name: str, config_updates: dict[s
 
 
 def validate_action_request(action_name: str, payload: Any) -> dict[str, Any]:
-    schema = get_action_request_schema_config(action_name)
-    normalized_action = str(action_name or "").strip().lower()
+    normalized_action = normalize_action_request_name(action_name)
+    normalized_payload = deepcopy(payload) if isinstance(payload, dict) else payload
+    if isinstance(normalized_payload, dict):
+        normalized_payload["action"] = normalized_action
+    schema = get_action_request_schema_config(normalized_action, normalized_payload)
     errors: list[str] = []
     warnings: list[str] = []
 
@@ -653,7 +723,7 @@ def validate_action_request(action_name: str, payload: Any) -> dict[str, Any]:
             "warnings": [],
         }
 
-    if not isinstance(payload, dict):
+    if not isinstance(normalized_payload, dict):
         return {
             "action": normalized_action,
             "schema_name": str(schema.get("name") or ""),
@@ -663,15 +733,15 @@ def validate_action_request(action_name: str, payload: Any) -> dict[str, Any]:
         }
 
     for key_path in schema.get("required_paths") or []:
-        if _config_payload_value(payload, str(key_path)) in (None, "", []):
+        if _config_payload_value(normalized_payload, str(key_path)) in (None, "", []):
             errors.append(f"missing required field '{key_path}'")
 
     conditions = schema.get("conditions") or {}
-    if conditions and not _config_conditions_match(payload, conditions):
+    if conditions and not _config_conditions_match(normalized_payload, conditions):
         errors.append("payload does not satisfy action request schema conditions")
 
     for key_path in schema.get("recommended_paths") or []:
-        if _config_payload_value(payload, str(key_path)) in (None, "", []):
+        if _config_payload_value(normalized_payload, str(key_path)) in (None, "", []):
             warnings.append(f"recommended field '{key_path}' is missing")
 
     return {
@@ -1862,17 +1932,37 @@ class AgentSystemActionRequestObject:
         default_value = f"{self.load_system_slug()}_planner_router"
         return _normalize_config_object_token(str(self.config.get("planner_workflow_name") or default_value), fallback=default_value)
 
-    def load_builder_workflow_name(self) -> str:
+    def load_worker_workflow_name(self) -> str:
         default_value = f"{self.load_system_slug()}_builder_leaf"
-        return _normalize_config_object_token(str(self.config.get("builder_workflow_name") or default_value), fallback=default_value)
+        return _normalize_config_object_token(
+            str(
+                self.config.get("worker_workflow_name")
+                or self.config.get("builder_workflow_name")
+                or default_value
+            ),
+            fallback=default_value,
+        )
+
+    def load_builder_workflow_name(self) -> str:
+        return self.load_worker_workflow_name()
 
     def load_primary_to_planner_schema_name(self) -> str:
         default_value = f"primary_to_{self.load_system_slug()}_planner"
         return _normalize_config_object_token(str(self.config.get("primary_to_planner_schema_name") or default_value), fallback=default_value)
 
-    def load_planner_to_builder_schema_name(self) -> str:
+    def load_planner_to_worker_schema_name(self) -> str:
         default_value = f"{self.load_system_slug()}_planner_to_builder"
-        return _normalize_config_object_token(str(self.config.get("planner_to_builder_schema_name") or default_value), fallback=default_value)
+        return _normalize_config_object_token(
+            str(
+                self.config.get("planner_to_worker_schema_name")
+                or self.config.get("planner_to_builder_schema_name")
+                or default_value
+            ),
+            fallback=default_value,
+        )
+
+    def load_planner_to_builder_schema_name(self) -> str:
+        return self.load_planner_to_worker_schema_name()
 
     def load_action_request_schema_name(self) -> str:
         default_value = f"{self.load_system_slug()}_builder_request"
@@ -2161,11 +2251,11 @@ class AgentSystemBasicConfigService:
         planner_agent_name = request.load_planner_agent_name()
         worker_agent_name = request.load_worker_agent_name()
         planner_workflow_name = request.load_planner_workflow_name()
-        builder_workflow_name = request.load_builder_workflow_name()
+        worker_workflow_name = request.load_worker_workflow_name()
         planner_prompt_name = request.load_planner_prompt_name()
         worker_prompt_name = request.load_worker_prompt_name()
         primary_to_planner_schema_name = request.load_primary_to_planner_schema_name()
-        planner_to_builder_schema_name = request.load_planner_to_builder_schema_name()
+        planner_to_worker_schema_name = request.load_planner_to_worker_schema_name()
         action_request_schema_name = request.load_action_request_schema_name()
         action_tool_name = request.load_action_tool_name()
         route_prefix = request.load_route_prefix()
@@ -2238,7 +2328,7 @@ class AgentSystemBasicConfigService:
                 "model": request.load_worker_model(),
                 "tools": [action_tool_name, "@doc_rw"],
                 "defaults": {},
-                "workflow.definition": builder_workflow_name,
+                "workflow.definition": worker_workflow_name,
             },
         )
 
@@ -2256,7 +2346,7 @@ class AgentSystemBasicConfigService:
                 f"handoff_policy.source_policies.{request.load_assistant_agent_name()}.handoff_schema": primary_to_planner_schema_name,
                 f"handoff_policy.target_policies.{worker_agent_name}.default_protocol": "agent_handoff_v1",
                 f"handoff_policy.target_policies.{worker_agent_name}.accepted_protocols": ["agent_handoff_v1"],
-                f"handoff_policy.target_policies.{worker_agent_name}.handoff_schema": planner_to_builder_schema_name,
+                f"handoff_policy.target_policies.{worker_agent_name}.handoff_schema": planner_to_worker_schema_name,
             },
         )
         worker_manifest_override = create_agent_manifest_override_config(
@@ -2266,7 +2356,7 @@ class AgentSystemBasicConfigService:
                 "skill_profile": "structured_writer",
                 f"handoff_policy.allowed_sources": [planner_agent_name],
                 f"handoff_policy.source_policies.{planner_agent_name}.accepted_protocols": ["agent_handoff_v1"],
-                f"handoff_policy.source_policies.{planner_agent_name}.handoff_schema": planner_to_builder_schema_name,
+                f"handoff_policy.source_policies.{planner_agent_name}.handoff_schema": planner_to_worker_schema_name,
             },
         )
         assistant_manifest_override = create_agent_manifest_override_config(
@@ -2298,14 +2388,14 @@ class AgentSystemBasicConfigService:
                 ],
             },
         )
-        planner_to_builder_schema = create_handoff_schema_config(
-            planner_to_builder_schema_name,
+        planner_to_worker_schema = create_handoff_schema_config(
+            planner_to_worker_schema_name,
             {
                 "protocol": "agent_handoff_v1",
-                "description": "Planner brief for the builder worker that materializes config bundles.",
+                "description": "Planner brief for the worker that materializes config bundles.",
                 "required_payload_any": ["output", "generated", "msg"],
                 "preferred_payload_paths": ["output", "generated", "msg"],
-                "workflow_name": builder_workflow_name,
+                "workflow_name": worker_workflow_name,
                 "instructions": [
                     "Treat the handoff payload as the approved build brief.",
                     f"Use the {action_tool_name} tool to produce the canonical config bundle.",
@@ -2395,30 +2485,30 @@ class AgentSystemBasicConfigService:
                 ],
             },
         )
-        builder_workflow = create_workflow_config(
-            builder_workflow_name,
+        worker_workflow = create_workflow_config(
+            worker_workflow_name,
             {
-                "description": "Leaf workflow for the deterministic builder worker.",
-                "entry_state": "builder_active",
-                "states.builder_active.actor.kind": "agent",
-                f"states.builder_active.actor.name": worker_agent_name,
-                "states.builder_active.terminal": False,
-                "states.builder_complete.actor.kind": "state",
-                "states.builder_complete.actor.name": "workflow_complete",
-                "states.builder_complete.terminal": True,
-                "states.builder_failed.actor.kind": "state",
-                "states.builder_failed.actor.name": "workflow_failed",
-                "states.builder_failed.terminal": True,
+                "description": "Leaf workflow for the deterministic worker.",
+                "entry_state": "worker_active",
+                "states.worker_active.actor.kind": "agent",
+                f"states.worker_active.actor.name": worker_agent_name,
+                "states.worker_active.terminal": False,
+                "states.worker_complete.actor.kind": "state",
+                "states.worker_complete.actor.name": "workflow_complete",
+                "states.worker_complete.terminal": True,
+                "states.worker_failed.actor.kind": "state",
+                "states.worker_failed.actor.name": "workflow_failed",
+                "states.worker_failed.terminal": True,
                 "transitions": [
                     {
-                        "from": "builder_active",
+                        "from": "worker_active",
                         "on": {"kind": "state", "name": "followup_complete"},
-                        "to": "builder_complete",
+                        "to": "worker_complete",
                     },
                     {
-                        "from": "builder_active",
+                        "from": "worker_active",
                         "on": {"kind": "state", "name": ["model_failed", "tool_failed"]},
-                        "to": "builder_failed",
+                        "to": "worker_failed",
                     },
                 ],
             },
@@ -2459,7 +2549,7 @@ class AgentSystemBasicConfigService:
             },
             "handoff_schema_configs": {
                 primary_to_planner_schema_name: primary_to_planner_schema,
-                planner_to_builder_schema_name: planner_to_builder_schema,
+                planner_to_worker_schema_name: planner_to_worker_schema,
             },
             "action_request_schema_configs": {
                 action_request_schema_name: action_request_schema,
@@ -2469,7 +2559,7 @@ class AgentSystemBasicConfigService:
             },
             "workflow_configs": {
                 planner_workflow_name: planner_workflow,
-_workflow_name: builder_workflow,
+                worker_workflow_name: worker_workflow,
             },
             "forced_route_configs": forced_route_configs,
             "assistant_integration": {

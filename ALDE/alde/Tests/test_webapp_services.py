@@ -275,7 +275,7 @@ class TestWebappWorkflowStatusView(unittest.TestCase):
                     "actor": {"kind": "tool", "name": "execute_action_request"},
                     "event": {
                         "name": "execute_action_request",
-                        "action": "ingest_job_posting",
+                        "action": "ingest_object",
                         "correlation_id": "platform:42",
                     },
                 },
@@ -302,9 +302,9 @@ class TestWebappWorkflowStatusView(unittest.TestCase):
         snapshot_view = latest["workflow"]["snapshot_view"]
         self.assertEqual(snapshot_view["kind"], "dispatcher_action")
         self.assertEqual(snapshot_view["title"], "Dispatcher action executed")
-        self.assertEqual(snapshot_view["action"], "ingest_job_posting")
+        self.assertEqual(snapshot_view["action"], "ingest_object")
         self.assertEqual(snapshot_view["correlation_id"], "platform:42")
-        self.assertEqual(snapshot_view["summary"], "ingest_job_posting | platform:42")
+        self.assertEqual(snapshot_view["summary"], "ingest_object | platform:42")
         self.assertEqual(result["items"][0]["workflow"]["snapshot_view"]["kind"], "dispatcher_action")
 
     def test_workflow_status_view_keeps_generic_snapshot_fallback(self) -> None:

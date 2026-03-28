@@ -33,6 +33,7 @@ try:
         get_tool_config,
         get_tool_configs,
         get_tool_group_configs,
+        normalize_action_request_name,
         normalize_tool_name,
         validate_action_request,
     )
@@ -49,6 +50,7 @@ except ImportError as e:
             get_tool_config,
             get_tool_configs,
             get_tool_group_configs,
+            normalize_action_request_name,
             normalize_tool_name,
             validate_action_request,
         )
@@ -251,35 +253,8 @@ def _default_dispatcher_db_path() -> str:
     return os.path.join(base, "AppData", "dispatcher_doc_db.json")
 
 
-def _load_dispatcher_db(db_path: str) -> dict:
-    if not os.path.exists(db_path):
-        return {"schema": "dispatcher_doc_db_v1", "documents": {}}
-    raw = _load_json_file(db_path)
-    if isinstance(raw, dict) and isinstance(raw.get("documents"), dict):
-        return raw
-    # Backward/unknown format: wrap safely.
-    return {"schema": "dispatcher_doc_db_v1", "documents": {}}
-
-
-def _save_dispatcher_db(db_path: str, db: dict) -> None:
-    _atomic_write_json(db_path, db)
-
-
 def _default_document_db_path(obj: str) -> str:
     return os.path.join(_default_appdata_dir(), f"{obj}_db.json")
-
-
-def _load_document_db(db_path: str, obj: str) -> dict:
-    if not os.path.exists(db_path):
-        return {"schema": f"{obj}_db_v1", obj: {}}
-    raw = _load_json_file(db_path)
-    if isinstance(raw, dict) and isinstance(raw.get(obj), dict):
-        return raw
-    return {"schema": f"{obj}_db_v1", obj: {}}
-
-
-def _save_document_db(db_path: str, db: dict) -> None:
-    _atomic_write_json(db_path, db)
 
 
 _DOCUMENT_SECTION_KEYS: dict[str, str] = {
@@ -324,82 +299,859 @@ def _extract_document_section(result_payload: dict[str, Any], resolved_obj: str)
     return {}
 
 
-def persist_document_result(
-    *,
-    correlation_id: str,
-    result_payload: dict[str, Any],
-    obj: str,
-    db_path: str | None = None,
-    handoff_metadata: dict[str, Any] | None = None,
-    handoff_payload: dict[str, Any] | None = None,
-) -> dict[str, Any]:
-    resolved_obj = _normalize_document_obj_name(obj)
-    resolved_section_key = _document_section_key(resolved_obj)
-    resolved_db_path = os.path.abspath(os.path.expanduser(str(db_path or _default_document_db_path(resolved_obj))))
-    db = _load_document_db(resolved_db_path, resolved_obj)
-    if not isinstance(db, dict):
-        db = {"schema": f"{resolved_obj}_db_v1", resolved_obj: {}}
-    if not isinstance(db.get(resolved_obj), dict):
-        db[resolved_obj] = {}
+def _payload_value(payload: dict[str, Any], key: str) -> Any:
+    current: Any = payload
+    for segment in str(key or "").split("."):
+        if not segment:
+            continue
+        if not isinstance(current, dict):
+            return None
+        current = current.get(segment)
+    return current
 
-    document_records = db[resolved_obj]
-    record = document_records.get(correlation_id) if isinstance(document_records.get(correlation_id), dict) else {}
-    record = dict(record)
-    ts = _now_utc_iso()
 
-    metadata = dict(handoff_metadata or {})
-    incoming_payload = dict(handoff_payload or {})
-    output_payload = incoming_payload.get("output") if isinstance(incoming_payload.get("output"), dict) else {}
-    parse_section = result_payload.get("parse") if isinstance(result_payload.get("parse"), dict) else {}
-    document_section = _extract_document_section(result_payload, resolved_obj)
-    db_updates = result_payload.get("db_updates") if isinstance(result_payload.get("db_updates"), dict) else {}
-    fallback_source_payload = output_payload if output_payload else result_payload
+class DocumentRepository:
+    _DISPATCHER_DB_NAMES = {"dispatcher", "dispatcher_db", "dispatcher_documents"}
 
-    record["correlation_id"] = correlation_id
-    record["updated_at"] = ts
-    record.setdefault("created_at", ts)
-    record["source_agent"] = str(
-        incoming_payload.get("agent_label")
-        or metadata.get("source_agent")
-        or result_payload.get("agent")
-        or _document_default_agent(resolved_obj)
-    )
-    record["link"] = deepcopy(result_payload.get("link") if isinstance(result_payload.get("link"), dict) else output_payload.get("link") if isinstance(output_payload.get("link"), dict) else {})
-    record["file"] = deepcopy(result_payload.get("file") if isinstance(result_payload.get("file"), dict) else output_payload.get("file") if isinstance(output_payload.get("file"), dict) else {})
-    record["parse"] = deepcopy(parse_section)
-    record[resolved_section_key] = deepcopy(document_section)
-    record["db_updates"] = deepcopy(db_updates)
-    record["handoff_metadata"] = deepcopy(metadata)
-    record["source_payload"] = deepcopy(fallback_source_payload)
+    def normalize_db_name(self, db_name: str | None = None, obj_name: str | None = None) -> str:
+        normalized_db_name = str(db_name or "").strip().lower()
+        if normalized_db_name in self._DISPATCHER_DB_NAMES:
+            return "dispatcher_documents"
+        if normalized_db_name:
+            return normalized_db_name
+        return _normalize_document_obj_name(obj_name)
 
-    document_records[correlation_id] = record
-    _save_document_db(resolved_db_path, db)
-    return {
-        "ok": True,
-        "db_path": resolved_db_path,
-        "obj_name": resolved_obj,
-        "correlation_id": correlation_id,
-        "stored": True,
+    def _resolve_obj_name(self, *, db_name: str | None = None, obj_name: str | None = None) -> str:
+        normalized_db_name = self.normalize_db_name(db_name=db_name, obj_name=obj_name)
+        if normalized_db_name == "dispatcher_documents":
+            return "documents"
+        return _normalize_document_obj_name(obj_name or normalized_db_name)
+
+    def _build_db(self, *, db_name: str | None = None, obj_name: str | None = None) -> dict[str, Any]:
+        normalized_db_name = self.normalize_db_name(db_name=db_name, obj_name=obj_name)
+        if normalized_db_name == "dispatcher_documents":
+            return {"schema": "dispatcher_doc_db_v1", "documents": {}}
+        resolved_obj_name = self._resolve_obj_name(db_name=normalized_db_name, obj_name=obj_name)
+        return {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}}
+
+    def _resolve_db_path(self, db_path: str | None = None, *, db_name: str | None = None, obj_name: str | None = None) -> str:
+        if db_path:
+            return os.path.abspath(os.path.expanduser(str(db_path)))
+        normalized_db_name = self.normalize_db_name(db_name=db_name, obj_name=obj_name)
+        if normalized_db_name == "dispatcher_documents":
+            return os.path.abspath(os.path.expanduser(_default_dispatcher_db_path()))
+        resolved_obj_name = self._resolve_obj_name(db_name=normalized_db_name, obj_name=obj_name)
+        return os.path.abspath(os.path.expanduser(_default_document_db_path(resolved_obj_name)))
+
+    def load_db(self, db_path: str | None = None, *, db_name: str | None = None, obj_name: str | None = None) -> dict[str, Any]:
+        resolved_db_path = self._resolve_db_path(db_path, db_name=db_name, obj_name=obj_name)
+        empty_db = self._build_db(db_name=db_name, obj_name=obj_name)
+        root_key = "documents" if self.normalize_db_name(db_name=db_name, obj_name=obj_name) == "dispatcher_documents" else self._resolve_obj_name(db_name=db_name, obj_name=obj_name)
+        if not os.path.exists(resolved_db_path):
+            return empty_db
+        raw = _load_json_file(resolved_db_path)
+        if isinstance(raw, dict) and isinstance(raw.get(root_key), dict):
+            return raw
+        return empty_db
+
+    def save_db(self, db_path: str | None, db: dict[str, Any], *, db_name: str | None = None, obj_name: str | None = None) -> str:
+        resolved_db_path = self._resolve_db_path(db_path, db_name=db_name, obj_name=obj_name)
+        _atomic_write_json(resolved_db_path, db)
+        return resolved_db_path
+
+    def upsert_db(
+        self,
+        db_path: str | None,
+        *,
+        db_name: str | None = None,
+        obj_name: str | None = None,
+        record_id: str,
+        record_value: dict[str, Any],
+    ) -> dict[str, Any]:
+        resolved_obj_name = self._resolve_obj_name(db_name=db_name, obj_name=obj_name)
+        db = self.load_db(db_path, db_name=db_name, obj_name=obj_name)
+        if not isinstance(db.get(resolved_obj_name), dict):
+            db[resolved_obj_name] = {}
+        db[resolved_obj_name][record_id] = deepcopy(record_value)
+        self.save_db(db_path, db, db_name=db_name, obj_name=obj_name)
+        return db
+
+    def persist_document(
+        self,
+        *,
+        correlation_id: str,
+        result_payload: dict[str, Any],
+        obj_name: str,
+        db_path: str | None = None,
+        handoff_metadata: dict[str, Any] | None = None,
+        handoff_payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        resolved_obj_name = _normalize_document_obj_name(obj_name)
+        resolved_section_key = _document_section_key(resolved_obj_name)
+        resolved_db_path = self._resolve_db_path(db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+        db = self.load_db(resolved_db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+        if not isinstance(db.get(resolved_obj_name), dict):
+            db[resolved_obj_name] = {}
+
+        document_records = db[resolved_obj_name]
+        record = document_records.get(correlation_id) if isinstance(document_records.get(correlation_id), dict) else {}
+        record = dict(record)
+        ts = _now_utc_iso()
+
+        metadata = dict(handoff_metadata or {})
+        incoming_payload = dict(handoff_payload or {})
+        output_payload = incoming_payload.get("output") if isinstance(incoming_payload.get("output"), dict) else {}
+        parse_section = result_payload.get("parse") if isinstance(result_payload.get("parse"), dict) else {}
+        document_section = _extract_document_section(result_payload, resolved_obj_name)
+        db_updates = result_payload.get("db_updates") if isinstance(result_payload.get("db_updates"), dict) else {}
+        fallback_source_payload = output_payload if output_payload else result_payload
+
+        record["correlation_id"] = correlation_id
+        record["updated_at"] = ts
+        record.setdefault("created_at", ts)
+        record["source_agent"] = str(
+            incoming_payload.get("agent_label")
+            or metadata.get("source_agent")
+            or result_payload.get("agent")
+            or _document_default_agent(resolved_obj_name)
+        )
+        record["link"] = deepcopy(result_payload.get("link") if isinstance(result_payload.get("link"), dict) else output_payload.get("link") if isinstance(output_payload.get("link"), dict) else {})
+        record["file"] = deepcopy(result_payload.get("file") if isinstance(result_payload.get("file"), dict) else output_payload.get("file") if isinstance(output_payload.get("file"), dict) else {})
+        record["parse"] = deepcopy(parse_section)
+        record[resolved_section_key] = deepcopy(document_section)
+        record["db_updates"] = deepcopy(db_updates)
+        record["handoff_metadata"] = deepcopy(metadata)
+        record["source_payload"] = deepcopy(fallback_source_payload)
+
+        document_records[correlation_id] = record
+        db[resolved_obj_name] = document_records
+        self.save_db(resolved_db_path, db, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+        return {
+            "ok": True,
+            "db_path": resolved_db_path,
+            "obj_name": resolved_obj_name,
+            "correlation_id": correlation_id,
+            "stored": True,
+        }
+
+    def get_document(
+        self,
+        correlation_id: str,
+        *,
+        obj_name: str,
+        db_path: str | None = None,
+    ) -> dict[str, Any] | None:
+        resolved_obj_name = _normalize_document_obj_name(obj_name)
+        resolved_section_key = _document_section_key(resolved_obj_name)
+        db = self.load_db(db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+        document_records = db.get(resolved_obj_name) if isinstance(db, dict) else None
+        if not isinstance(document_records, dict):
+            return None
+        record = document_records.get(correlation_id)
+        if not isinstance(record, dict):
+            return None
+        return {
+            "agent": str(record.get("source_agent") or record.get("agent") or _document_default_agent(resolved_obj_name)),
+            "correlation_id": str(record.get("correlation_id") or correlation_id),
+            "link": deepcopy(record.get("link") or {}),
+            "file": deepcopy(record.get("file") or {}),
+            "parse": deepcopy(record.get("parse") or {}),
+            resolved_section_key: deepcopy(record.get(resolved_section_key) or record.get(resolved_obj_name) or {}),
+            "db_updates": deepcopy(record.get("db_updates") or {}),
+        }
+
+    def update_dispatcher_status(
+        self,
+        *,
+        correlation_id: str,
+        processing_state: str,
+        db_path: str | None = None,
+        processed: bool | None = None,
+        failed_reason: str | None = None,
+        extra_updates: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        resolved_db_path = self._resolve_db_path(db_path, db_name="dispatcher_documents")
+        db = self.load_db(resolved_db_path, db_name="dispatcher_documents")
+        if not isinstance(db.get("documents"), dict):
+            db["documents"] = {}
+
+        docs = db["documents"]
+        record = docs.get(correlation_id) if isinstance(docs.get(correlation_id), dict) else {}
+        record = dict(record)
+
+        normalized_state = str(processing_state or "").strip().lower() or "failed"
+        effective_processed = bool(processed) if processed is not None else normalized_state == "processed"
+        ts = _now_utc_iso()
+
+        record.setdefault("id", correlation_id)
+        record["content_sha256"] = correlation_id
+        record["processing_state"] = normalized_state
+        record["processed"] = effective_processed
+        record["last_seen_at"] = ts
+
+        if effective_processed:
+            record["processed_at"] = ts
+            record["failed_reason"] = None
+            record["last_error"] = None
+            record["last_error_at"] = None
+        else:
+            reason = str(failed_reason or "").strip() or None
+            record["failed_reason"] = reason
+            record["last_error"] = reason
+            record["last_error_at"] = ts if reason else None
+
+        if isinstance(extra_updates, dict):
+            for key, value in extra_updates.items():
+                if value is None and key in {"failed_reason", "last_error", "last_error_at"}:
+                    record[str(key)] = None
+                elif value is not None:
+                    record[str(key)] = value
+
+        docs[correlation_id] = record
+        self.save_db(resolved_db_path, db, db_name="dispatcher_documents")
+        return {
+            "ok": True,
+            "db_path": resolved_db_path,
+            "correlation_id": correlation_id,
+            "processing_state": normalized_state,
+            "processed": effective_processed,
+        }
+
+    def upsert_db_record(
+        self,
+        *,
+        record_id: str,
+        result_payload: dict[str, Any],
+        obj_name: str = "documents",
+        obj_db_path: str | None = None,
+        dispatcher_db_path: str | None = None,
+        processing_state: str | None = None,
+        processed: bool | None = None,
+        failed_reason: str | None = None,
+        source_agent: str | None = None,
+        source_payload: dict[str, Any] | None = None,
+        dispatcher_updates: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        resolved_obj_name = _normalize_document_obj_name(obj_name)
+        resolved_dispatcher_db_path = self._resolve_db_path(dispatcher_db_path, db_name="dispatcher_documents")
+        resolved_obj_db_path = self._resolve_db_path(obj_db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+
+        original_obj_db = self.load_db(resolved_obj_db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+        next_obj_db = deepcopy(original_obj_db if isinstance(original_obj_db, dict) else {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}})
+        if not isinstance(next_obj_db.get(resolved_obj_name), dict):
+            next_obj_db[resolved_obj_name] = {}
+
+        resolved_section_key = _document_section_key(resolved_obj_name)
+        ts = _now_utc_iso()
+        parse_section = result_payload.get("parse") if isinstance(result_payload.get("parse"), dict) else {}
+        record_section = _extract_document_section(result_payload, resolved_obj_name)
+        db_updates = result_payload.get("db_updates") if isinstance(result_payload.get("db_updates"), dict) else {}
+        metadata = {"source_agent": str(source_agent or result_payload.get("agent") or _document_default_agent(resolved_obj_name))}
+        source_payload_dict = deepcopy(source_payload) if isinstance(source_payload, dict) else {}
+
+        existing_record = next_obj_db[resolved_obj_name].get(record_id) if isinstance(next_obj_db[resolved_obj_name].get(record_id), dict) else {}
+        next_record = dict(existing_record)
+        next_record["correlation_id"] = record_id
+        next_record["updated_at"] = ts
+        next_record.setdefault("created_at", ts)
+        next_record["source_agent"] = str(source_agent or result_payload.get("agent") or _document_default_agent(resolved_obj_name))
+        next_record["link"] = deepcopy(result_payload.get("link") if isinstance(result_payload.get("link"), dict) else {})
+        next_record["file"] = deepcopy(result_payload.get("file") if isinstance(result_payload.get("file"), dict) else {})
+        next_record["parse"] = deepcopy(parse_section)
+        next_record[resolved_section_key] = deepcopy(record_section)
+        next_record["db_updates"] = deepcopy(db_updates)
+        next_record["handoff_metadata"] = deepcopy(metadata)
+        next_record["source_payload"] = deepcopy(source_payload_dict)
+        next_obj_db[resolved_obj_name][record_id] = next_record
+
+        normalized_state = str(
+            processing_state
+            or db_updates.get("processing_state")
+            or ("processed" if (record_section or parse_section.get("is_job_posting")) else "failed")
+        ).strip().lower() or "failed"
+        effective_processed = bool(processed) if processed is not None else bool(db_updates.get("processed")) if isinstance(db_updates.get("processed"), bool) else normalized_state == "processed"
+        effective_failed_reason = str(failed_reason or db_updates.get("failed_reason") or "").strip() or None
+
+        try:
+            self.save_db(resolved_obj_db_path, next_obj_db, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+            dispatcher_result = self.update_dispatcher_status(
+                correlation_id=record_id,
+                processing_state=normalized_state,
+                db_path=resolved_dispatcher_db_path,
+                processed=effective_processed,
+                failed_reason=effective_failed_reason,
+                extra_updates=dispatcher_updates,
+            )
+        except Exception as exc:
+            try:
+                self.save_db(
+                    resolved_obj_db_path,
+                    original_obj_db if isinstance(original_obj_db, dict) else {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}},
+                    db_name=resolved_obj_name,
+                    obj_name=resolved_obj_name,
+                )
+            except Exception:
+                pass
+            return {
+                "ok": False,
+                "error": "atomic_upsert_failed",
+                "details": f"{type(exc).__name__}: {exc}",
+                "correlation_id": record_id,
+                "obj_name": resolved_obj_name,
+            }
+
+        result: dict[str, Any] = {
+            "ok": True,
+            "stored": True,
+            "dispatcher_updated": True,
+            "correlation_id": record_id,
+            "obj_name": resolved_obj_name,
+            "obj_db_path": resolved_obj_db_path,
+            "dispatcher_db_path": str(dispatcher_result.get("db_path") or resolved_dispatcher_db_path),
+            "processing_state": normalized_state,
+            "processed": effective_processed,
+        }
+        result[f"{resolved_obj_name}_db_path"] = resolved_obj_db_path
+        return result
+
+    def upsert_dispatcher_job_record(
+        self,
+        *,
+        correlation_id: str,
+        job_posting_result: dict[str, Any],
+        dispatcher_db_path: str | None = None,
+        job_postings_db_path: str | None = None,
+        obj_name: str = "job_postings",
+        processing_state: str | None = None,
+        processed: bool | None = None,
+        failed_reason: str | None = None,
+        source_agent: str | None = None,
+        source_payload: dict[str, Any] | None = None,
+        dispatcher_updates: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        # Backward-compatible wrapper for existing call sites.
+        return self.upsert_db_record(
+            record_id=correlation_id,
+            result_payload=job_posting_result,
+            obj_name=_normalize_document_obj_name(obj_name, ""),
+            obj_db_path=job_postings_db_path,
+            dispatcher_db_path=dispatcher_db_path,
+            processing_state=processing_state,
+            processed=processed,
+            failed_reason=failed_reason,
+            source_agent=source_agent,
+            source_payload=source_payload,
+            dispatcher_updates=dispatcher_updates,
+        )
+
+
+DOCUMENT_REPOSITORY = DocumentRepository()
+
+
+@dataclass(frozen=True)
+class RequestObjectSpec:
+    obj_name: str
+    result_sources: tuple[str, ...] = ()
+    store_sources: tuple[str, ...] = ()
+    file_sources: tuple[str, ...] = ()
+    inline_sources: tuple[str, ...] = ("text", "json", "dict", "object", "structured", "inline")
+    correlation_candidates: tuple[str, ...] = ("correlation_id", "id")
+    path_candidates: tuple[str, ...] = ("path", "file_path", "value", "source_path")
+    db_path_aliases: tuple[str, ...] = ("db_path",)
+    parse_mode: str = "generic"
+
+
+class RequestObjectResolutionService:
+    _OBJECT_SPECS: dict[str, RequestObjectSpec] = {
+        "profiles": RequestObjectSpec(
+            obj_name="profiles",
+            result_sources=("profile_result", "resolved_profile", "parsed_profile"),
+            store_sources=("profile_id", "profiles_db", "stored_profile", "persisted_profile"),
+            file_sources=("file", "path", "json_file", "structured_file", "document_file"),
+            correlation_candidates=("correlation_id", "profile_id", "id"),
+            db_path_aliases=("db_path", "profiles_db_path"),
+            parse_mode="profile",
+        ),
+        "job_postings": RequestObjectSpec(
+            obj_name="job_postings",
+            result_sources=("job_posting_result", "resolved_job_posting", "parsed_job_posting"),
+            store_sources=("correlation_id", "job_postings_db", "stored_job_posting", "persisted_job_posting"),
+            file_sources=("file", "path", "text_file", "document_file", "structured_file", "json_file"),
+            correlation_candidates=("correlation_id", "content_sha256", "job_id", "external_id", "title"),
+            db_path_aliases=("db_path", "job_postings_db_path"),
+            parse_mode="job_posting",
+        ),
     }
 
+    def load_object_spec(self, obj_name: str | None) -> RequestObjectSpec:
+        resolved_obj_name = _normalize_document_obj_name(obj_name)
+        spec = self._OBJECT_SPECS.get(resolved_obj_name)
+        if spec is not None:
+            return spec
+        return RequestObjectSpec(obj_name=resolved_obj_name)
 
-def persist_job_posting_result(
-    *,
-    correlation_id: str,
-    result_payload: dict[str, Any],
+    def resolve_correlation_id(
+        self,
+        *,
+        value: Any,
+        candidates: tuple[str, ...],
+        fallback_values: list[Any] | None = None,
+    ) -> str:
+        for candidate_value in [value, *(fallback_values or [])]:
+            if isinstance(candidate_value, str) and candidate_value.strip():
+                return candidate_value.strip()
+            if not isinstance(candidate_value, dict):
+                continue
+            for candidate_key in candidates:
+                resolved_value = _payload_value(candidate_value, candidate_key)
+                if resolved_value is None:
+                    continue
+                text_value = str(resolved_value).strip()
+                if text_value:
+                    return text_value
+        return ""
+
+    def resolve_source_path(self, *, request_payload: dict[str, Any], value: Any, spec: RequestObjectSpec) -> str:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        if isinstance(value, dict):
+            for candidate_key in spec.path_candidates:
+                resolved_value = _payload_value(value, candidate_key)
+                if resolved_value is None:
+                    continue
+                candidate_path = str(resolved_value).strip()
+                if candidate_path:
+                    return candidate_path
+        for candidate_key in spec.path_candidates:
+            resolved_value = _payload_value(request_payload, candidate_key)
+            if resolved_value is None:
+                continue
+            candidate_path = str(resolved_value).strip()
+            if candidate_path:
+                return candidate_path
+        return ""
+
+    def resolve_db_path(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        fallback_payload: dict[str, Any] | None,
+        db_path_field: str | None,
+        spec: RequestObjectSpec,
+    ) -> str | None:
+        candidate_keys: list[str] = []
+        if db_path_field:
+            candidate_keys.append(str(db_path_field))
+        candidate_keys.extend(spec.db_path_aliases)
+        for candidate_key in candidate_keys:
+            request_value = request_payload.get(candidate_key)
+            if isinstance(request_value, str) and request_value.strip():
+                return request_value.strip()
+            fallback_value = (fallback_payload or {}).get(candidate_key)
+            if isinstance(fallback_value, str) and fallback_value.strip():
+                return fallback_value.strip()
+        return None
+
+    def normalize_object_value(
+        self,
+        *,
+        raw_value: dict[str, Any],
+        spec: RequestObjectSpec,
+        source_path: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_value = deepcopy(raw_value)
+        if source_path:
+            normalized_value.setdefault("source_path", source_path)
+        if spec.parse_mode == "job_posting":
+            title = str(
+                normalized_value.get("job_title")
+                or normalized_value.get("title")
+                or normalized_value.get("position")
+                or ""
+            ).strip()
+            if title:
+                normalized_value["job_title"] = title
+            if not str(normalized_value.get("company_name") or "").strip() and isinstance(normalized_value.get("company"), dict):
+                company_name = str(
+                    normalized_value["company"].get("name")
+                    or normalized_value["company"].get("about")
+                    or ""
+                ).strip()
+                if company_name:
+                    normalized_value["company_name"] = company_name
+        return normalized_value
+
+    def build_parse_payload(self, *, object_value: dict[str, Any], spec: RequestObjectSpec) -> dict[str, Any]:
+        if spec.parse_mode == "profile":
+            language = _payload_value(object_value, "preferences.language") or "de"
+            return {"language": language, "errors": [], "warnings": []}
+        if spec.parse_mode == "job_posting":
+            return {"is_job_posting": True, "errors": [], "warnings": []}
+        return {"errors": [], "warnings": []}
+
+    def build_inline_result(self, raw_value: Any, *, obj_name: str, source_path: str | None = None) -> dict[str, Any] | None:
+        spec = self.load_object_spec(obj_name)
+        resolved_obj_name = _normalize_document_obj_name(obj_name, spec.obj_name)
+        result_key = _document_section_key(resolved_obj_name)
+        if isinstance(raw_value, dict):
+            object_value = self.normalize_object_value(raw_value=raw_value, spec=spec, source_path=source_path)
+            correlation_id = self.resolve_correlation_id(value=object_value, candidates=spec.correlation_candidates) or None
+            return {
+                "agent": _document_default_agent(resolved_obj_name),
+                "correlation_id": correlation_id,
+                "parse": self.build_parse_payload(object_value=object_value, spec=spec),
+                result_key: object_value,
+            }
+        if isinstance(raw_value, str):
+            raw_text = raw_value.strip()
+            if not raw_text:
+                return None
+            object_value: dict[str, Any] = {"raw_text": raw_text}
+            if source_path:
+                object_value["source_path"] = source_path
+            return {
+                "agent": _document_default_agent(resolved_obj_name),
+                "correlation_id": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
+                "parse": self.build_parse_payload(object_value=object_value, spec=spec),
+                result_key: object_value,
+            }
+        return None
+
+    def load_result_from_store(self, *, correlation_id: str, obj_name: str, db_path: str | None) -> dict[str, Any] | None:
+        if not correlation_id:
+            return None
+        return DOCUMENT_REPOSITORY.get_document(correlation_id, db_path=db_path, obj_name=obj_name)
+
+    def load_result_from_file(self, *, source_path: str, obj_name: str) -> dict[str, Any] | None:
+        resolved_path = os.path.abspath(os.path.expanduser(source_path))
+        if not os.path.isfile(resolved_path):
+            return None
+        result = None
+        try:
+            result = self.build_inline_result(_load_json_file(resolved_path), obj_name=obj_name, source_path=resolved_path)
+        except Exception:
+            result = None
+        if not isinstance(result, dict):
+            try:
+                with open(resolved_path, "r", encoding="utf-8") as file_handle:
+                    result = self.build_inline_result(file_handle.read(), obj_name=obj_name, source_path=resolved_path)
+            except Exception:
+                return None
+        if not isinstance(result, dict):
+            return None
+        result["correlation_id"] = str(result.get("correlation_id") or _sha256_file(resolved_path))
+        result["file"] = {"path": resolved_path, "content_sha256": _sha256_file(resolved_path)}
+        return result
+
+    def build_result_from_request(
+        self,
+        request_payload: Any,
+        *,
+        obj_name: str,
+        fallback_payload: dict[str, Any] | None = None,
+        store_sources: set[str] | None = None,
+        file_sources: set[str] | None = None,
+        inline_sources: set[str] | None = None,
+        db_path_field: str | None = None,
+    ) -> dict[str, Any] | None:
+        if not isinstance(request_payload, dict):
+            return None
+        spec = self.load_object_spec(obj_name)
+        resolved_obj_name = _normalize_document_obj_name(obj_name, spec.obj_name)
+        source = str(request_payload.get("source") or "").strip().lower()
+        value = request_payload.get("value")
+        result_sources = {str(item).strip().lower() for item in spec.result_sources if str(item).strip()}
+        effective_store_sources = store_sources or {str(item).strip().lower() for item in spec.store_sources if str(item).strip()}
+        effective_file_sources = file_sources or {str(item).strip().lower() for item in spec.file_sources if str(item).strip()}
+        effective_inline_sources = inline_sources or {str(item).strip().lower() for item in spec.inline_sources if str(item).strip()}
+
+        if source in result_sources and isinstance(value, dict):
+            return deepcopy(value)
+        if source in effective_store_sources:
+            correlation_id = self.resolve_correlation_id(
+                value=value,
+                candidates=spec.correlation_candidates,
+                fallback_values=[request_payload],
+            )
+            if not correlation_id:
+                return None
+            db_path = self.resolve_db_path(
+                request_payload=request_payload,
+                fallback_payload=fallback_payload,
+                db_path_field=db_path_field,
+                spec=spec,
+            )
+            return self.load_result_from_store(correlation_id=correlation_id, obj_name=resolved_obj_name, db_path=db_path)
+        if source in effective_file_sources:
+            candidate_path = self.resolve_source_path(request_payload=request_payload, value=value, spec=spec)
+            if not candidate_path:
+                return None
+            return self.load_result_from_file(source_path=candidate_path, obj_name=resolved_obj_name)
+        if source in effective_inline_sources or (not source and value is not None):
+            return self.build_inline_result(value, obj_name=resolved_obj_name)
+        return None
+
+
+REQUEST_OBJECT_RESOLUTION_SERVICE = RequestObjectResolutionService()
+
+
+class DocumentObjectService:
+    def load_result_payload(self, result_payload: dict[str, Any] | str | None) -> dict[str, Any] | None:
+        parsed_payload = result_payload
+        if isinstance(parsed_payload, str):
+            try:
+                parsed_payload = json.loads(parsed_payload)
+            except Exception:
+                return None
+        return parsed_payload if isinstance(parsed_payload, dict) else None
+
+    def resolve_result_correlation_id(
+        self,
+        *,
+        result_payload: dict[str, Any],
+        obj_name: str,
+        correlation_id: str | None = None,
+        source_payload: dict[str, Any] | None = None,
+    ) -> str:
+        spec = REQUEST_OBJECT_RESOLUTION_SERVICE.load_object_spec(obj_name)
+        result_key = _document_section_key(obj_name)
+        result_object = result_payload.get(result_key) if isinstance(result_payload.get(result_key), dict) else {}
+        return REQUEST_OBJECT_RESOLUTION_SERVICE.resolve_correlation_id(
+            value=correlation_id or "",
+            candidates=spec.correlation_candidates,
+            fallback_values=[
+                result_payload,
+                result_payload.get("file") if isinstance(result_payload.get("file"), dict) else {},
+                result_payload.get("db_updates") if isinstance(result_payload.get("db_updates"), dict) else {},
+                result_object,
+                source_payload or {},
+            ],
+        )
+
+    def store_result(
+        self,
+        *,
+        result_payload: dict[str, Any] | str,
+        correlation_id: str | None = None,
+        db_path: str | None = None,
+        source_agent: str | None = None,
+        source_payload: dict[str, Any] | None = None,
+        obj_name: str,
+    ) -> str:
+        parsed_payload = self.load_result_payload(result_payload)
+        if not isinstance(parsed_payload, dict):
+            return json.dumps({"ok": False, "error": "document_result_must_be_object"}, ensure_ascii=False)
+        resolved_obj_name = _normalize_document_obj_name(obj_name)
+        effective_correlation_id = self.resolve_result_correlation_id(
+            result_payload=parsed_payload,
+            obj_name=resolved_obj_name,
+            correlation_id=correlation_id,
+            source_payload=source_payload,
+        )
+        if not effective_correlation_id:
+            return json.dumps({"ok": False, "error": "missing_correlation_id"}, ensure_ascii=False)
+        metadata = {"source_agent": str(source_agent or parsed_payload.get("agent") or _document_default_agent(resolved_obj_name))}
+        result = DOCUMENT_REPOSITORY.persist_document(
+            correlation_id=effective_correlation_id,
+            result_payload=parsed_payload,
+            db_path=db_path or (str(parsed_payload.get(f"{resolved_obj_name}_db_path") or "").strip() or None),
+            handoff_metadata=metadata,
+            handoff_payload=source_payload if isinstance(source_payload, dict) else None,
+            obj_name=resolved_obj_name,
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def ingest_result(
+        self,
+        *,
+        object_payload: dict[str, Any] | None = None,
+        request_payload: dict[str, Any] | None = None,
+        result_payload: dict[str, Any] | str | None = None,
+        correlation_id: str | None = None,
+        db_path: str | None = None,
+        source_agent: str | None = None,
+        source_payload: dict[str, Any] | None = None,
+        parse: dict[str, Any] | None = None,
+        obj_name: str,
+    ) -> str:
+        parsed_payload = self.load_result_payload(result_payload)
+        resolved_obj_name = _normalize_document_obj_name(obj_name)
+        if parsed_payload is None:
+            if isinstance(request_payload, dict):
+                parsed_payload = REQUEST_OBJECT_RESOLUTION_SERVICE.build_result_from_request(request_payload, obj_name=resolved_obj_name)
+            elif isinstance(object_payload, dict):
+                parsed_payload = REQUEST_OBJECT_RESOLUTION_SERVICE.build_inline_result(object_payload, obj_name=resolved_obj_name)
+        if not isinstance(parsed_payload, dict):
+            return json.dumps({"ok": False, "error": "document_result_must_be_object"}, ensure_ascii=False)
+
+        normalized_payload = deepcopy(parsed_payload)
+        effective_correlation_id = self.resolve_result_correlation_id(
+            result_payload=normalized_payload,
+            obj_name=resolved_obj_name,
+            correlation_id=correlation_id,
+            source_payload=source_payload,
+        )
+        if not effective_correlation_id:
+            return json.dumps({"ok": False, "error": "missing_correlation_id"}, ensure_ascii=False)
+
+        normalized_payload["correlation_id"] = effective_correlation_id
+        if source_agent:
+            normalized_payload["agent"] = str(source_agent)
+        if isinstance(source_payload, dict):
+            normalized_payload["source_payload"] = deepcopy(source_payload)
+        if not isinstance(normalized_payload.get("parse"), dict):
+            spec = REQUEST_OBJECT_RESOLUTION_SERVICE.load_object_spec(resolved_obj_name)
+            normalized_payload["parse"] = deepcopy(parse) if isinstance(parse, dict) else REQUEST_OBJECT_RESOLUTION_SERVICE.build_parse_payload(
+                object_value={"raw_text": ""},
+                spec=spec,
+            )
+
+        return self.store_result(
+            result_payload=normalized_payload,
+            correlation_id=effective_correlation_id,
+            db_path=db_path,
+            source_agent=source_agent,
+            source_payload=source_payload,
+            obj_name=resolved_obj_name,
+        )
+
+
+DOCUMENT_OBJECT_SERVICE = DocumentObjectService()
+
+
+def store_object_result_tool(
+    object_result: dict[str, Any] | str,
+    correlation_id: str | None = None,
     db_path: str | None = None,
-    handoff_metadata: dict[str, Any] | None = None,
-    handoff_payload: dict[str, Any] | None = None,
-    obj: str = "job_postings",
-) -> dict[str, Any]:
-    return persist_document_result(
+    source_agent: str | None = None,
+    source_payload: dict[str, Any] | None = None,
+    obj_name: str | None = None,
+) -> str:
+    return DOCUMENT_OBJECT_SERVICE.store_result(
+        result_payload=object_result,
         correlation_id=correlation_id,
-        result_payload=result_payload,
-        obj=obj,
         db_path=db_path,
-        handoff_metadata=handoff_metadata,
-        handoff_payload=handoff_payload,
+        source_agent=source_agent,
+        source_payload=source_payload,
+        obj_name=_normalize_document_obj_name(obj_name),
     )
+
+
+def store_document_result_tool(
+    document_result: dict[str, Any] | str,
+    correlation_id: str | None = None,
+    db_path: str | None = None,
+    source_agent: str | None = None,
+    source_payload: dict[str, Any] | None = None,
+    obj_name: str | None = None,
+) -> str:
+    return store_object_result_tool(
+        object_result=document_result,
+        correlation_id=correlation_id,
+        db_path=db_path,
+        source_agent=source_agent,
+        source_payload=source_payload,
+        obj_name=obj_name,
+    )
+
+
+def ingest_object_tool(
+    object_payload: dict[str, Any] | None = None,
+    request_payload: dict[str, Any] | None = None,
+    object_result: dict[str, Any] | str | None = None,
+    correlation_id: str | None = None,
+    db_path: str | None = None,
+    source_agent: str | None = None,
+    source_payload: dict[str, Any] | None = None,
+    parse: dict[str, Any] | None = None,
+    obj_name: str | None = None,
+) -> str:
+    return DOCUMENT_OBJECT_SERVICE.ingest_result(
+        object_payload=object_payload,
+        request_payload=request_payload,
+        result_payload=object_result,
+        correlation_id=correlation_id,
+        db_path=db_path,
+        source_agent=source_agent,
+        source_payload=source_payload,
+        parse=parse,
+        obj_name=_normalize_document_obj_name(obj_name),
+    )
+
+
+def ingest_document_tool(
+    object_payload: dict[str, Any] | None = None,
+    request_payload: dict[str, Any] | None = None,
+    document_result: dict[str, Any] | str | None = None,
+    correlation_id: str | None = None,
+    db_path: str | None = None,
+    source_agent: str | None = None,
+    source_payload: dict[str, Any] | None = None,
+    parse: dict[str, Any] | None = None,
+    obj_name: str | None = None,
+) -> str:
+    return ingest_object_tool(
+        object_payload=object_payload,
+        request_payload=request_payload,
+        object_result=document_result,
+        correlation_id=correlation_id,
+        db_path=db_path,
+        source_agent=source_agent,
+        source_payload=source_payload,
+        parse=parse,
+        obj_name=obj_name,
+    )
+
+
+def upsert_object_record_tool(
+    object_result: dict[str, Any] | str,
+    correlation_id: str | None = None,
+    dispatcher_db_path: str | None = None,
+    obj_db_path: str | None = None,
+    obj_name: str | None = None,
+    processing_state: str | None = None,
+    processed: bool | None = None,
+    failed_reason: str | None = None,
+    source_agent: str | None = None,
+    source_payload: dict[str, Any] | None = None,
+    dispatcher_updates: dict[str, Any] | None = None,
+) -> str:
+    parsed_result = object_result
+    if isinstance(parsed_result, str):
+        try:
+            parsed_result = json.loads(parsed_result)
+        except Exception:
+            return json.dumps({"ok": False, "error": "invalid_object_result_json"}, ensure_ascii=False)
+    if not isinstance(parsed_result, dict):
+        return json.dumps({"ok": False, "error": "object_result_must_be_object"}, ensure_ascii=False)
+
+    resolved_obj_name = _normalize_document_obj_name(obj_name)
+    effective_correlation_id = DOCUMENT_OBJECT_SERVICE.resolve_result_correlation_id(
+        result_payload=parsed_result,
+        obj_name=resolved_obj_name,
+        correlation_id=correlation_id,
+        source_payload=source_payload,
+    )
+    if not effective_correlation_id:
+        return json.dumps({"ok": False, "error": "missing_correlation_id"}, ensure_ascii=False)
+
+    result = DOCUMENT_REPOSITORY.upsert_db_record(
+        record_id=effective_correlation_id,
+        result_payload=parsed_result,
+        obj_name=resolved_obj_name,
+        obj_db_path=obj_db_path,
+        dispatcher_db_path=dispatcher_db_path,
+        processing_state=processing_state,
+        processed=processed,
+        failed_reason=failed_reason,
+        source_agent=source_agent,
+        source_payload=source_payload,
+        dispatcher_updates=dispatcher_updates,
+    )
+    return json.dumps(result, ensure_ascii=False)
+
+
+
 
 
 def store_job_posting_result_tool(
@@ -410,36 +1162,14 @@ def store_job_posting_result_tool(
     source_payload: dict[str, Any] | None = None,
     obj_name: str | None = None,
 ) -> str:
-    parsed_result = job_posting_result
-    if isinstance(parsed_result, str):
-        try:
-            parsed_result = json.loads(parsed_result)
-        except Exception:
-            return json.dumps({"ok": False, "error": "invalid_job_posting_result_json"}, ensure_ascii=False)
-    if not isinstance(parsed_result, dict):
-        return json.dumps({"ok": False, "error": "job_posting_result_must_be_object"}, ensure_ascii=False)
-
-    effective_correlation_id = str(
-        correlation_id
-        or parsed_result.get("correlation_id")
-        or ((parsed_result.get("file") or {}).get("content_sha256") if isinstance(parsed_result.get("file"), dict) else "")
-        or ((parsed_result.get("db_updates") or {}).get("content_sha256") if isinstance(parsed_result.get("db_updates"), dict) else "")
-        or ""
-    ).strip()
-    if not effective_correlation_id:
-        return json.dumps({"ok": False, "error": "missing_correlation_id"}, ensure_ascii=False)
-
-    metadata = {"source_agent": str(source_agent or parsed_result.get("agent") or "job_posting_parser")}
-    resolved_obj_name = _normalize_document_obj_name(obj_name, "job_postings")
-    result = persist_job_posting_result(
-        correlation_id=effective_correlation_id,
-        result_payload=parsed_result,
-        db_path=db_path or (str(parsed_result.get(f"{resolved_obj_name}_db_path") or "").strip() or None),
-        handoff_metadata=metadata,
-        handoff_payload=source_payload if isinstance(source_payload, dict) else None,
-        obj=resolved_obj_name,
+    return store_object_result_tool(
+        object_result=job_posting_result,
+        correlation_id=correlation_id,
+        db_path=db_path,
+        source_agent=source_agent,
+        source_payload=source_payload,
+        obj_name=_normalize_document_obj_name(obj_name, "job_postings"),
     )
-    return json.dumps(result, ensure_ascii=False)
 
 
 def upsert_dispatcher_job_record_tool(
@@ -455,126 +1185,18 @@ def upsert_dispatcher_job_record_tool(
     source_payload: dict[str, Any] | None = None,
     dispatcher_updates: dict[str, Any] | None = None,
 ) -> str:
-    parsed_result = job_posting_result
-    if isinstance(parsed_result, str):
-        try:
-            parsed_result = json.loads(parsed_result)
-        except Exception:
-            return json.dumps({"ok": False, "error": "invalid_job_posting_result_json"}, ensure_ascii=False)
-    if not isinstance(parsed_result, dict):
-        return json.dumps({"ok": False, "error": "job_posting_result_must_be_object"}, ensure_ascii=False)
-
-    effective_correlation_id = str(
-        correlation_id
-        or parsed_result.get("correlation_id")
-        or ((parsed_result.get("file") or {}).get("content_sha256") if isinstance(parsed_result.get("file"), dict) else "")
-        or ((parsed_result.get("job_posting") or {}).get("job_id") if isinstance(parsed_result.get("job_posting"), dict) else "")
-        or ((source_payload or {}).get("record_id") if isinstance(source_payload, dict) else "")
-        or ""
-    ).strip()
-    if not effective_correlation_id:
-        return json.dumps({"ok": False, "error": "missing_correlation_id"}, ensure_ascii=False)
-
-    resolved_obj_name = _normalize_document_obj_name(obj_name, "job_postings")
-    resolved_section_key = _document_section_key(resolved_obj_name)
-
-    resolved_dispatcher_db_path = os.path.abspath(os.path.expanduser(str(dispatcher_db_path or _default_dispatcher_db_path())))
-    resolved_job_postings_db_path = os.path.abspath(os.path.expanduser(str(job_postings_db_path or _default_document_db_path(resolved_obj_name))))
-
-    original_dispatcher_db = _load_dispatcher_db(resolved_dispatcher_db_path)
-    original_job_postings_db = _load_document_db(resolved_job_postings_db_path, resolved_obj_name)
-    next_dispatcher_db = deepcopy(original_dispatcher_db if isinstance(original_dispatcher_db, dict) else {"schema": "dispatcher_doc_db_v1", "documents": {}})
-    next_job_postings_db = deepcopy(original_job_postings_db if isinstance(original_job_postings_db, dict) else {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}})
-
-    if not isinstance(next_dispatcher_db.get("documents"), dict):
-        next_dispatcher_db["documents"] = {}
-    if not isinstance(next_job_postings_db.get(resolved_obj_name), dict):
-        next_job_postings_db[resolved_obj_name] = {}
-
-    ts = _now_utc_iso()
-    parse_section = parsed_result.get("parse") if isinstance(parsed_result.get("parse"), dict) else {}
-    job_posting_section = _extract_document_section(parsed_result, resolved_obj_name)
-    db_updates = parsed_result.get("db_updates") if isinstance(parsed_result.get("db_updates"), dict) else {}
-    metadata = {"source_agent": str(source_agent or parsed_result.get("agent") or _document_default_agent(resolved_obj_name))}
-    source_payload_dict = deepcopy(source_payload) if isinstance(source_payload, dict) else {}
-
-    job_record = next_job_postings_db[resolved_obj_name].get(effective_correlation_id) if isinstance(next_job_postings_db[resolved_obj_name].get(effective_correlation_id), dict) else {}
-    job_record = dict(job_record)
-    job_record["correlation_id"] = effective_correlation_id
-    job_record["updated_at"] = ts
-    job_record.setdefault("created_at", ts)
-    job_record["source_agent"] = str(source_agent or parsed_result.get("agent") or _document_default_agent(resolved_obj_name))
-    job_record["link"] = deepcopy(parsed_result.get("link") if isinstance(parsed_result.get("link"), dict) else {})
-    job_record["file"] = deepcopy(parsed_result.get("file") if isinstance(parsed_result.get("file"), dict) else {})
-    job_record["parse"] = deepcopy(parse_section)
-    job_record[resolved_section_key] = deepcopy(job_posting_section)
-    job_record["db_updates"] = deepcopy(db_updates)
-    job_record["handoff_metadata"] = deepcopy(metadata)
-    job_record["source_payload"] = deepcopy(source_payload_dict)
-    next_job_postings_db[resolved_obj_name][effective_correlation_id] = job_record
-
-    normalized_state = str(
-        processing_state
-        or db_updates.get("processing_state")
-        or ("processed" if (job_posting_section or parse_section.get("is_job_posting")) else "failed")
-    ).strip().lower() or "failed"
-    effective_processed = bool(processed) if processed is not None else bool(db_updates.get("processed")) if isinstance(db_updates.get("processed"), bool) else normalized_state == "processed"
-    effective_failed_reason = str(failed_reason or db_updates.get("failed_reason") or "").strip() or None
-
-    dispatcher_record = next_dispatcher_db["documents"].get(effective_correlation_id) if isinstance(next_dispatcher_db["documents"].get(effective_correlation_id), dict) else {}
-    dispatcher_record = dict(dispatcher_record)
-    dispatcher_record.setdefault("id", effective_correlation_id)
-    dispatcher_record["content_sha256"] = effective_correlation_id
-    dispatcher_record["processing_state"] = normalized_state
-    dispatcher_record["processed"] = effective_processed
-    dispatcher_record["last_seen_at"] = ts
-    if effective_processed:
-        dispatcher_record["processed_at"] = ts
-        dispatcher_record["failed_reason"] = None
-        dispatcher_record["last_error"] = None
-        dispatcher_record["last_error_at"] = None
-    else:
-        dispatcher_record["failed_reason"] = effective_failed_reason
-        dispatcher_record["last_error"] = effective_failed_reason
-        dispatcher_record["last_error_at"] = ts if effective_failed_reason else None
-    if isinstance(dispatcher_updates, dict):
-        for key, value in dispatcher_updates.items():
-            if value is None and key in {"failed_reason", "last_error", "last_error_at"}:
-                dispatcher_record[str(key)] = None
-            elif value is not None:
-                dispatcher_record[str(key)] = value
-    next_dispatcher_db["documents"][effective_correlation_id] = dispatcher_record
-
-    try:
-        _save_document_db(resolved_job_postings_db_path, next_job_postings_db)
-        try:
-            _save_document_db(resolved_dispatcher_db_path, next_dispatcher_db)
-        except Exception:
-            _save_document_db(resolved_job_postings_db_path, original_job_postings_db if isinstance(original_job_postings_db, dict) else {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}})
-            raise
-    except Exception as exc:
-        return json.dumps(
-            {
-                "ok": False,
-                "error": "atomic_upsert_failed",
-                "details": f"{type(exc).__name__}: {exc}",
-                "correlation_id": effective_correlation_id,
-            },
-            ensure_ascii=False,
-        )
-
-    return json.dumps(
-        {
-            "ok": True,
-            "stored": True,
-            "dispatcher_updated": True,
-            "correlation_id": effective_correlation_id,
-            "job_postings_db_path": resolved_job_postings_db_path,
-            "dispatcher_db_path": resolved_dispatcher_db_path,
-            "processing_state": normalized_state,
-            "processed": effective_processed,
-        },
-        ensure_ascii=False,
+    return upsert_object_record_tool(
+        object_result=job_posting_result,
+        correlation_id=correlation_id,
+        dispatcher_db_path=dispatcher_db_path,
+        obj_db_path=job_postings_db_path,
+        obj_name=_normalize_document_obj_name(obj_name, "job_postings"),
+        processing_state=processing_state,
+        processed=processed,
+        failed_reason=failed_reason,
+        source_agent=source_agent,
+        source_payload=source_payload,
+        dispatcher_updates=dispatcher_updates,
     )
 
 
@@ -585,35 +1207,13 @@ def store_profile_result_tool(
     source_agent: str | None = None,
     obj_name: str | None = None,
 ) -> str:
-    parsed_result = profile_result
-    if isinstance(parsed_result, str):
-        try:
-            parsed_result = json.loads(parsed_result)
-        except Exception:
-            return json.dumps({"ok": False, "error": "invalid_profile_result_json"}, ensure_ascii=False)
-    if not isinstance(parsed_result, dict):
-        return json.dumps({"ok": False, "error": "profile_result_must_be_object"}, ensure_ascii=False)
-
-    effective_correlation_id = str(
-        correlation_id
-        or parsed_result.get("correlation_id")
-        or ((parsed_result.get("profile") or {}).get("profile_id") if isinstance(parsed_result.get("profile"), dict) else "")
-        or ""
-    ).strip()
-    if not effective_correlation_id:
-        return json.dumps({"ok": False, "error": "missing_correlation_id"}, ensure_ascii=False)
-
-    normalized_result = deepcopy(parsed_result)
-    if source_agent:
-        normalized_result["agent"] = str(source_agent)
-
-    result = persist_profile_result(
-        correlation_id=effective_correlation_id,
-        profile_result=normalized_result,
-        db_path=db_path or (str(parsed_result.get(f"{_normalize_document_obj_name(obj_name, 'profiles')}_db_path") or "").strip() or None),
-        obj=obj_name or "profiles",
+    return store_object_result_tool(
+        object_result=profile_result,
+        correlation_id=correlation_id,
+        db_path=db_path,
+        source_agent=source_agent,
+        obj_name=_normalize_document_obj_name(obj_name, "profiles"),
     )
-    return json.dumps(result, ensure_ascii=False)
 
 
 def ingest_profile_tool(
@@ -626,49 +1226,16 @@ def ingest_profile_tool(
     source_payload: dict[str, Any] | None = None,
     obj_name: str | None = None,
 ) -> str:
-    parsed_result = profile_result
-    if isinstance(parsed_result, str):
-        try:
-            parsed_result = json.loads(parsed_result)
-        except Exception:
-            return json.dumps({"ok": False, "error": "invalid_profile_result_json"}, ensure_ascii=False)
-
-    if parsed_result is None:
-        request_payload: dict[str, Any] | None = None
-        if isinstance(applicant_profile, dict):
-            request_payload = applicant_profile
-        elif isinstance(profile, dict):
-            request_payload = {"source": "text", "value": profile}
-        if not isinstance(request_payload, dict):
-            return json.dumps({"ok": False, "error": "missing_profile_payload"}, ensure_ascii=False)
-        parsed_result = _build_profile_result_from_request(request_payload)
-
-    if not isinstance(parsed_result, dict):
-        return json.dumps({"ok": False, "error": "profile_result_must_be_object"}, ensure_ascii=False)
-
-    effective_correlation_id = str(
-        correlation_id
-        or parsed_result.get("correlation_id")
-        or ((parsed_result.get("profile") or {}).get("profile_id") if isinstance(parsed_result.get("profile"), dict) else "")
-        or ((source_payload or {}).get("profile_id") if isinstance(source_payload, dict) else "")
-        or ""
-    ).strip()
-    if not effective_correlation_id:
-        return json.dumps({"ok": False, "error": "missing_correlation_id"}, ensure_ascii=False)
-
-    normalized_result = deepcopy(parsed_result)
-    normalized_result["correlation_id"] = effective_correlation_id
-    if source_agent:
-        normalized_result["agent"] = str(source_agent)
-    if isinstance(source_payload, dict):
-        normalized_result["source_payload"] = deepcopy(source_payload)
-
-    return store_profile_result_tool(
-        profile_result=normalized_result,
-        correlation_id=effective_correlation_id,
+    request_payload = applicant_profile if isinstance(applicant_profile, dict) else {"source": "text", "value": profile} if isinstance(profile, dict) else None
+    return ingest_object_tool(
+        object_payload=profile,
+        request_payload=request_payload,
+        object_result=profile_result,
+        correlation_id=correlation_id,
         db_path=db_path,
         source_agent=source_agent,
-        obj_name=obj_name,
+        source_payload=source_payload,
+        obj_name=_normalize_document_obj_name(obj_name, "profiles"),
     )
 
 
@@ -682,623 +1249,660 @@ def ingest_job_posting_tool(
     parse: dict[str, Any] | None = None,
     obj_name: str | None = None,
 ) -> str:
-    parsed_result = job_posting_result
-    if isinstance(parsed_result, str):
-        try:
-            parsed_result = json.loads(parsed_result)
-        except Exception:
-            return json.dumps({"ok": False, "error": "invalid_job_posting_result_json"}, ensure_ascii=False)
-
-    if parsed_result is None:
-        if not isinstance(job_posting, dict):
-            return json.dumps({"ok": False, "error": "missing_job_posting_payload"}, ensure_ascii=False)
-        parsed_result = {
-            "agent": str(source_agent or "job_platform_ingest"),
-            "correlation_id": correlation_id,
-            "parse": deepcopy(parse) if isinstance(parse, dict) else {"is_job_posting": True, "errors": [], "warnings": []},
-            "job_posting": deepcopy(job_posting),
-        }
-
-    if not isinstance(parsed_result, dict):
-        return json.dumps({"ok": False, "error": "job_posting_result_must_be_object"}, ensure_ascii=False)
-
-    inferred_job_posting = parsed_result.get("job_posting") if isinstance(parsed_result.get("job_posting"), dict) else {}
-    inferred_source_payload = source_payload if isinstance(source_payload, dict) else {}
-    effective_correlation_id = str(
-        correlation_id
-        or parsed_result.get("correlation_id")
-        or ((parsed_result.get("file") or {}).get("content_sha256") if isinstance(parsed_result.get("file"), dict) else "")
-        or inferred_job_posting.get("job_id")
-        or inferred_job_posting.get("external_id")
-        or inferred_source_payload.get("record_id")
-        or inferred_source_payload.get("id")
-        or inferred_source_payload.get("url")
-        or ""
-    ).strip()
-    if not effective_correlation_id:
-        return json.dumps({"ok": False, "error": "missing_correlation_id"}, ensure_ascii=False)
-
-    normalized_result = deepcopy(parsed_result)
-    normalized_result["correlation_id"] = effective_correlation_id
-    if source_agent:
-        normalized_result["agent"] = str(source_agent)
-    if not isinstance(normalized_result.get("parse"), dict):
-        normalized_result["parse"] = deepcopy(parse) if isinstance(parse, dict) else {"is_job_posting": True, "errors": [], "warnings": []}
-
-    return store_job_posting_result_tool(
-        job_posting_result=normalized_result,
-        correlation_id=effective_correlation_id,
+    request_payload = {"source": "text", "value": job_posting} if isinstance(job_posting, dict) else None
+    return ingest_object_tool(
+        object_payload=job_posting,
+        request_payload=request_payload,
+        object_result=job_posting_result,
+        correlation_id=correlation_id,
         db_path=db_path,
         source_agent=source_agent,
-        source_payload=inferred_source_payload or None,
-        obj_name=obj_name,
+        source_payload=source_payload,
+        parse=parse,
+        obj_name=_normalize_document_obj_name(obj_name, "job_postings"),
     )
 
 
-def get_persisted_document_result(
-    correlation_id: str,
-    *,
-    obj: str,
-    db_path: str | None = None,
-) -> dict[str, Any] | None:
-    resolved_obj = _normalize_document_obj_name(obj)
-    resolved_section_key = _document_section_key(resolved_obj)
-    resolved_db_path = os.path.abspath(os.path.expanduser(str(db_path or _default_document_db_path(resolved_obj))))
-    db = _load_document_db(resolved_db_path, resolved_obj)
-    document_records = db.get(resolved_obj) if isinstance(db, dict) else None
-    if not isinstance(document_records, dict):
-        return None
-    record = document_records.get(correlation_id)
-    if not isinstance(record, dict):
-        return None
+class ActionRequestService:
+    def resolve_object_name(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        resolution_config: dict[str, Any],
+        config_key: str,
+        default_obj_name: str,
+        value_payload: dict[str, Any] | None = None,
+    ) -> str:
+        return str(
+            (value_payload or {}).get("obj_name")
+            or request_payload.get("obj_name")
+            or resolution_config.get(config_key)
+            or default_obj_name
+        ).strip() or default_obj_name
 
-    return {
-        "agent": str(record.get("source_agent") or record.get("agent") or _document_default_agent(resolved_obj)),
-        "correlation_id": str(record.get("correlation_id") or correlation_id),
-        "link": deepcopy(record.get("link") or {}),
-        "file": deepcopy(record.get("file") or {}),
-        "parse": deepcopy(record.get("parse") or {}),
-        resolved_section_key: deepcopy(record.get(resolved_section_key) or record.get(resolved_obj) or {}),
-        "db_updates": deepcopy(record.get("db_updates") or {}),
-    }
+    def resolve_object_db_path_field(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        resolution_config: dict[str, Any],
+        config_key: str,
+        resolved_obj_name: str,
+        value_payload: dict[str, Any] | None = None,
+    ) -> str:
+        return str(
+            (
+                f"{resolved_obj_name}_db_path"
+                if ((value_payload or {}).get("obj_name") or request_payload.get("obj_name"))
+                else resolution_config.get(config_key)
+            )
+            or f"{resolved_obj_name}_db_path"
+        ).strip() or f"{resolved_obj_name}_db_path"
 
+    def load_resolution_objects(self, *, resolution_config: dict[str, Any]) -> list[dict[str, Any]]:
+        resolved_objects: list[dict[str, Any]] = []
+        raw_objects = resolution_config.get("objects") or []
+        if not isinstance(raw_objects, list):
+            return resolved_objects
+        for raw_object in raw_objects:
+            if not isinstance(raw_object, dict):
+                continue
+            binding_name = str(
+                raw_object.get("binding_name")
+                or raw_object.get("request_field")
+                or raw_object.get("result_field")
+                or ""
+            ).strip()
+            request_field = str(raw_object.get("request_field") or "").strip()
+            result_field = str(raw_object.get("result_field") or "").strip()
+            default_obj_name = str(raw_object.get("default_obj_name") or "").strip()
+            if not binding_name or not request_field or not result_field or not default_obj_name:
+                continue
+            resolved_objects.append(deepcopy(raw_object))
+        return resolved_objects
 
-def persist_profile_result(
-    *,
-    correlation_id: str,
-    profile_result: dict[str, Any],
-    db_path: str | None = None,
-    obj: str = "profiles",
-) -> dict[str, Any]:
-    return persist_document_result(
-        correlation_id=correlation_id,
-        result_payload=profile_result,
-        obj=obj,
-        db_path=db_path,
-    )
-
-
-def get_persisted_profile_result(
-    correlation_id: str,
-    *,
-    db_path: str | None = None,
-    obj_name: str | None = None,
-) -> dict[str, Any] | None:
-    stored = get_persisted_document_result(
-        correlation_id,
-        db_path=db_path,
-        obj=obj_name or "profiles",
-    )
-    if not isinstance(stored, dict):
-        return None
-    return {
-        "agent": str(stored.get("agent") or "profile_parser"),
-        "correlation_id": str(stored.get("correlation_id") or correlation_id),
-        "parse": deepcopy(stored.get("parse") or {}),
-        "profile": deepcopy(stored.get("profile") or {}),
-    }
-
-
-def get_persisted_job_posting_result(
-    correlation_id: str,
-    *,
-    db_path: str | None = None,
-    obj_name: str | None = None,
-) -> dict[str, Any] | None:
-    resolution_config = dict(get_action_request_schema_config("ingest_job_posting").get("request_resolution") or {})
-    resolved_obj_name = str(obj_name or resolution_config.get("job_posting_obj_name") or "job_postings").strip() or "job_postings"
-    stored = get_persisted_document_result(
-        correlation_id,
-        db_path=db_path,
-        obj=resolved_obj_name,
-    )
-    if not isinstance(stored, dict):
-        return None
-    resolved_section_key = _document_section_key(resolved_obj_name)
-    return {
-        "agent": str(stored.get("agent") or _document_default_agent(resolved_obj_name)),
-        "correlation_id": str(stored.get("correlation_id") or correlation_id),
-        "link": deepcopy(stored.get("link") or {}),
-        "file": deepcopy(stored.get("file") or {}),
-        "parse": deepcopy(stored.get("parse") or {}),
-        "job_posting": deepcopy(stored.get(resolved_section_key) or {}),
-        "db_updates": deepcopy(stored.get("db_updates") or {}),
-    }
-
-
-def _build_profile_result_from_request(profile_payload: Any) -> dict[str, Any] | None:
-    if not isinstance(profile_payload, dict):
-        return None
-
-    source = str(profile_payload.get("source") or "").strip().lower()
-    value = profile_payload.get("value")
-
-    def _profile_result_from_profile(profile: Any, *, source_path: str | None = None) -> dict[str, Any] | None:
-        if not isinstance(profile, dict):
+    def load_resolution_object(
+        self,
+        *,
+        resolution_config: dict[str, Any],
+        binding_name: str | None,
+    ) -> dict[str, Any] | None:
+        normalized_binding_name = str(binding_name or "").strip()
+        if not normalized_binding_name:
             return None
-        profile_copy = deepcopy(profile)
-        if source_path:
-            profile_copy.setdefault("source_path", source_path)
-        preferences = profile_copy.get("preferences") if isinstance(profile_copy.get("preferences"), dict) else {}
-        return {
-            "agent": "profile_parser",
-            "correlation_id": profile_copy.get("profile_id"),
-            "parse": {
-                "language": preferences.get("language", "de"),
-                "errors": [],
-                "warnings": [],
-            },
-            "profile": profile_copy,
-        }
-
-    def _parse_profile_file(candidate_path: str) -> dict[str, Any] | None:
-        resolved_path = os.path.abspath(os.path.expanduser(candidate_path))
-        if not os.path.isfile(resolved_path):
-            return None
-        try:
-            loaded = _load_json_file(resolved_path)
-        except Exception:
-            try:
-                with open(resolved_path, "r", encoding="utf-8") as f:
-                    content = f.read()
-                loaded = json.loads(content)
-            except Exception:
-                return None
-        return _profile_result_from_profile(loaded, source_path=resolved_path)
-
-    if source in {"profile_result", "resolved_profile", "parsed_profile"} and isinstance(value, dict):
-        return deepcopy(value)
-
-    if source in {"profile_id", "profiles_db", "stored_profile", "persisted_profile"}:
-        correlation_id = ""
-        if isinstance(value, str):
-            correlation_id = value.strip()
-        elif isinstance(value, dict):
-            correlation_id = str(
-                value.get("correlation_id")
-                or value.get("profile_id")
-                or value.get("id")
+        for resolution_object in self.load_resolution_objects(resolution_config=resolution_config):
+            candidate_name = str(
+                resolution_object.get("binding_name")
+                or resolution_object.get("request_field")
+                or resolution_object.get("result_field")
                 or ""
             ).strip()
-        if not correlation_id:
-            correlation_id = str(
-                profile_payload.get("correlation_id")
-                or profile_payload.get("profile_id")
-                or ""
-            ).strip()
-        if not correlation_id:
-            return None
-        db_path = str(
-            profile_payload.get("db_path")
-            or profile_payload.get("profiles_db_path")
-            or ""
-        ).strip() or None
-        stored_profile = get_persisted_profile_result(correlation_id, db_path=db_path)
-        if isinstance(stored_profile, dict):
-            return stored_profile
+            if candidate_name == normalized_binding_name:
+                return resolution_object
         return None
 
-    if source in {"file", "path", "json_file", "structured_file", "document_file"}:
-        candidate_path = ""
-        if isinstance(value, str):
-            candidate_path = value.strip()
-        elif isinstance(value, dict):
-            candidate_path = str(
-                value.get("path")
-                or value.get("file_path")
-                or value.get("value")
-                or value.get("source_path")
-                or ""
-            ).strip()
-        if not candidate_path:
-            candidate_path = str(
-                profile_payload.get("path")
-                or profile_payload.get("file_path")
-                or profile_payload.get("source_path")
-                or ""
-            ).strip()
-        if candidate_path:
-            return _parse_profile_file(candidate_path)
-
-    if source not in {"text", "json", "dict", "object", "structured", "inline"}:
-        return None
-
-    if isinstance(value, dict):
-        return _profile_result_from_profile(value)
-    if isinstance(value, str):
-        return _profile_result_from_profile({"raw_text": value})
-    return None
-
-
-def _build_job_posting_result_from_request(
-    job_posting_payload: Any,
-    *,
-    resolution_config: dict[str, Any] | None = None,
-    fallback_payload: dict[str, Any] | None = None,
-) -> dict[str, Any] | None:
-    if not isinstance(job_posting_payload, dict):
-        return None
-
-    resolution = dict(resolution_config or {})
-    fallback = dict(fallback_payload or {})
-    source = str(job_posting_payload.get("source") or "").strip().lower()
-    value = job_posting_payload.get("value")
-    store_sources = {
-        str(item).strip().lower()
-        for item in (resolution.get("job_posting_store_sources") or [])
-        if str(item).strip()
-    } or {"correlation_id", "job_postings_db", "stored_job_posting", "persisted_job_posting"}
-    file_sources = {
-        str(item).strip().lower()
-        for item in (resolution.get("job_posting_file_sources") or [])
-        if str(item).strip()
-    } or {"file", "path", "text_file", "document_file", "structured_file", "json_file"}
-    inline_sources = {
-        str(item).strip().lower()
-        for item in (resolution.get("job_posting_inline_sources") or [])
-        if str(item).strip()
-    } or {"text", "json", "dict", "object", "structured", "inline"}
-    resolved_obj_name = str(
-        job_posting_payload.get("obj_name")
-        or fallback.get("obj_name")
-        or resolution.get("job_posting_obj_name")
-        or "job_postings"
-    ).strip() or "job_postings"
-    resolved_db_path_field = str(
-        (
-            f"{resolved_obj_name}_db_path"
-            if (job_posting_payload.get("obj_name") or fallback.get("obj_name"))
-            else resolution.get("job_posting_db_path_field")
+    def resolve_binding_object_name(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        resolution_config: dict[str, Any],
+        resolution_object: dict[str, Any],
+    ) -> str:
+        request_field = str(resolution_object.get("request_field") or "").strip()
+        value_payload = request_payload.get(request_field) if isinstance(request_payload.get(request_field), dict) else None
+        default_obj_name = str(resolution_object.get("default_obj_name") or "documents").strip() or "documents"
+        obj_name_config_key = str(resolution_object.get("obj_name_config_key") or "").strip()
+        return self.resolve_object_name(
+            request_payload=request_payload,
+            resolution_config=resolution_config,
+            config_key=obj_name_config_key,
+            default_obj_name=default_obj_name,
+            value_payload=value_payload,
         )
-        or f"{resolved_obj_name}_db_path"
-    ).strip() or f"{resolved_obj_name}_db_path"
 
-    def _inline_result(raw_value: Any) -> dict[str, Any] | None:
-        if isinstance(raw_value, dict):
-            job_posting = deepcopy(raw_value)
-            title = str(job_posting.get("job_title") or job_posting.get("title") or job_posting.get("position") or "").strip()
-            if title:
-                job_posting["job_title"] = title
-            if not str(job_posting.get("company_name") or "").strip() and isinstance(job_posting.get("company"), dict):
-                company_name = str(job_posting["company"].get("name") or job_posting["company"].get("about") or "").strip()
-                if company_name:
-                    job_posting["company_name"] = company_name
-            correlation_id = str(
-                job_posting.get("correlation_id")
-                or job_posting.get("job_id")
-                or job_posting.get("external_id")
-                or title
-                or ""
-            ).strip() or None
-            return {
-                "agent": "job_posting_parser",
-                "correlation_id": correlation_id,
-                "parse": {"is_job_posting": True, "errors": [], "warnings": []},
-                "job_posting": job_posting,
-            }
-        if isinstance(raw_value, str):
-            raw_text = raw_value.strip()
-            if not raw_text:
-                return None
-            return {
-                "agent": "job_posting_parser",
-                "correlation_id": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
-                "parse": {"is_job_posting": True, "errors": [], "warnings": []},
-                "job_posting": {"raw_text": raw_text},
-            }
-        return None
+    def resolve_binding_db_path_field(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        resolution_config: dict[str, Any],
+        resolution_object: dict[str, Any],
+        resolved_obj_name: str,
+    ) -> str:
+        request_field = str(resolution_object.get("request_field") or "").strip()
+        value_payload = request_payload.get(request_field) if isinstance(request_payload.get(request_field), dict) else None
+        db_path_field_key = str(resolution_object.get("db_path_field_key") or "").strip()
+        return self.resolve_object_db_path_field(
+            request_payload=request_payload,
+            resolution_config=resolution_config,
+            config_key=db_path_field_key,
+            resolved_obj_name=resolved_obj_name,
+            value_payload=value_payload,
+        )
 
-    if source in store_sources:
-        correlation_id = ""
-        if isinstance(value, str):
-            correlation_id = value.strip()
-        elif isinstance(value, dict):
-            correlation_id = str(
-                value.get("correlation_id")
-                or value.get("content_sha256")
-                or value.get("job_id")
-                or value.get("id")
-                or ""
-            ).strip()
-        if not correlation_id:
-            correlation_id = str(job_posting_payload.get("correlation_id") or job_posting_payload.get("content_sha256") or "").strip()
-        if not correlation_id:
+    def normalize_resolution_request(
+        self,
+        *,
+        request_value: dict[str, Any] | None,
+        default_source: str = "text",
+    ) -> dict[str, Any] | None:
+        if not isinstance(request_value, dict):
             return None
-        db_path = str(
-            job_posting_payload.get("db_path")
-            or job_posting_payload.get(resolved_db_path_field)
-            or fallback.get(resolved_db_path_field)
-            or ""
-        ).strip() or None
-        return get_persisted_job_posting_result(correlation_id, db_path=db_path, obj_name=resolved_obj_name)
-
-    if source in file_sources:
-        candidate_path = ""
-        if isinstance(value, str):
-            candidate_path = value.strip()
-        elif isinstance(value, dict):
-            candidate_path = str(
-                value.get("path")
-                or value.get("file_path")
-                or value.get("value")
-                or value.get("source_path")
-                or ""
-            ).strip()
-        if not candidate_path:
-            candidate_path = str(job_posting_payload.get("path") or job_posting_payload.get("file_path") or job_posting_payload.get("source_path") or "").strip()
-        if not candidate_path:
-            return None
-        resolved_path = os.path.abspath(os.path.expanduser(candidate_path))
-        if not os.path.isfile(resolved_path):
-            return None
-        content_sha256 = _sha256_file(resolved_path)
-        result = None
-        try:
-            result = _inline_result(_load_json_file(resolved_path))
-        except Exception:
-            result = None
-        if not isinstance(result, dict):
-            try:
-                with open(resolved_path, "r", encoding="utf-8") as f:
-                    result = _inline_result(f.read())
-            except Exception:
-                return None
-        if not isinstance(result, dict):
-            return None
-        result["correlation_id"] = str(result.get("correlation_id") or content_sha256)
-        result["file"] = {
-            "path": resolved_path,
-            "content_sha256": content_sha256,
+        source_name = str(request_value.get("source") or "").strip()
+        if source_name or "value" in request_value:
+            return request_value
+        return {
+            "source": str(default_source or "text").strip() or "text",
+            "value": deepcopy(request_value),
         }
-        return result
 
-    if source in inline_sources or (not source and value is not None):
-        return _inline_result(value)
+    def build_resolved_object_result(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        resolution_config: dict[str, Any],
+        resolution_object: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        request_field = str(resolution_object.get("request_field") or "").strip()
+        raw_request_value = request_payload.get(request_field)
+        normalized_request_value = self.normalize_resolution_request(
+            request_value=raw_request_value if isinstance(raw_request_value, dict) else None,
+            default_source=str(resolution_object.get("default_source") or "text").strip() or "text",
+        )
+        if not isinstance(normalized_request_value, dict):
+            return None
 
-    return None
+        resolved_obj_name = self.resolve_binding_object_name(
+            request_payload=request_payload,
+            resolution_config=resolution_config,
+            resolution_object=resolution_object,
+        )
+        resolved_db_path_field = self.resolve_binding_db_path_field(
+            request_payload=request_payload,
+            resolution_config=resolution_config,
+            resolution_object=resolution_object,
+            resolved_obj_name=resolved_obj_name,
+        )
 
+        store_sources = {
+            str(value).strip().lower()
+            for value in (resolution_object.get("store_sources") or [])
+            if str(value).strip()
+        } or None
+        file_sources = {
+            str(value).strip().lower()
+            for value in (resolution_object.get("file_sources") or [])
+            if str(value).strip()
+        } or None
+        inline_sources = {
+            str(value).strip().lower()
+            for value in (resolution_object.get("inline_sources") or [])
+            if str(value).strip()
+        } or None
 
-def resolve_configured_request_payload(payload: Any) -> Any:
-    raw_payload = payload
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except Exception:
+        return REQUEST_OBJECT_RESOLUTION_SERVICE.build_result_from_request(
+            normalized_request_value,
+            obj_name=resolved_obj_name,
+            fallback_payload=request_payload,
+            store_sources=store_sources,
+            file_sources=file_sources,
+            inline_sources=inline_sources,
+            db_path_field=resolved_db_path_field,
+        )
+
+    def apply_resolution_defaults(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        resolution_config: dict[str, Any],
+    ) -> dict[str, Any]:
+        enriched_payload = deepcopy(request_payload)
+        for default_field in (resolution_config.get("default_fields") or []):
+            if not isinstance(default_field, dict):
+                continue
+            field_name = str(default_field.get("field") or "").strip()
+            config_key = str(default_field.get("config_key") or field_name).strip()
+            if not field_name or not config_key or field_name in enriched_payload:
+                continue
+
+            raw_value = resolution_config.get(config_key)
+            normalize_mode = str(default_field.get("normalize") or "").strip().lower()
+            if normalize_mode == "tool_name":
+                normalized_value = normalize_tool_name(str(raw_value or ""))
+            elif isinstance(raw_value, str):
+                normalized_value = raw_value.strip()
+            else:
+                normalized_value = deepcopy(raw_value)
+
+            if normalized_value in (None, "", [], {}):
+                continue
+            enriched_payload[field_name] = normalized_value
+        return enriched_payload
+
+    def resolve_request_payload(self, payload: Any) -> Any:
+        raw_payload = payload
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                return raw_payload
+
+        if not isinstance(payload, dict):
             return raw_payload
 
-    if not isinstance(payload, dict):
-        return raw_payload
-    action = str(payload.get("action") or "").strip().lower()
-    schema_config = get_action_request_schema_config(action)
-    resolution_config = dict(schema_config.get("request_resolution") or {})
-    if not resolution_config:
-        return raw_payload
+        action_name = normalize_action_request_name(str(payload.get("action") or ""))
+        schema_config = get_action_request_schema_config(action_name, payload)
+        resolution_config = dict(schema_config.get("request_resolution") or {})
+        if not resolution_config:
+            return raw_payload
 
-    enriched_payload = deepcopy(payload)
+        payload = deepcopy(payload)
+        payload["action"] = action_name
 
-    if not isinstance(enriched_payload.get("profile_result"), dict):
-        profile_result = _build_profile_result_from_request(enriched_payload.get("applicant_profile"))
-        if isinstance(profile_result, dict):
-            enriched_payload["profile_result"] = profile_result
-
-    batch_workflow_name = str(resolution_config.get("batch_workflow_name") or "").strip()
-    batch_tool_name = normalize_tool_name(str(resolution_config.get("batch_tool_name") or ""))
-    if batch_workflow_name:
-        enriched_payload.setdefault("batch_workflow_name", batch_workflow_name)
-    if batch_tool_name:
-        enriched_payload.setdefault("batch_tool_name", batch_tool_name)
-
-    if not isinstance(enriched_payload.get("job_posting_result"), dict):
-        job_posting_result = _build_job_posting_result_from_request(
-            enriched_payload.get("job_posting"),
+        enriched_payload = self.apply_resolution_defaults(
+            request_payload=payload,
             resolution_config=resolution_config,
-            fallback_payload=enriched_payload,
         )
-        if isinstance(job_posting_result, dict):
-            enriched_payload["job_posting_result"] = job_posting_result
 
-    if isinstance(enriched_payload.get("job_posting_result"), dict):
-        enriched_payload.pop("job_posting", None)
-        job_posting_db_path_field = str(resolution_config.get("job_posting_db_path_field") or "job_postings_db_path").strip() or "job_postings_db_path"
-        enriched_payload.pop(job_posting_db_path_field, None)
+        for resolution_object in self.load_resolution_objects(resolution_config=resolution_config):
+            result_field = str(resolution_object.get("result_field") or "").strip()
+            request_field = str(resolution_object.get("request_field") or "").strip()
+            if not result_field:
+                continue
+
+            if not isinstance(enriched_payload.get(result_field), dict):
+                resolved_result = self.build_resolved_object_result(
+                    request_payload=enriched_payload,
+                    resolution_config=resolution_config,
+                    resolution_object=resolution_object,
+                )
+                if isinstance(resolved_result, dict):
+                    enriched_payload[result_field] = resolved_result
+
+            if not isinstance(enriched_payload.get(result_field), dict):
+                continue
+
+            if bool(resolution_object.get("drop_request_field_when_resolved")):
+                enriched_payload.pop(request_field, None)
+
+            if bool(resolution_object.get("drop_db_path_field_when_resolved")):
+                resolved_obj_name = self.resolve_binding_object_name(
+                    request_payload=enriched_payload,
+                    resolution_config=resolution_config,
+                    resolution_object=resolution_object,
+                )
+                resolved_db_path_field = self.resolve_binding_db_path_field(
+                    request_payload=enriched_payload,
+                    resolution_config=resolution_config,
+                    resolution_object=resolution_object,
+                    resolved_obj_name=resolved_obj_name,
+                )
+                enriched_payload.pop(resolved_db_path_field, None)
+
         return enriched_payload
 
-    job_posting = enriched_payload.get("job_posting")
-    if not isinstance(job_posting, dict):
-        return enriched_payload
+    def resolve_string_value(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        field_names: list[str] | tuple[str, ...],
+    ) -> str | None:
+        for field_name in field_names:
+            normalized_field_name = str(field_name or "").strip()
+            if not normalized_field_name:
+                continue
+            value = request_payload.get(normalized_field_name)
+            if value is None or isinstance(value, (dict, list)):
+                continue
+            text_value = str(value).strip()
+            if text_value:
+                return text_value
+        return None
 
-    source = str(job_posting.get("source") or "").strip().lower()
-    job_posting_store_sources = {
-        str(value).strip().lower()
-        for value in (resolution_config.get("job_posting_store_sources") or [])
-        if str(value).strip()
-    }
-    job_posting_obj_name = str(
-        job_posting.get("obj_name")
-        or enriched_payload.get("obj_name")
-        or resolution_config.get("job_posting_obj_name")
-        or "job_postings"
-    ).strip() or "job_postings"
-    job_posting_db_path_field = str(
-        (
-            f"{job_posting_obj_name}_db_path"
-            if (job_posting.get("obj_name") or enriched_payload.get("obj_name"))
-            else resolution_config.get("job_posting_db_path_field")
+    def resolve_bool_value(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        field_names: list[str] | tuple[str, ...],
+    ) -> bool | None:
+        for field_name in field_names:
+            normalized_field_name = str(field_name or "").strip()
+            if not normalized_field_name:
+                continue
+            value = request_payload.get(normalized_field_name)
+            if isinstance(value, bool):
+                return value
+        return None
+
+    def resolve_dict_value(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        field_names: list[str] | tuple[str, ...],
+    ) -> dict[str, Any] | None:
+        for field_name in field_names:
+            normalized_field_name = str(field_name or "").strip()
+            if not normalized_field_name:
+                continue
+            value = request_payload.get(normalized_field_name)
+            if isinstance(value, dict):
+                return value
+        return None
+
+    def build_request_source_payload(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        request_payload_field: str,
+        object_payload_field: str,
+        default_source: str = "text",
+    ) -> dict[str, Any] | None:
+        request_value = request_payload.get(request_payload_field) if request_payload_field else None
+        normalized_request_value = self.normalize_resolution_request(
+            request_value=request_value if isinstance(request_value, dict) else None,
+            default_source=default_source,
         )
-        or f"{job_posting_obj_name}_db_path"
-    ).strip() or f"{job_posting_obj_name}_db_path"
-    if not job_posting_store_sources:
-        job_posting_store_sources = {"correlation_id", "job_postings_db", "stored_job_posting", "persisted_job_posting"}
-    if source not in job_posting_store_sources:
-        return enriched_payload
+        if isinstance(normalized_request_value, dict):
+            return normalized_request_value
 
-    correlation_id = ""
-    value = job_posting.get("value")
-    if isinstance(value, str):
-        correlation_id = value.strip()
-    elif isinstance(value, dict):
-        correlation_id = str(value.get("correlation_id") or value.get("content_sha256") or value.get("id") or "").strip()
-    if not correlation_id:
-        correlation_id = str(job_posting.get("correlation_id") or job_posting.get("content_sha256") or "").strip()
-    if not correlation_id:
-        return enriched_payload
+        object_value = request_payload.get(object_payload_field) if object_payload_field else None
+        if isinstance(object_value, dict):
+            return {
+                "source": str(default_source or "text").strip() or "text",
+                "value": deepcopy(object_value),
+            }
+        return None
 
-    db_path = str(
-        job_posting.get("db_path")
-        or enriched_payload.get(job_posting_db_path_field)
-        or ""
-    ).strip() or None
-
-    stored_result = get_persisted_job_posting_result(
-        correlation_id,
-        db_path=db_path,
-        obj_name=job_posting_obj_name,
-    )
-    if not isinstance(stored_result, dict):
-        return enriched_payload
-
-    enriched_job_posting = dict(enriched_payload.get("job_posting") or {})
-    enriched_job_posting["resolved_from_store"] = True
-    enriched_job_posting["resolved_correlation_id"] = correlation_id
-    enriched_job_posting["resolved_obj_name"] = job_posting_obj_name
-    if db_path:
-        enriched_payload[job_posting_db_path_field] = db_path
-    enriched_payload["job_posting"] = enriched_job_posting
-    enriched_payload["job_posting_result"] = stored_result
-    return enriched_payload
-
-
-def execute_deterministic_action_request(payload: Any) -> str | None:
-    raw_payload = payload
-    if isinstance(payload, str):
-        try:
-            payload = json.loads(payload)
-        except Exception:
+    def execute_ingest_object_action(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        resolution_config: dict[str, Any],
+        execution_config: dict[str, Any],
+    ) -> str | None:
+        binding_name = str(execution_config.get("binding_name") or "").strip()
+        resolution_object = self.load_resolution_object(
+            resolution_config=resolution_config,
+            binding_name=binding_name,
+        )
+        if not isinstance(resolution_object, dict):
             return None
 
-    if not isinstance(payload, dict):
-        return None
+        resolved_obj_name = self.resolve_binding_object_name(
+            request_payload=request_payload,
+            resolution_config=resolution_config,
+            resolution_object=resolution_object,
+        )
+        resolved_db_path_field = self.resolve_binding_db_path_field(
+            request_payload=request_payload,
+            resolution_config=resolution_config,
+            resolution_object=resolution_object,
+            resolved_obj_name=resolved_obj_name,
+        )
 
-    action = str(payload.get("action") or "").strip().lower()
-    if not action:
-        return None
+        object_payload_field = str(execution_config.get("object_payload_field") or "").strip()
+        request_payload_field = str(execution_config.get("request_payload_field") or resolution_object.get("request_field") or "").strip()
+        result_payload_field = str(execution_config.get("result_payload_field") or resolution_object.get("result_field") or "").strip()
+        default_source = str(execution_config.get("default_request_source") or resolution_object.get("default_source") or "text").strip() or "text"
 
-    schema_config = get_action_request_schema_config(action)
-    resolution_config = dict(schema_config.get("request_resolution") or {}) if isinstance(schema_config, dict) else {}
-    if schema_config:
-        validation = validate_action_request(action, payload)
-        if not validation.get("valid"):
+        db_path_fields = [
+            str(field_name).strip()
+            for field_name in (execution_config.get("db_path_fields") or [resolved_db_path_field, "db_path"])
+            if str(field_name).strip()
+        ]
+        correlation_fields = [
+            str(field_name).strip()
+            for field_name in (execution_config.get("correlation_id_fields") or ["correlation_id"])
+            if str(field_name).strip()
+        ]
+        source_agent_fields = [
+            str(field_name).strip()
+            for field_name in (execution_config.get("source_agent_fields") or ["source_agent"])
+            if str(field_name).strip()
+        ]
+        source_payload_fields = [
+            str(field_name).strip()
+            for field_name in (execution_config.get("source_payload_fields") or ["source_payload"])
+            if str(field_name).strip()
+        ]
+        parse_fields = [
+            str(field_name).strip()
+            for field_name in (execution_config.get("parse_fields") or ["parse"])
+            if str(field_name).strip()
+        ]
+
+        request_source_payload = self.build_request_source_payload(
+            request_payload=request_payload,
+            request_payload_field=request_payload_field,
+            object_payload_field=object_payload_field,
+            default_source=default_source,
+        )
+
+        return DOCUMENT_OBJECT_SERVICE.ingest_result(
+            object_payload=request_payload.get(object_payload_field) if isinstance(request_payload.get(object_payload_field), dict) else None,
+            request_payload=request_source_payload,
+            result_payload=request_payload.get(result_payload_field),
+            correlation_id=self.resolve_string_value(request_payload=request_payload, field_names=correlation_fields),
+            db_path=self.resolve_string_value(request_payload=request_payload, field_names=db_path_fields),
+            source_agent=self.resolve_string_value(request_payload=request_payload, field_names=source_agent_fields),
+            source_payload=self.resolve_dict_value(request_payload=request_payload, field_names=source_payload_fields),
+            parse=self.resolve_dict_value(request_payload=request_payload, field_names=parse_fields),
+            obj_name=resolved_obj_name,
+        )
+
+    def execute_upsert_object_record_action(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        resolution_config: dict[str, Any],
+        execution_config: dict[str, Any],
+    ) -> str | None:
+        binding_name = str(execution_config.get("binding_name") or "").strip()
+        resolution_object = self.load_resolution_object(
+            resolution_config=resolution_config,
+            binding_name=binding_name,
+        )
+        if not isinstance(resolution_object, dict):
+            return None
+
+        resolved_obj_name = self.resolve_binding_object_name(
+            request_payload=request_payload,
+            resolution_config=resolution_config,
+            resolution_object=resolution_object,
+        )
+        resolved_db_path_field = self.resolve_binding_db_path_field(
+            request_payload=request_payload,
+            resolution_config=resolution_config,
+            resolution_object=resolution_object,
+            resolved_obj_name=resolved_obj_name,
+        )
+
+        result_payload_field = str(execution_config.get("result_payload_field") or resolution_object.get("result_field") or "").strip()
+        object_payload_field = str(execution_config.get("object_payload_field") or "").strip()
+        dispatcher_db_path_fields = [
+            str(field_name).strip()
+            for field_name in (execution_config.get("dispatcher_db_path_fields") or ["dispatcher_db_path"])
+            if str(field_name).strip()
+        ]
+        obj_db_path_fields = [
+            str(field_name).strip()
+            for field_name in (execution_config.get("obj_db_path_fields") or [resolved_db_path_field, "db_path"])
+            if str(field_name).strip()
+        ]
+        correlation_fields = [
+            str(field_name).strip()
+            for field_name in (execution_config.get("correlation_id_fields") or ["correlation_id"])
+            if str(field_name).strip()
+        ]
+        source_agent_fields = [
+            str(field_name).strip()
+            for field_name in (execution_config.get("source_agent_fields") or ["source_agent"])
+            if str(field_name).strip()
+        ]
+        source_payload_fields = [
+            str(field_name).strip()
+            for field_name in (execution_config.get("source_payload_fields") or ["source_payload"])
+            if str(field_name).strip()
+        ]
+        processing_state_fields = [
+            str(field_name).strip()
+            for field_name in (execution_config.get("processing_state_fields") or ["processing_state"])
+            if str(field_name).strip()
+        ]
+        processed_fields = [
+            str(field_name).strip()
+            for field_name in (execution_config.get("processed_fields") or ["processed"])
+            if str(field_name).strip()
+        ]
+        failed_reason_fields = [
+            str(field_name).strip()
+            for field_name in (execution_config.get("failed_reason_fields") or ["failed_reason"])
+            if str(field_name).strip()
+        ]
+        dispatcher_updates_fields = [
+            str(field_name).strip()
+            for field_name in (execution_config.get("dispatcher_updates_fields") or ["dispatcher_updates"])
+            if str(field_name).strip()
+        ]
+
+        result_payload = request_payload.get(result_payload_field)
+        if result_payload is None and object_payload_field:
+            result_payload = request_payload.get(object_payload_field)
+        if isinstance(result_payload, str):
+            try:
+                result_payload = json.loads(result_payload)
+            except Exception:
+                return json.dumps({"ok": False, "error": "invalid_object_result_json"}, ensure_ascii=False)
+        if not isinstance(result_payload, dict):
+            return json.dumps({"ok": False, "error": "object_result_must_be_object"}, ensure_ascii=False)
+
+        source_payload = self.resolve_dict_value(request_payload=request_payload, field_names=source_payload_fields)
+        correlation_id = DOCUMENT_OBJECT_SERVICE.resolve_result_correlation_id(
+            result_payload=result_payload,
+            obj_name=resolved_obj_name,
+            correlation_id=self.resolve_string_value(request_payload=request_payload, field_names=correlation_fields),
+            source_payload=source_payload,
+        )
+        if not correlation_id:
+            return json.dumps({"ok": False, "error": "missing_correlation_id"}, ensure_ascii=False)
+
+        result = DOCUMENT_REPOSITORY.upsert_db_record(
+            record_id=correlation_id,
+            result_payload=result_payload,
+            obj_name=resolved_obj_name,
+            obj_db_path=self.resolve_string_value(request_payload=request_payload, field_names=obj_db_path_fields),
+            dispatcher_db_path=self.resolve_string_value(request_payload=request_payload, field_names=dispatcher_db_path_fields),
+            processing_state=self.resolve_string_value(request_payload=request_payload, field_names=processing_state_fields),
+            processed=self.resolve_bool_value(request_payload=request_payload, field_names=processed_fields),
+            failed_reason=self.resolve_string_value(request_payload=request_payload, field_names=failed_reason_fields),
+            source_agent=self.resolve_string_value(request_payload=request_payload, field_names=source_agent_fields),
+            source_payload=source_payload,
+            dispatcher_updates=self.resolve_dict_value(request_payload=request_payload, field_names=dispatcher_updates_fields),
+        )
+        return json.dumps(result, ensure_ascii=False)
+
+    def load_action_executor(self, handler_name: str | None) -> Callable[..., str | None] | None:
+        normalized_handler_name = str(handler_name or "").strip().lower()
+        executors: dict[str, Callable[..., str | None]] = {
+            "ingest_object": self.execute_ingest_object_action,
+            "upsert_object_record": self.execute_upsert_object_record_action,
+        }
+        return executors.get(normalized_handler_name)
+
+    def execute_request(self, payload: Any) -> str | None:
+        if isinstance(payload, str):
+            try:
+                payload = json.loads(payload)
+            except Exception:
+                return None
+
+        if not isinstance(payload, dict):
+            return None
+
+        action_name = normalize_action_request_name(str(payload.get("action") or ""))
+        if not action_name:
+            return None
+
+        payload = deepcopy(payload)
+        payload["action"] = action_name
+
+        schema_config = get_action_request_schema_config(action_name, payload)
+        resolution_config = dict(schema_config.get("request_resolution") or {}) if isinstance(schema_config, dict) else {}
+        if schema_config:
+            validation = validate_action_request(action_name, payload)
+            if not validation.get("valid"):
+                return json.dumps(
+                    {
+                        "ok": False,
+                        "error": "invalid_action_request",
+                        "action": action_name,
+                        "schema_name": validation.get("schema_name") or "",
+                        "errors": list(validation.get("errors") or []),
+                        "warnings": list(validation.get("warnings") or []),
+                    },
+                    ensure_ascii=False,
+                )
+
+        resolved_payload = self.resolve_request_payload(payload)
+        if isinstance(resolved_payload, str):
+            try:
+                resolved_payload = json.loads(resolved_payload)
+            except Exception:
+                resolved_payload = payload
+        if not isinstance(resolved_payload, dict):
+            resolved_payload = payload
+
+        execution_config = dict(schema_config.get("action_execution") or {}) if isinstance(schema_config, dict) else {}
+        action_executor = self.load_action_executor(execution_config.get("handler_name"))
+        if action_executor is None:
+            return None
+        return action_executor(
+            request_payload=resolved_payload,
+            resolution_config=resolution_config,
+            execution_config=execution_config,
+        )
+
+    def execute_request_tool(
+        self,
+        action_request: dict[str, Any] | str | None = None,
+        action: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> str:
+        request_payload = action_request
+        if isinstance(request_payload, str):
+            try:
+                request_payload = json.loads(request_payload)
+            except Exception:
+                return json.dumps({"ok": False, "error": "invalid_action_request_json"}, ensure_ascii=False)
+
+        if request_payload is None:
+            request_payload = dict(payload or {})
+            if action:
+                request_payload.setdefault("action", str(action))
+
+        if not isinstance(request_payload, dict):
+            return json.dumps({"ok": False, "error": "action_request_must_be_object"}, ensure_ascii=False)
+
+        result = self.execute_request(request_payload)
+        if result is None:
             return json.dumps(
                 {
                     "ok": False,
-                    "error": "invalid_action_request",
-                    "action": action,
-                    "schema_name": validation.get("schema_name") or "",
-                    "errors": list(validation.get("errors") or []),
-                    "warnings": list(validation.get("warnings") or []),
+                    "error": "unknown_or_unsupported_action",
+                    "action": str(request_payload.get("action") or "").strip().lower(),
                 },
                 ensure_ascii=False,
             )
+        return result
 
-    if action in {"ingest_profile", "store_profile", "store_profile_result", "persist_profile"}:
-        resolved_profile_obj_name = str(
-            payload.get("obj_name")
-            or resolution_config.get("profile_obj_name")
-            or "profiles"
-        ).strip() or "profiles"
-        resolved_profile_db_path_field = str(
-            (
-                f"{resolved_profile_obj_name}_db_path"
-                if payload.get("obj_name")
-                else resolution_config.get("profile_db_path_field")
-            )
-            or f"{resolved_profile_obj_name}_db_path"
-        ).strip() or f"{resolved_profile_obj_name}_db_path"
-        return ingest_profile_tool(
-            profile=payload.get("profile") if isinstance(payload.get("profile"), dict) else None,
-            applicant_profile=payload.get("applicant_profile") if isinstance(payload.get("applicant_profile"), dict) else None,
-            profile_result=payload.get("profile_result"),
-            correlation_id=payload.get("correlation_id"),
-            db_path=payload.get(resolved_profile_db_path_field) or payload.get("profiles_db_path") or payload.get("db_path"),
-            source_agent=payload.get("source_agent"),
-            source_payload=payload.get("source_payload") if isinstance(payload.get("source_payload"), dict) else None,
-            obj_name=resolved_profile_obj_name,
-        )
 
-    if action in {"ingest_job_posting", "store_job_posting", "store_job_posting_result"}:
-        resolved_job_posting_obj_name = str(
-            payload.get("obj_name")
-            or resolution_config.get("job_posting_obj_name")
-            or "job_postings"
-        ).strip() or "job_postings"
-        resolved_job_posting_db_path_field = str(
-            (
-                f"{resolved_job_posting_obj_name}_db_path"
-                if payload.get("obj_name")
-                else resolution_config.get("job_posting_db_path_field")
-            )
-            or f"{resolved_job_posting_obj_name}_db_path"
-        ).strip() or f"{resolved_job_posting_obj_name}_db_path"
-        return ingest_job_posting_tool(
-            job_posting=payload.get("job_posting") if isinstance(payload.get("job_posting"), dict) else None,
-            job_posting_result=payload.get("job_posting_result"),
-            correlation_id=payload.get("correlation_id"),
-            db_path=payload.get(resolved_job_posting_db_path_field) or payload.get("job_postings_db_path") or payload.get("db_path"),
-            source_agent=payload.get("source_agent"),
-            source_payload=payload.get("source_payload") if isinstance(payload.get("source_payload"), dict) else None,
-            parse=payload.get("parse") if isinstance(payload.get("parse"), dict) else None,
-            obj_name=resolved_job_posting_obj_name,
-        )
+ACTION_REQUEST_SERVICE = ActionRequestService()
 
-    if action in {"upsert_dispatcher_job_record", "upsert_job_record"}:
-        resolved_job_posting_obj_name = str(
-            payload.get("obj_name")
-            or resolution_config.get("job_posting_obj_name")
-            or "job_postings"
-        ).strip() or "job_postings"
-        resolved_job_posting_db_path_field = str(
-            (
-                f"{resolved_job_posting_obj_name}_db_path"
-                if payload.get("obj_name")
-                else resolution_config.get("job_posting_db_path_field")
-            )
-            or f"{resolved_job_posting_obj_name}_db_path"
-        ).strip() or f"{resolved_job_posting_obj_name}_db_path"
-        return upsert_dispatcher_job_record_tool(
-            job_posting_result=payload.get("job_posting_result") if payload.get("job_posting_result") is not None else payload.get("job_posting") or {},
-            correlation_id=payload.get("correlation_id"),
-            dispatcher_db_path=payload.get("dispatcher_db_path"),
-            job_postings_db_path=payload.get(resolved_job_posting_db_path_field) or payload.get("job_postings_db_path") or payload.get("db_path"),
-            obj_name=resolved_job_posting_obj_name,
-            processing_state=payload.get("processing_state"),
-            processed=payload.get("processed") if isinstance(payload.get("processed"), bool) else None,
-            failed_reason=payload.get("failed_reason"),
-            source_agent=payload.get("source_agent"),
-            source_payload=payload.get("source_payload") if isinstance(payload.get("source_payload"), dict) else None,
-            dispatcher_updates=payload.get("dispatcher_updates") if isinstance(payload.get("dispatcher_updates"), dict) else None,
-        )
 
-    return None
+def resolve_configured_request_payload(payload: Any) -> Any:
+    return ACTION_REQUEST_SERVICE.resolve_request_payload(payload)
+
+
+def execute_deterministic_action_request(payload: Any) -> str | None:
+    return ACTION_REQUEST_SERVICE.execute_request(payload)
 
 
 def execute_action_request_tool(
@@ -1306,32 +1910,7 @@ def execute_action_request_tool(
     action: str | None = None,
     payload: dict[str, Any] | None = None,
 ) -> str:
-    request_payload = action_request
-    if isinstance(request_payload, str):
-        try:
-            request_payload = json.loads(request_payload)
-        except Exception:
-            return json.dumps({"ok": False, "error": "invalid_action_request_json"}, ensure_ascii=False)
-
-    if request_payload is None:
-        request_payload = dict(payload or {})
-        if action:
-            request_payload.setdefault("action", str(action))
-
-    if not isinstance(request_payload, dict):
-        return json.dumps({"ok": False, "error": "action_request_must_be_object"}, ensure_ascii=False)
-
-    result = execute_deterministic_action_request(request_payload)
-    if result is None:
-        return json.dumps(
-            {
-                "ok": False,
-                "error": "unknown_or_unsupported_action",
-                "action": str(request_payload.get("action") or "").strip().lower(),
-            },
-            ensure_ascii=False,
-        )
-    return result
+    return ACTION_REQUEST_SERVICE.execute_request_tool(action_request=action_request, action=action, payload=payload)
 
 
 def build_agent_system_configs_tool(
@@ -1391,54 +1970,496 @@ def update_dispatcher_document_status(
     failed_reason: str | None = None,
     extra_updates: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    resolved_db_path = os.path.abspath(os.path.expanduser(str(db_path or _default_dispatcher_db_path())))
-    db = _load_dispatcher_db(resolved_db_path)
-    if not isinstance(db, dict):
-        db = {"schema": "dispatcher_doc_db_v1", "documents": {}}
-    if not isinstance(db.get("documents"), dict):
-        db["documents"] = {}
+    return DOCUMENT_REPOSITORY.update_dispatcher_status(
+        correlation_id=correlation_id,
+        processing_state=processing_state,
+        db_path=db_path,
+        processed=processed,
+        failed_reason=failed_reason,
+        extra_updates=extra_updates,
+    )
 
-    docs = db["documents"]
-    record = docs.get(correlation_id) if isinstance(docs.get(correlation_id), dict) else {}
-    record = dict(record)
 
-    normalized_state = str(processing_state or "").strip().lower() or "failed"
-    effective_processed = bool(processed) if processed is not None else normalized_state == "processed"
-    ts = _now_utc_iso()
+class DocumentDispatchService:
+    def classify_record(self, record: dict[str, Any] | None) -> str:
+        if not record:
+            return "new"
+        if record.get("processed") is True or record.get("processing_state") == "processed":
+            return "known_processed"
+        processing_state = str(record.get("processing_state") or "").lower().strip()
+        if processing_state in {"queued", "processing"}:
+            return "known_processing"
+        return "known_unprocessed"
 
-    record.setdefault("id", correlation_id)
-    record["content_sha256"] = correlation_id
-    record["processing_state"] = normalized_state
-    record["processed"] = effective_processed
-    record["last_seen_at"] = ts
+    def resolve_scan_dir(self, scan_dir: str, *, resolved_db_path: str, warnings: list[dict[str, Any]]) -> str:
+        resolved_scan_dir = os.path.abspath(os.path.expanduser(str(scan_dir or "")))
+        if os.path.isdir(resolved_scan_dir):
+            return resolved_scan_dir
 
-    if effective_processed:
-        record["processed_at"] = ts
-        record["failed_reason"] = None
-        record["last_error"] = None
-        record["last_error_at"] = None
-    else:
-        reason = str(failed_reason or "").strip() or None
-        record["failed_reason"] = reason
-        record["last_error"] = reason
-        record["last_error_at"] = ts if reason else None
+        fallback_candidates: list[tuple[str, str]] = []
+        try:
+            db_parent = os.path.dirname(resolved_db_path)
+            if db_parent:
+                fallback_candidates.append((db_parent, "fallback_to_db_parent"))
+        except Exception:
+            pass
+        try:
+            base = GetPath()._parent(parg=f"{__file__}")
+            vsm4 = os.path.join(base, "AppData", "VSM_4_Data")
+            fallback_candidates.append((vsm4, "fallback_to_default_vsm4"))
+        except Exception:
+            pass
 
-    if isinstance(extra_updates, dict):
-        for key, value in extra_updates.items():
-            if value is None and key in {"failed_reason", "last_error", "last_error_at"}:
-                record[key] = None
-            elif value is not None:
-                record[str(key)] = value
+        for candidate, reason in fallback_candidates:
+            resolved_candidate = os.path.abspath(os.path.expanduser(str(candidate)))
+            if os.path.isdir(resolved_candidate):
+                warnings.append(
+                    {
+                        "warning": "scan_dir_not_found_using_fallback",
+                        "scan_dir_original": str(scan_dir or ""),
+                        "scan_dir_used": resolved_candidate,
+                        "reason": reason,
+                    }
+                )
+                return resolved_candidate
 
-    docs[correlation_id] = record
-    _save_dispatcher_db(resolved_db_path, db)
-    return {
-        "ok": True,
-        "db_path": resolved_db_path,
-        "correlation_id": correlation_id,
-        "processing_state": normalized_state,
-        "processed": effective_processed,
-    }
+        return resolved_scan_dir
+
+    def collect_document_paths(self, scan_dir: str, *, recursive: bool, extensions: set[str]) -> list[str]:
+        document_paths: list[str] = []
+        if recursive:
+            for root, dirs, files in os.walk(scan_dir):
+                dirs[:] = [directory for directory in dirs if not str(directory).startswith("Cover_letters")]
+                for file_name in files:
+                    if file_name == "Muster_Anschreiben.pdf":
+                        continue
+                    if any(file_name.endswith(extension) for extension in extensions):
+                        document_paths.append(os.path.join(root, file_name))
+        else:
+            for file_name in os.listdir(scan_dir):
+                if file_name == "Muster_Anschreiben.pdf":
+                    continue
+                file_path = os.path.join(scan_dir, file_name)
+                if os.path.isfile(file_path) and any(file_name.endswith(extension) for extension in extensions):
+                    document_paths.append(file_path)
+        document_paths.sort()
+        return document_paths
+
+    def save_dispatcher_db(self, dispatcher_db: dict[str, Any] | None, *, resolved_db_path: str) -> tuple[bool, str | None]:
+        if dispatcher_db is None:
+            return False, "db_not_loaded"
+        try:
+            DOCUMENT_REPOSITORY.save_db(resolved_db_path, dispatcher_db, db_name="dispatcher_documents")
+            return True, None
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
+
+    def load_dispatcher_db(self, *, resolved_db_path: str) -> tuple[dict[str, Any] | None, str | None]:
+        try:
+            return DOCUMENT_REPOSITORY.load_db(resolved_db_path, db_name="dispatcher_documents"), None
+        except Exception as exc:
+            return None, f"{type(exc).__name__}: {exc}"
+
+    def classify_documents(
+        self,
+        *,
+        pdf_paths: list[str],
+        docs: dict[str, Any],
+        errors: list[dict[str, Any]],
+    ) -> dict[str, list[dict[str, Any]]]:
+        classified: dict[str, list[dict[str, Any]]] = {
+            "new": [],
+            "known_unprocessed": [],
+            "known_processing": [],
+            "known_processed": [],
+            "duplicates": [],
+            "error_items": [],
+        }
+        seen_hashes: set[str] = set()
+
+        for path in pdf_paths:
+            abs_path = os.path.abspath(path)
+            try:
+                stat_result = os.stat(abs_path)
+                file_size_bytes = _safe_int(getattr(stat_result, "st_size", 0), 0)
+                mtime_epoch = _safe_int(getattr(stat_result, "st_mtime", 0), 0)
+            except Exception as exc:
+                err = {"path": abs_path, "error": "stat_failed", "detail": f"{type(exc).__name__}: {exc}"}
+                errors.append(err)
+                classified["error_items"].append(err)
+                continue
+
+            try:
+                content_sha256 = _sha256_file(abs_path)
+            except Exception as exc:
+                err = {"path": abs_path, "error": "unreadable", "detail": f"{type(exc).__name__}: {exc}"}
+                errors.append(err)
+                classified["error_items"].append(err)
+                continue
+
+            if content_sha256 in seen_hashes:
+                classified["duplicates"].append({"path": abs_path, "content_sha256": content_sha256})
+                continue
+            seen_hashes.add(content_sha256)
+
+            record = docs.get(content_sha256) if isinstance(docs, dict) else None
+            bucket = self.classify_record(record if isinstance(record, dict) else None)
+            item = {
+                "path": abs_path,
+                "name": os.path.basename(abs_path),
+                "content_sha256": content_sha256,
+                "file_size_bytes": file_size_bytes,
+                "mtime_epoch": mtime_epoch,
+                "db": {
+                    "existing_record_id": (record or {}).get("id") if isinstance(record, dict) else None,
+                    "processed": (record or {}).get("processed") if isinstance(record, dict) else None,
+                    "processing_state": (record or {}).get("processing_state") if isinstance(record, dict) else None,
+                },
+            }
+            classified[bucket].append(item)
+
+        return classified
+
+    def queue_document(
+        self,
+        *,
+        dispatcher_db: dict[str, Any] | None,
+        resolved_db_path: str,
+        item: dict[str, Any],
+        correlation_id: str,
+        timestamp: str,
+    ) -> tuple[bool, str | None]:
+        if not isinstance(dispatcher_db, dict):
+            return False, "db_not_loaded"
+        if "documents" not in dispatcher_db or not isinstance(dispatcher_db.get("documents"), dict):
+            dispatcher_db["documents"] = {}
+
+        docs = dispatcher_db["documents"]
+        current = docs.get(correlation_id) if isinstance(docs, dict) else None
+        current_state = (current or {}).get("processing_state") if isinstance(current, dict) else None
+        if (current_state or "").lower().strip() in {"queued", "processing"}:
+            return True, None
+
+        next_record = dict(current) if isinstance(current, dict) else {}
+        next_record.setdefault("id", correlation_id)
+        next_record["content_sha256"] = correlation_id
+        next_record["source_path"] = item["path"]
+        next_record["file_size_bytes"] = item["file_size_bytes"]
+        next_record["mtime_epoch"] = item["mtime_epoch"]
+        next_record["last_seen_at"] = timestamp
+        next_record["processed"] = False
+        next_record["processing_state"] = "queued"
+        docs[correlation_id] = next_record
+        return self.save_dispatcher_db(dispatcher_db, resolved_db_path=resolved_db_path)
+
+    def resolve_object_db_path(
+        self,
+        *,
+        dispatch_policy: dict[str, Any],
+        resolved_obj_db_path_field: str,
+        resolved_obj_name: str,
+    ) -> str | None:
+        metadata_defaults = dict(dispatch_policy.get("metadata_defaults") or {})
+        obj_db_default = metadata_defaults.get(resolved_obj_db_path_field)
+        if not isinstance(obj_db_default, dict):
+            obj_db_default = {}
+
+        resolver_name = str(obj_db_default.get("resolver") or "").strip()
+        resolver_obj_name = str(obj_db_default.get("obj_name") or resolved_obj_name).strip() or resolved_obj_name
+        if resolver_name in {
+            "default_document_db_path",
+            f"default_{resolved_obj_name}_db_path",
+            f"default_{resolver_obj_name}_db_path",
+        }:
+            return _default_document_db_path(resolver_obj_name)
+        if isinstance(obj_db_default.get("value"), str) and str(obj_db_default.get("value") or "").strip():
+            return os.path.abspath(os.path.expanduser(str(obj_db_default.get("value"))))
+        return None
+
+    def build_dispatch_payload(
+        self,
+        *,
+        dispatch_policy: dict[str, Any],
+        thread_id: str,
+        resolved_obj_name: str,
+        item: dict[str, Any],
+        record: dict[str, Any] | None,
+        dry_run: bool,
+    ) -> dict[str, Any]:
+        return {
+            "type": str(dispatch_policy.get("document_type") or "file"),
+            "correlation_id": item["content_sha256"],
+            "obj_name": resolved_obj_name,
+            "link": {"thread_id": thread_id, "message_id": "PENDING"},
+            "file": {
+                "path": item["path"],
+                "name": item["name"],
+                "content_sha256": item["content_sha256"],
+                "file_size_bytes": item["file_size_bytes"],
+                "mtime_epoch": item["mtime_epoch"],
+            },
+            "db": {
+                "existing_record_id": (record or {}).get("id") if isinstance(record, dict) else None,
+                "processing_state": "queued" if not dry_run else ((record or {}).get("processing_state") if isinstance(record, dict) else "new"),
+            },
+            "requested_actions": list(dispatch_policy.get("requested_actions") or ["parse", "extract_text", "store_object_result", "mark_processed_on_success"]),
+        }
+
+    def build_handoff_message(
+        self,
+        *,
+        dispatch_policy: dict[str, Any],
+        target_agent: str,
+        payload: dict[str, Any],
+        correlation_id: str,
+        dispatcher_message_id: str,
+        resolved_db_path: str,
+        resolved_obj_name: str,
+        resolved_obj_db_path_field: str,
+        obj_db_path: str | None,
+    ) -> dict[str, Any]:
+        handoff_metadata = {
+            "correlation_id": correlation_id,
+            "dispatcher_message_id": dispatcher_message_id,
+            "dispatcher_db_path": resolved_db_path,
+            "obj_name": resolved_obj_name,
+            "obj_db_path": obj_db_path,
+        }
+        if resolved_obj_db_path_field and resolved_obj_db_path_field != "obj_db_path":
+            handoff_metadata[resolved_obj_db_path_field] = obj_db_path
+        legacy_obj_db_path_field = f"{resolved_obj_name}_db_path"
+        if legacy_obj_db_path_field not in handoff_metadata:
+            handoff_metadata[legacy_obj_db_path_field] = obj_db_path
+        return build_agent_handoff(
+            source_agent_label=str(dispatch_policy.get("source_agent") or "_data_dispatcher"),
+            target_agent=target_agent,
+            protocol=str(dispatch_policy.get("handoff_protocol") or "agent_handoff_v1"),
+            agent_response={
+                "agent_label": str(dispatch_policy.get("source_agent") or "_data_dispatcher"),
+                "handoff_to": target_agent,
+                "output": payload,
+            },
+            handoff_metadata=handoff_metadata,
+        )
+
+    def forward_documents(
+        self,
+        *,
+        items: list[dict[str, Any]],
+        dispatcher_db: dict[str, Any] | None,
+        resolved_db_path: str,
+        timestamp: str,
+        dispatch_policy: dict[str, Any],
+        thread_id: str,
+        dispatcher_message_id: str,
+        agent_name: str,
+        resolved_obj_name: str,
+        resolved_obj_db_path_field: str,
+        dry_run: bool,
+        errors: list[dict[str, Any]],
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        forwarded: list[dict[str, Any]] = []
+        handoff_messages: list[dict[str, Any]] = []
+
+        for item in items:
+            correlation_id = item["content_sha256"]
+            docs = (dispatcher_db or {"documents": {}}).get("documents", {}) if isinstance(dispatcher_db, dict) else {}
+            record = docs.get(correlation_id) if isinstance(docs, dict) else None
+
+            if dispatcher_db is None and not dry_run:
+                errors.append({"path": item["path"], "error": "db_unreachable"})
+                continue
+
+            if not dry_run:
+                db_write_ok, db_write_err = self.queue_document(
+                    dispatcher_db=dispatcher_db,
+                    resolved_db_path=resolved_db_path,
+                    item=item,
+                    correlation_id=correlation_id,
+                    timestamp=timestamp,
+                )
+                if not db_write_ok:
+                    errors.append(
+                        {
+                            "path": item["path"],
+                            "error": "db_write_failed",
+                            "detail": db_write_err,
+                            "content_sha256": correlation_id,
+                        }
+                    )
+                    continue
+
+            payload = self.build_dispatch_payload(
+                dispatch_policy=dispatch_policy,
+                thread_id=thread_id,
+                resolved_obj_name=resolved_obj_name,
+                item=item,
+                record=record if isinstance(record, dict) else None,
+                dry_run=dry_run,
+            )
+            if dry_run:
+                continue
+
+            obj_db_path = self.resolve_object_db_path(
+                dispatch_policy=dispatch_policy,
+                resolved_obj_db_path_field=resolved_obj_db_path_field,
+                resolved_obj_name=resolved_obj_name,
+            )
+            forwarded.append({"path": item["path"], "content_sha256": correlation_id, "link": {"thread_id": thread_id, "message_id": "PENDING"}})
+            handoff_messages.append(
+                self.build_handoff_message(
+                    dispatch_policy=dispatch_policy,
+                    target_agent=agent_name,
+                    payload=payload,
+                    correlation_id=correlation_id,
+                    dispatcher_message_id=dispatcher_message_id,
+                    resolved_db_path=resolved_db_path,
+                    resolved_obj_name=resolved_obj_name,
+                    resolved_obj_db_path_field=resolved_obj_db_path_field,
+                    obj_db_path=obj_db_path,
+                )
+            )
+
+        return forwarded, handoff_messages
+
+    def build_report(
+        self,
+        *,
+        scan_dir: str,
+        timestamp: str,
+        resolved_db_path: str,
+        db_load_error: str | None,
+        pdf_paths: list[str],
+        classified: dict[str, list[dict[str, Any]]],
+        forwarded: list[dict[str, Any]],
+        handoff_messages: list[dict[str, Any]],
+        warnings: list[dict[str, Any]],
+        errors: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return {
+            "agent": "data_dispatcher",
+            "scan_dir": scan_dir,
+            "timestamp": timestamp,
+            "db": {"path": resolved_db_path, "reachable": db_load_error is None, "error": db_load_error},
+            "summary": {
+                "pdf_found": len(pdf_paths),
+                "new": len(classified["new"]),
+                "known_unprocessed": len(classified["known_unprocessed"]),
+                "known_processing": len(classified["known_processing"]),
+                "known_processed": len(classified["known_processed"]),
+                "errors": len(errors),
+            },
+            "classified": {
+                "new": classified["new"],
+                "known_unprocessed": classified["known_unprocessed"],
+                "known_processing": classified["known_processing"],
+                "known_processed": classified["known_processed"],
+                "duplicates": classified["duplicates"],
+                "error_items": classified["error_items"],
+            },
+            "forwarded": forwarded,
+            "handoff_messages": handoff_messages,
+            "warnings": warnings,
+            "errors": errors,
+        }
+
+    def dispatch_documents(
+        self,
+        scan_dir: str,
+        db: dict | None = None,
+        db_path: str | None = None,
+        obj: str | None = None,
+        obj_name: str | None = None,
+        thread_id: str | None = None,
+        dispatcher_message_id: str | None = None,
+        recursive: bool = True,
+        extensions: list | None = None,
+        max_files: int | None = None,
+        agent_name: str = "_job_posting_parser",
+        dry_run: bool = False,
+    ) -> dict:
+        ts = _now_utc_iso()
+        dispatch_policy = dict((get_tool_config("dispatch_documents") or {}).get("dispatch_policy") or {})
+        scan_dir_original = str(scan_dir or "")
+        thread_id = thread_id or "UNKNOWN"
+        dispatcher_message_id = dispatcher_message_id or "UNKNOWN"
+        agent_name = str(agent_name or dispatch_policy.get("default_target_agent") or "_job_posting_parser").strip() or "_job_posting_parser"
+        resolved_obj_name = str(obj_name or obj or dispatch_policy.get("obj_name") or "job_postings").strip() or "job_postings"
+        resolved_obj_db_path_field = str(dispatch_policy.get("obj_db_path_field") or f"{resolved_obj_name}_db_path").strip() or f"{resolved_obj_name}_db_path"
+
+        if extensions is None:
+            extensions = [".pdf", ".PDF"]
+        ext_set = {str(extension) for extension in extensions}
+
+        resolved_db_path = ((db or {}).get("path") if isinstance(db, dict) else None) or db_path or _default_dispatcher_db_path()
+        resolved_db_path = os.path.abspath(os.path.expanduser(str(resolved_db_path)))
+
+        warnings: list[dict[str, Any]] = []
+        scan_dir = self.resolve_scan_dir(scan_dir_original, resolved_db_path=resolved_db_path, warnings=warnings)
+
+        dispatcher_db, db_load_error = self.load_dispatcher_db(resolved_db_path=resolved_db_path)
+
+        if db_load_error and not dry_run:
+            return {
+                "agent": "data_dispatcher",
+                "scan_dir": scan_dir,
+                "timestamp": ts,
+                "db": {"path": resolved_db_path, "reachable": False, "error": db_load_error},
+                "summary": {"pdf_found": 0, "new": 0, "known_unprocessed": 0, "known_processing": 0, "known_processed": 0, "errors": 1},
+                "forwarded": [],
+                "handoff_messages": [],
+                "errors": [{"path": scan_dir, "error": "db_unreachable", "detail": db_load_error}],
+            }
+
+        errors: list[dict[str, Any]] = []
+        if not os.path.isdir(scan_dir):
+            return {
+                "agent": "data_dispatcher",
+                "scan_dir": scan_dir,
+                "timestamp": ts,
+                "db": {"path": resolved_db_path, "reachable": db_load_error is None, "error": db_load_error},
+                "summary": {"pdf_found": 0, "new": 0, "known_unprocessed": 0, "known_processing": 0, "known_processed": 0, "errors": 1},
+                "forwarded": [],
+                "handoff_messages": [],
+                "warnings": warnings,
+                "errors": [{"path": scan_dir, "error": "scan_dir_not_found"}],
+            }
+
+        pdf_paths = self.collect_document_paths(scan_dir, recursive=recursive, extensions=ext_set)
+        if max_files is not None:
+            pdf_paths = pdf_paths[: max(0, int(max_files))]
+
+        docs = (dispatcher_db or {"documents": {}}).get("documents", {}) if isinstance(dispatcher_db, dict) else {}
+        classified = self.classify_documents(pdf_paths=pdf_paths, docs=docs if isinstance(docs, dict) else {}, errors=errors)
+        forwarded, handoff_messages = self.forward_documents(
+            items=classified["new"] + classified["known_unprocessed"],
+            dispatcher_db=dispatcher_db,
+            resolved_db_path=resolved_db_path,
+            timestamp=ts,
+            dispatch_policy=dispatch_policy,
+            thread_id=thread_id,
+            dispatcher_message_id=dispatcher_message_id,
+            agent_name=agent_name,
+            resolved_obj_name=resolved_obj_name,
+            resolved_obj_db_path_field=resolved_obj_db_path_field,
+            dry_run=dry_run,
+            errors=errors,
+        )
+        return self.build_report(
+            scan_dir=scan_dir,
+            timestamp=ts,
+            resolved_db_path=resolved_db_path,
+            db_load_error=db_load_error,
+            pdf_paths=pdf_paths,
+            classified=classified,
+            forwarded=forwarded,
+            handoff_messages=handoff_messages,
+            warnings=warnings,
+            errors=errors,
+        )
+
+
+DOCUMENT_DISPATCH_SERVICE = DocumentDispatchService()
 
 
 def dispatch_docs(
@@ -1455,379 +2476,20 @@ def dispatch_docs(
     agent_name: str = "_job_posting_parser",
     dry_run: bool = False,
 ) -> dict:
-    """Discover PDFs, fingerprint them, check/update a small DB, and prepare parser handoffs.
-
-    This is intentionally deterministic and does not read/parse PDF contents.
-    """
-
-    ts = _now_utc_iso()
-    dispatch_policy = dict((get_tool_config("dispatch_documents") or {}).get("dispatch_policy") or {})
-    scan_dir_original = str(scan_dir or "")
-    scan_dir = os.path.abspath(os.path.expanduser(scan_dir_original))
-    thread_id = (thread_id or "UNKNOWN")
-    dispatcher_message_id = (dispatcher_message_id or "UNKNOWN")
-    agent_name = str(
-        agent_name
-        or dispatch_policy.get("default_target_agent")
-        or "_job_posting_parser"
-    ).strip() or "_job_posting_parser"
-    resolved_obj_name = str(
-        obj_name
-        or obj
-        or dispatch_policy.get("obj_name")
-        or "job_postings"
-    ).strip() or "job_postings"
-    resolved_obj_db_path_field = str(
-        dispatch_policy.get("obj_db_path_field")
-        or f"{resolved_obj_name}_db_path"
-    ).strip() or f"{resolved_obj_name}_db_path"
-
-    if extensions is None:
-        extensions = [".pdf", ".PDF"]   
-    ext_set = {str(e) for e in extensions}
-
-    # Resolve DB path
-    resolved_db_path = (
-        (db or {}).get("path") if isinstance(db, dict) else None
-    ) or db_path or _default_dispatcher_db_path()
-    resolved_db_path = os.path.abspath(os.path.expanduser(str(resolved_db_path)))
-
-    warnings: list[dict] = []
-
-    # If the model passes placeholder paths like "/path/to/jobs", try to infer
-    # the intended scan_dir from nearby, reliable inputs (DB path / repo layout).
-    if not os.path.isdir(scan_dir):
-        fallback_candidates: list[tuple[str, str]] = []
-        # 1) Most reliable: scan alongside the dispatcher DB (often lives next to PDFs).
-        try:
-            db_parent = os.path.dirname(resolved_db_path)
-            if db_parent:
-                fallback_candidates.append((db_parent, "fallback_to_db_parent"))
-        except Exception:
-            pass
-        # 2) Common project layout: AppData/VSM_4_Data next to this module.
-        try:
-            base = GetPath()._parent(parg=f"{__file__}")
-            vsm4 = os.path.join(base, "AppData", "VSM_4_Data")
-            fallback_candidates.append((vsm4, "fallback_to_default_vsm4"))
-        except Exception:
-            pass
-
-        for candidate, reason in fallback_candidates:
-            cand = os.path.abspath(os.path.expanduser(str(candidate)))
-            if os.path.isdir(cand):
-                warnings.append({
-                    "warning": "scan_dir_not_found_using_fallback",
-                    "scan_dir_original": scan_dir_original,
-                    "scan_dir_used": cand,
-                    "reason": reason,
-                })
-                scan_dir = cand
-                break
-
-    # DB reachability check
-    db_load_error: str | None = None
-    dispatcher_db: dict | None = None
-    try:
-        dispatcher_db = _load_dispatcher_db(resolved_db_path)
-    except Exception as e:
-        db_load_error = f"{type(e).__name__}: {e}"
-
-    if db_load_error and not dry_run:
-        return {
-            "agent": "data_dispatcher",
-            "scan_dir": scan_dir,
-            "timestamp": ts,
-            "db": {"path": resolved_db_path, "reachable": False, "error": db_load_error},
-            "summary": {"pdf_found": 0, "new": 0, "known_unprocessed": 0, "known_processing": 0, "known_processed": 0, "errors": 1},
-            "forwarded": [],
-            "handoff_messages": [],
-            "errors": [{"path": scan_dir, "error": "db_unreachable", "detail": db_load_error}],
-        }
-
-    # Collect files
-    pdf_paths: list[str] = []
-    errors: list[dict] = []
-    if not os.path.isdir(scan_dir):
-        return {
-            "agent": "data_dispatcher",
-            "scan_dir": scan_dir,
-            "timestamp": ts,
-            "db": {"path": resolved_db_path, "reachable": db_load_error is None, "error": db_load_error},
-            "summary": {"pdf_found": 0, "new": 0, "known_unprocessed": 0, "known_processing": 0, "known_processed": 0, "errors": 1},
-            "forwarded": [],
-            "handoff_messages": [],
-            "warnings": warnings,
-            "errors": [{"path": scan_dir, "error": "scan_dir_not_found"}],
-        }
-
-    if recursive:
-        for root, dirs, files in os.walk(scan_dir):
-            # Never treat our generated outputs as inputs.
-            # This prevents polluting the dispatcher DB with cover-letter PDFs.
-            dirs[:] = [
-                d
-                for d in dirs
-                if not str(d).startswith("Cover_letters")
-            ]
-            for fn in files:
-                if fn == "Muster_Anschreiben.pdf":
-                    continue
-                if any(fn.endswith(ext) for ext in ext_set):
-                    pdf_paths.append(os.path.join(root, fn))
-    else:
-        for fn in os.listdir(scan_dir):
-            if fn == "Muster_Anschreiben.pdf":
-                continue
-            p = os.path.join(scan_dir, fn)
-            if os.path.isfile(p) and any(fn.endswith(ext) for ext in ext_set):
-                pdf_paths.append(p)
-
-    pdf_paths.sort()
-    if max_files is not None:
-        pdf_paths = pdf_paths[: max(0, int(max_files))]
-
-    # Classification buckets
-    new_items: list[dict] = []
-    known_unprocessed: list[dict] = []
-    known_processing: list[dict] = []
-    known_processed: list[dict] = []
-    error_items: list[dict] = []
-    forwarded: list[dict] = []
-    handoff_messages: list[dict] = []
-    duplicates: list[dict] = []
-
-    seen_hashes: set[str] = set()
-    docs = (dispatcher_db or {"documents": {}}).get("documents", {}) if isinstance(dispatcher_db, dict) else {}
-
-    def _classify_record(rec: dict | None) -> str:
-        if not rec:
-            return "new"
-        if rec.get("processed") is True or rec.get("processing_state") == "processed":
-            return "known_processed"
-        st = (rec.get("processing_state") or "").lower().strip()
-        if st in {"queued", "processing"}:
-            return "known_processing"
-        # new/failed/unknown => treat as unprocessed
-        return "known_unprocessed"
-
-    for path in pdf_paths:
-        abs_path = os.path.abspath(path)
-        try:
-            st = os.stat(abs_path)
-            file_size_bytes = _safe_int(getattr(st, "st_size", 0), 0)
-            mtime_epoch = _safe_int(getattr(st, "st_mtime", 0), 0)
-        except Exception as e:
-            err = {"path": abs_path, "error": "stat_failed", "detail": f"{type(e).__name__}: {e}"}
-            errors.append(err)
-            error_items.append(err)
-            continue
-
-        # Readability + hash
-        try:
-            content_sha256 = _sha256_file(abs_path)
-        except Exception as e:
-            err = {"path": abs_path, "error": "unreadable", "detail": f"{type(e).__name__}: {e}"}
-            errors.append(err)
-            error_items.append(err)
-            continue
-
-        if content_sha256 in seen_hashes:
-            duplicates.append({"path": abs_path, "content_sha256": content_sha256})
-            continue
-        seen_hashes.add(content_sha256)
-
-        rec = docs.get(content_sha256) if isinstance(docs, dict) else None
-        bucket = _classify_record(rec if isinstance(rec, dict) else None)
-        item = {
-            "path": abs_path,
-            "name": os.path.basename(abs_path),
-            "content_sha256": content_sha256,
-            "file_size_bytes": file_size_bytes,
-            "mtime_epoch": mtime_epoch,
-            "db": {
-                "existing_record_id": (rec or {}).get("id") if isinstance(rec, dict) else None,
-                "processed": (rec or {}).get("processed") if isinstance(rec, dict) else None,
-                "processing_state": (rec or {}).get("processing_state") if isinstance(rec, dict) else None,
-            },
-        }
-
-        if bucket == "new":
-            new_items.append(item)
-        elif bucket == "known_unprocessed":
-            known_unprocessed.append(item)
-        elif bucket == "known_processing":
-            known_processing.append(item)
-        else:
-            known_processed.append(item)
-
-    # Upsert + build handoffs
-    def _try_write_db() -> tuple[bool, str | None]:
-        if dispatcher_db is None:
-            return False, "db_not_loaded"
-        try:
-            _save_dispatcher_db(resolved_db_path, dispatcher_db)
-            return True, None
-        except Exception as e:
-            return False, f"{type(e).__name__}: {e}"
-
-    to_forward = new_items + known_unprocessed
-    for item in to_forward:
-        sha = item["content_sha256"]
-        rec = docs.get(sha) if isinstance(docs, dict) else None
-
-        # If DB was not reachable and we're not in dry-run, do not forward blind.
-        if dispatcher_db is None and not dry_run:
-            errors.append({"path": item["path"], "error": "db_unreachable"})
-            continue
-
-        db_write_ok = True
-        db_write_err: str | None = None
-
-        if not dry_run and isinstance(dispatcher_db, dict):
-            if "documents" not in dispatcher_db or not isinstance(dispatcher_db.get("documents"), dict):
-                dispatcher_db["documents"] = {}
-            docs = dispatcher_db["documents"]
-
-            current = docs.get(sha) if isinstance(docs, dict) else None
-            current_state = (current or {}).get("processing_state") if isinstance(current, dict) else None
-            if (current_state or "").lower().strip() not in {"queued", "processing"}:
-                # Upsert record as queued
-                new_rec = dict(current) if isinstance(current, dict) else {}
-                new_rec.setdefault("id", sha)
-                new_rec["content_sha256"] = sha
-                new_rec["source_path"] = item["path"]
-                new_rec["file_size_bytes"] = item["file_size_bytes"]
-                new_rec["mtime_epoch"] = item["mtime_epoch"]
-                new_rec["last_seen_at"] = ts
-                new_rec["processed"] = False
-                new_rec["processing_state"] = "queued"
-                docs[sha] = new_rec
-                ok, err = _try_write_db()
-                db_write_ok = ok
-                db_write_err = err
-
-        if not dry_run and not db_write_ok:
-            # Policy: do not forward untracked.
-            errors.append({
-                "path": item["path"],
-                "error": "db_write_failed",
-                "detail": db_write_err,
-                "content_sha256": sha,
-            })
-            continue
-
-        metadata_defaults = dict(dispatch_policy.get("metadata_defaults") or {})
-        obj_db_path = None
-        obj_db_default = metadata_defaults.get(resolved_obj_db_path_field)
-        if not isinstance(obj_db_default, dict):
-            obj_db_default = {}
-        resolver_name = str(obj_db_default.get("resolver") or "").strip()
-        resolver_obj_name = str(obj_db_default.get("obj_name") or resolved_obj_name).strip() or resolved_obj_name
-        if resolver_name in {
-            "default_document_db_path",
-            f"default_{resolved_obj_name}_db_path",
-            f"default_{resolver_obj_name}_db_path",
-        }:
-            obj_db_path = _default_document_db_path(resolver_obj_name)
-        elif isinstance(obj_db_default.get("value"), str) and str(obj_db_default.get("value") or "").strip():
-            obj_db_path = os.path.abspath(os.path.expanduser(str(obj_db_default.get("value"))))
-
-        payload = {
-            "type": str(dispatch_policy.get("document_type") or "file"),
-            "correlation_id": sha,
-            "obj_name": resolved_obj_name,
-            "link": {"thread_id": thread_id, "message_id": "PENDING"},
-            "file": {
-                "path": item["path"],
-                "name": item["name"],
-                "content_sha256": sha,
-                "file_size_bytes": item["file_size_bytes"],
-                "mtime_epoch": item["mtime_epoch"],
-            },
-            "db": {
-                "existing_record_id": (rec or {}).get("id") if isinstance(rec, dict) else None,
-                "processing_state": "queued" if not dry_run else ((rec or {}).get("processing_state") if isinstance(rec, dict) else "new"),
-            },
-            "requested_actions": list(dispatch_policy.get("requested_actions") or ["parse", "extract_text", "store_job_posting", "mark_processed_on_success"]),
-        }
-
-        if dry_run:
-            continue
-
-        forwarded.append({
-            "path": item["path"],
-            "content_sha256": sha,
-            "link": {"thread_id": thread_id, "message_id": "PENDING"},
-        })
-        handoff_metadata = {
-            "correlation_id": sha,
-            "dispatcher_message_id": dispatcher_message_id,
-            "dispatcher_db_path": resolved_db_path,
-            "obj_name": resolved_obj_name,
-            resolved_obj_db_path_field: obj_db_path,
-        }
-        if resolved_obj_db_path_field != "job_postings_db_path":
-            handoff_metadata["job_postings_db_path"] = obj_db_path
-
-        handoff = build_agent_handoff(
-            source_agent_label=str(dispatch_policy.get("source_agent") or "_data_dispatcher"),
-            target_agent=agent_name,
-            protocol=str(dispatch_policy.get("handoff_protocol") or "agent_handoff_v1"),
-            agent_response={
-                "agent_label": str(dispatch_policy.get("source_agent") or "_data_dispatcher"),
-                "output": payload,
-                "handoff_to": agent_name,
-            },
-            handoff_metadata=handoff_metadata,
-        )
-        handoff_messages.append({
-            "target_agent": agent_name,
-            "handoff_protocol": handoff["protocol"],
-            "message_text": handoff["message_text"],
-            "handoff_payload": handoff["handoff_payload"],
-            "handoff_metadata": handoff["metadata"],
-            "correlation_id": sha,
-            "dispatcher_message_id": dispatcher_message_id,
-        })
-
-    report = {
-        "agent": "data_dispatcher",
-        "scan_dir": scan_dir,
-        "timestamp": ts,
-        "db": {"path": resolved_db_path, "reachable": db_load_error is None, "error": db_load_error},
-        "warnings": warnings,
-        "summary": {
-            "pdf_found": len(pdf_paths),
-            "new": len(new_items),
-            "known_unprocessed": len(known_unprocessed),
-            "known_processing": len(known_processing),
-            "known_processed": len(known_processed),
-            "duplicates": len(duplicates),
-            "errors": len(errors),
-        },
-        "classified": {
-            "new": new_items,
-            "known_unprocessed": known_unprocessed,
-            "known_processing": known_processing,
-            "known_processed": known_processed,
-            "error": error_items,
-            "duplicates": duplicates,
-        },
-        "forwarded": forwarded,
-        "handoff_messages": handoff_messages,
-        "errors": errors,
-        "input": {
-            "thread_id": thread_id,
-            "dispatcher_message_id": dispatcher_message_id,
-            "recursive": bool(recursive),
-            "extensions": list(ext_set),
-            "max_files": max_files,
-            "parser_agent_name": agent_name,
-            "dry_run": bool(dry_run),
-        },
-    }
-    return report
+    return DOCUMENT_DISPATCH_SERVICE.dispatch_documents(
+        scan_dir=scan_dir,
+        db=db,
+        db_path=db_path,
+        obj=obj,
+        obj_name=obj_name,
+        thread_id=thread_id,
+        dispatcher_message_id=dispatcher_message_id,
+        recursive=recursive,
+        extensions=extensions,
+        max_files=max_files,
+        agent_name=agent_name,
+        dry_run=dry_run,
+    )
 
 
 def batch_generate_new_docs(
@@ -1857,6 +2519,39 @@ def batch_generate_new_docs(
         profile_path=profile_path,
         dispatcher_db_path=db_path,
         out_dir=out_dir,
+        model=model,
+        max_files=max_files,
+        max_text_chars=max_text_chars,
+        dry_run=dry_run,
+        write_pdf=write_pdf,
+        rerun_processed=rerun_processed,
+    )
+
+
+def batch_generate_documents_tool(
+    scan_dir: str,
+    profile_path: str,
+    db_path: str,
+    out_dir: str | None = None,
+    workflow_name: str = "cover_letter_batch_generation",
+    model: str = "gpt-4o-mini",
+    max_files: int | None = None,
+    max_text_chars: int = 20000,
+    dry_run: bool = False,
+    write_pdf: bool = True,
+    rerun_processed: bool = False,
+) -> dict[str, Any]:
+    try:
+        from .batch_document import batch_document_generate  # type: ignore
+    except Exception:
+        from batch_document import batch_document_generate  # type: ignore
+
+    return batch_document_generate(
+        scan_dir=scan_dir,
+        profile_path=profile_path,
+        dispatcher_db_path=db_path,
+        out_dir=out_dir,
+        workflow_name=workflow_name,
         model=model,
         max_files=max_files,
         max_text_chars=max_text_chars,
@@ -3282,12 +3977,17 @@ _TOOL_IMPLEMENTATIONS: dict[str, Callable | None] = {
     "vectordb": vectordb,
     "vdb_worker": vdb_worker,
     "build_agent_system_configs": build_agent_system_configs_tool,
-    "execute_action_request": execute_action_request_tool,
+    "execute_action_request": ACTION_REQUEST_SERVICE.execute_request_tool,
+    "store_object_result": store_object_result_tool,
+    "ingest_object": ingest_object_tool,
+    "upsert_object_record": upsert_object_record_tool,
     "upsert_dispatcher_job_record": upsert_dispatcher_job_record_tool,
     "ingest_profile": ingest_profile_tool,
     "ingest_job_posting": ingest_job_posting_tool,
     "store_job_posting_result": store_job_posting_result_tool,
     "store_profile_result": store_profile_result_tool,
+    "batch_document_generator": batch_generate_documents_tool,
+    "batch_generate_documents": batch_generate_documents_tool,
     "write_document": write_document,
     "read_document": read_document,
     "update_document": update_document,
@@ -3300,8 +4000,8 @@ _TOOL_IMPLEMENTATIONS: dict[str, Callable | None] = {
     "dsl_tool": dsl_tool,
     "code_tool": code_tool,
     "iter_documents": iter_documents,
-    "dispatch_documents": dispatch_docs,
-    "dispatch_docs": dispatch_docs,
+    "dispatch_documents": DOCUMENT_DISPATCH_SERVICE.dispatch_documents,
+    "dispatch_docs": DOCUMENT_DISPATCH_SERVICE.dispatch_documents,
     "fetch_url": fetch_url,
     "fetch_data": fetch_data,
     "call_api": call_api,

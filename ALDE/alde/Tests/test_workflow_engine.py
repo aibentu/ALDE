@@ -76,7 +76,7 @@ class TestWorkflowEngine(unittest.TestCase):
             session,
             event_kind="tool",
             event_name="execute_action_request",
-            payload={"action": "ingest_job_posting"},
+            payload={"action": "ingest_object"},
         )
         self.assertEqual(session["current_state"], "action_executed")
 
@@ -98,7 +98,7 @@ class TestWorkflowEngine(unittest.TestCase):
             session,
             event_kind="tool",
             event_name="execute_action_request",
-            payload={"action": "ingest_job_posting"},
+            payload={"action": "ingest_object"},
         )
 
         self.assertEqual(session["current_state"], "action_executed")
@@ -114,7 +114,7 @@ class TestWorkflowEngine(unittest.TestCase):
         session = agents_factory._advance_workflow_session(
             session,
             event_kind="tool",
-            event_name="upsert_dispatcher_job_record",
+            event_name="upsert_object_record",
             payload={"correlation_id": "sha-atomic-1"},
         )
         self.assertEqual(session["current_state"], "job_record_upserted")

@@ -98,7 +98,7 @@ class TestWorkflowIntegration(unittest.TestCase):
         }
 
         with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client, patch(
-            "alde.tools.get_persisted_job_posting_result",
+            "alde.tools.DOCUMENT_REPOSITORY.get_document",
             return_value={
                 "agent": "job_posting_parser",
                 "correlation_id": "sha-stored-1",
@@ -428,7 +428,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                 )
             )
 
-            stored = tools_mod.get_persisted_job_posting_result("platform:job-42", db_path=job_postings_db_path)
+            stored = tools_mod.DOCUMENT_REPOSITORY.get_document("platform:job-42", db_path=job_postings_db_path, obj_name="job_postings")
             self.assertTrue(result["ok"])
             self.assertEqual(result["correlation_id"], "platform:job-42")
             self.assertEqual(stored["job_posting"]["job_title"], "Remote Python Engineer")
@@ -458,7 +458,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                 )
             )
 
-            stored = tools_mod.get_persisted_profile_result("profile:job-board-7", db_path=profiles_db_path)
+            stored = tools_mod.DOCUMENT_REPOSITORY.get_document("profile:job-board-7", db_path=profiles_db_path, obj_name="profiles")
             self.assertTrue(result["ok"])
             self.assertEqual(result["correlation_id"], "profile:job-board-7")
             self.assertEqual(stored["profile"]["profile_id"], "profile:job-board-7")
@@ -487,7 +487,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                 )
             )
 
-            stored = tools_mod.get_persisted_profile_result("profile:platform-11", db_path=profiles_db_path)
+            stored = tools_mod.DOCUMENT_REPOSITORY.get_document("profile:platform-11", db_path=profiles_db_path, obj_name="profiles")
             self.assertTrue(result["ok"])
             self.assertEqual(result["correlation_id"], "profile:platform-11")
             self.assertEqual(stored["profile"]["personal_info"]["full_name"], "Erika Muster")
@@ -500,10 +500,10 @@ class TestWorkflowIntegration(unittest.TestCase):
 
         try:
             request = {
-                "action": "ingest_job_posting",
+                "action": "ingest_object",
                 "correlation_id": "platform:ingest-99",
                 "source_agent": "job_platform_ingest",
-                "job_postings_db_path": job_postings_db_path,
+                "obj_db_path": job_postings_db_path,
                 "job_posting": {
                     "job_title": "Senior Data Engineer",
                     "company_name": "Platform Co",
@@ -523,7 +523,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                 )
                 response = json.loads(chat.get_response())
 
-            stored = tools_mod.get_persisted_job_posting_result("platform:ingest-99", db_path=job_postings_db_path)
+            stored = tools_mod.DOCUMENT_REPOSITORY.get_document("platform:ingest-99", db_path=job_postings_db_path, obj_name="job_postings")
             self.assertTrue(response["ok"])
             self.assertEqual(response["correlation_id"], "platform:ingest-99")
             self.assertEqual(stored["job_posting"]["job_title"], "Senior Data Engineer")
@@ -538,8 +538,8 @@ class TestWorkflowIntegration(unittest.TestCase):
 
         try:
             request = {
-                "action": "store_profile",
-                "profiles_db_path": profiles_db_path,
+                "action": "ingest_object",
+                "obj_db_path": profiles_db_path,
                 "source_agent": "profile_platform_ingest",
                 "applicant_profile": {
                     "source": "text",
@@ -559,7 +559,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                 )
                 response = json.loads(chat.get_response())
 
-            stored = tools_mod.get_persisted_profile_result("profile:ingest-5", db_path=profiles_db_path)
+            stored = tools_mod.DOCUMENT_REPOSITORY.get_document("profile:ingest-5", db_path=profiles_db_path, obj_name="profiles")
             self.assertTrue(response["ok"])
             self.assertEqual(response["correlation_id"], "profile:ingest-5")
             self.assertEqual(stored["profile"]["personal_info"]["full_name"], "Jane Doe")
@@ -573,8 +573,8 @@ class TestWorkflowIntegration(unittest.TestCase):
 
         try:
             request = {
-                "action": "ingest_profile",
-                "profiles_db_path": profiles_db_path,
+                "action": "ingest_object",
+                "obj_db_path": profiles_db_path,
                 "source_agent": "profile_platform_ingest",
                 "profile": {
                     "profile_id": "profile:ingest-15",
@@ -595,7 +595,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                 )
                 response = json.loads(chat.get_response())
 
-            stored = tools_mod.get_persisted_profile_result("profile:ingest-15", db_path=profiles_db_path)
+            stored = tools_mod.DOCUMENT_REPOSITORY.get_document("profile:ingest-15", db_path=profiles_db_path, obj_name="profiles")
             self.assertTrue(response["ok"])
             self.assertEqual(response["correlation_id"], "profile:ingest-15")
             self.assertEqual(stored["profile"]["personal_info"]["full_name"], "Alex Example")
@@ -605,9 +605,9 @@ class TestWorkflowIntegration(unittest.TestCase):
 
     def test_ingest_job_posting_action_rejects_invalid_schema_request(self) -> None:
         request = {
-            "action": "ingest_job_posting",
+            "action": "ingest_object",
             "source_agent": "job_platform_ingest",
-            "job_postings_db_path": "/tmp/unused-job-postings.json",
+            "obj_db_path": "/tmp/unused-job-postings.json",
         }
 
         with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
@@ -631,10 +631,10 @@ class TestWorkflowIntegration(unittest.TestCase):
             result_text, routing_request = agents_factory.execute_tool(
                 "execute_action_request",
                 {
-                    "action": "ingest_job_posting",
+                    "action": "ingest_object",
                     "payload": {
                         "correlation_id": "platform:dispatcher-21",
-                        "job_postings_db_path": job_postings_db_path,
+                        "obj_db_path": job_postings_db_path,
                         "source_agent": "job_platform_ingest",
                         "job_posting": {
                             "job_title": "Automation Engineer",
@@ -650,7 +650,7 @@ class TestWorkflowIntegration(unittest.TestCase):
             )
 
             result = json.loads(result_text)
-            stored = tools_mod.get_persisted_job_posting_result("platform:dispatcher-21", db_path=job_postings_db_path)
+            stored = tools_mod.DOCUMENT_REPOSITORY.get_document("platform:dispatcher-21", db_path=job_postings_db_path, obj_name="job_postings")
             self.assertIsNone(routing_request)
             self.assertTrue(result["ok"])
             self.assertEqual(stored["job_posting"]["job_title"], "Automation Engineer")
@@ -660,10 +660,10 @@ class TestWorkflowIntegration(unittest.TestCase):
 
     def test_deterministic_action_is_logged_as_real_assistant_result(self) -> None:
         request = {
-            "action": "ingest_job_posting",
+            "action": "ingest_object",
             "payload": {
                 "correlation_id": "platform:history-1",
-                "job_postings_db_path": "/tmp/unused-job-postings.json",
+                "obj_db_path": "/tmp/unused-job-postings.json",
                 "source_agent": "job_platform_ingest",
                 "job_posting": {
                     "job_title": "History Engineer",
@@ -689,7 +689,7 @@ class TestWorkflowIntegration(unittest.TestCase):
         self.assertTrue(assistant_entries)
         latest = assistant_entries[-1]
         self.assertEqual(latest.get("content"), response_text)
-        self.assertEqual(latest.get("data", {}).get("deterministic_action", {}).get("action"), "ingest_job_posting")
+        self.assertEqual(latest.get("data", {}).get("deterministic_action", {}).get("action"), "ingest_object")
         self.assertEqual(latest.get("data", {}).get("deterministic_action", {}).get("correlation_id"), "platform:history-1")
         get_client.assert_not_called()
 
@@ -737,8 +737,8 @@ class TestWorkflowIntegration(unittest.TestCase):
                 )
             )
 
-            stored_job = tools_mod.get_persisted_job_posting_result("platform:atomic-1", db_path=job_postings_db_path)
-            dispatcher_db = tools_mod._load_dispatcher_db(dispatcher_db_path)
+            stored_job = tools_mod.DOCUMENT_REPOSITORY.get_document("platform:atomic-1", db_path=job_postings_db_path, obj_name="job_postings")
+            dispatcher_db = tools_mod.DOCUMENT_REPOSITORY.load_db(dispatcher_db_path, db_name="dispatcher_documents")
             dispatcher_record = dispatcher_db["documents"]["platform:atomic-1"]
             self.assertTrue(result["ok"])
             self.assertTrue(result["dispatcher_updated"])
@@ -758,11 +758,11 @@ class TestWorkflowIntegration(unittest.TestCase):
             result_text, routing_request = agents_factory.execute_tool(
                 "execute_action_request",
                 {
-                    "action": "upsert_dispatcher_job_record",
+                    "action": "upsert_object_record",
                     "payload": {
                         "correlation_id": "platform:atomic-2",
                         "dispatcher_db_path": dispatcher_db_path,
-                        "job_postings_db_path": job_postings_db_path,
+                        "obj_db_path": job_postings_db_path,
                         "source_agent": "job_platform_ingest",
                         "processing_state": "processed",
                         "job_posting_result": {
@@ -779,8 +779,8 @@ class TestWorkflowIntegration(unittest.TestCase):
             )
 
             result = json.loads(result_text)
-            stored_job = tools_mod.get_persisted_job_posting_result("platform:atomic-2", db_path=job_postings_db_path)
-            dispatcher_db = tools_mod._load_dispatcher_db(dispatcher_db_path)
+            stored_job = tools_mod.DOCUMENT_REPOSITORY.get_document("platform:atomic-2", db_path=job_postings_db_path, obj_name="job_postings")
+            dispatcher_db = tools_mod.DOCUMENT_REPOSITORY.load_db(dispatcher_db_path, db_name="dispatcher_documents")
             self.assertIsNone(routing_request)
             self.assertTrue(result["ok"])
             self.assertEqual(stored_job["job_posting"]["job_title"], "Autonomous Workflow Engineer")
@@ -788,6 +788,69 @@ class TestWorkflowIntegration(unittest.TestCase):
         finally:
             os.unlink(dispatcher_db_path)
             os.unlink(job_postings_db_path)
+
+    def test_action_request_service_dispatches_generic_object_action_via_config(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            custom_db_path = tmp.name
+
+        try:
+            request = {
+                "action": "store_generic_object",
+                "obj_name": "custom_records",
+                "custom_records_db_path": custom_db_path,
+                "source_agent": "generic_ingest",
+                "object_payload": {
+                    "id": "custom-42",
+                    "name": "Config First",
+                    "source": "platform.generic",
+                },
+            }
+            schema_config = {
+                "name": "generic_object_ingest_request",
+                "actions": ["store_generic_object"],
+                "request_resolution": {
+                    "objects": [
+                        {
+                            "binding_name": "generic_object",
+                            "request_field": "object_request",
+                            "result_field": "object_result",
+                            "default_obj_name": "generic_objects",
+                            "obj_name_config_key": "generic_obj_name",
+                            "db_path_field_key": "generic_db_path_field",
+                            "default_source": "text",
+                        }
+                    ]
+                },
+                "action_execution": {
+                    "handler_name": "ingest_object",
+                    "binding_name": "generic_object",
+                    "object_payload_field": "object_payload",
+                    "request_payload_field": "object_request",
+                    "result_payload_field": "object_result",
+                    "correlation_id_fields": ["correlation_id"],
+                    "source_agent_fields": ["source_agent"],
+                    "default_request_source": "text",
+                },
+            }
+
+            with patch("alde.tools.get_action_request_schema_config", return_value=schema_config), patch(
+                "alde.tools.validate_action_request",
+                return_value={
+                    "valid": True,
+                    "errors": [],
+                    "warnings": [],
+                    "schema_name": "generic_object_ingest_request",
+                },
+            ):
+                response = json.loads(tools_mod.ACTION_REQUEST_SERVICE.execute_request(request))
+
+            stored = tools_mod.DOCUMENT_REPOSITORY.get_document("custom-42", db_path=custom_db_path, obj_name="custom_records")
+            self.assertTrue(response["ok"])
+            self.assertEqual(response["obj_name"], "custom_records")
+            self.assertEqual(stored["custom_records"]["name"], "Config First")
+            self.assertEqual(stored["agent"], "generic_ingest")
+        finally:
+            os.unlink(custom_db_path)
 
     def test_forced_route_executes_via_agents_factory_path(self) -> None:
         captured_execute_tool_calls: list[tuple[str, dict]] = []

@@ -1379,10 +1379,13 @@ class ChatCom(ChatCompletion,ChatHistory):
                 elif isinstance(self._input_text, dict):
                     parsed_request = dict(self._input_text)
                 if isinstance(parsed_request, dict):
+                    resolved_request = resolve_configured_request_payload(parsed_request)
+                    if not isinstance(resolved_request, dict):
+                        resolved_request = parsed_request
                     self._deterministic_action_meta = {
-                        "action": parsed_request.get("action"),
-                        "correlation_id": parsed_request.get("correlation_id")
-                        or ((parsed_request.get("payload") or {}).get("correlation_id") if isinstance(parsed_request.get("payload"), dict) else None),
+                        "action": resolved_request.get("action"),
+                        "correlation_id": resolved_request.get("correlation_id")
+                        or ((resolved_request.get("payload") or {}).get("correlation_id") if isinstance(resolved_request.get("payload"), dict) else None),
                     }
             normalized_workflow_input = (
                 self._input_text
@@ -1404,7 +1407,7 @@ class ChatCom(ChatCompletion,ChatHistory):
         try:
             self._forced_route = resolve_forced_route(
                 self._agent_label,
-                _normalize_user_text(original_workflow_input),
+                self._input_text,
                 set(getattr(agents_registry, "AGENTS_REGISTRY", {}).keys()),
             )
         except Exception:

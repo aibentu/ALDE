@@ -211,7 +211,7 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
             - Prefer content_sha256 as stable identity; filename alone is not sufficient.
             - Do not forward documents that are already processed or currently queued/processing.
             - Use dispatch_documents only for filesystem scan requests that start from scan_dir.
-            - Use execute_action_request or upsert_dispatcher_job_record when the input already contains structured job/profile data or when stores/DB state should be updated without rescanning files.
+            - Use execute_action_request or upsert_object_record when the input already contains structured job/profile data or when stores/DB state should be updated without rescanning files.
             - Use route_to_agent only when fresh parsing or generation work is required; do not delegate just to perform deterministic store or DB updates.
             - If the user requests batch generation of cover letters, call the batch workflow and stop after returning its result.
             - A single broken PDF must not abort the whole run.
@@ -236,15 +236,15 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
                 "Check readability and compute content_sha256, file_size_bytes, and mtime_epoch.",
                 "Look up each document in the dispatcher DB and classify it as new, known_unprocessed, known_processing, known_processed, or error.",
                 "Forward only new or known_unprocessed items to the job_posting_parser workflow when parsing work is still required.",
-                "When parsed job data is already available and dispatcher/job-posting stores must be updated together, prefer upsert_dispatcher_job_record over separate store/status writes.",
+                "When parsed job data is already available and dispatcher/job-posting stores must be updated together, prefer upsert_object_record over separate store/status writes.",
                 "Return a structured report with summary, forwarded items, and errors.",
             ],
             "tools": [
                 "dispatch_documents",
                 "execute_action_request",
-                "upsert_dispatcher_job_record",
-                "ingest_job_posting",
-                "store_job_posting_result",
+                "upsert_object_record",
+                "ingest_object",
+                "store_object_result",
                 "batch_generate_documents",
                 "vdb_worker",
             ],
@@ -830,12 +830,12 @@ HANDOFF_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
             "output.db.processing_state",
             "output.requested_actions",
         ],
-        "required_metadata_paths": ["correlation_id", "dispatcher_message_id", "dispatcher_db_path", "job_postings_db_path"],
+        "required_metadata_paths": ["correlation_id", "dispatcher_message_id", "dispatcher_db_path", "obj_name", "obj_db_path"],
         "preferred_payload_paths": ["output", "msg"],
         "target_input_path": "output",
         "workflow_name": "job_posting_parser_leaf",
         "result_postprocess": {
-            "tool": "upsert_dispatcher_job_record",
+            "tool": "upsert_object_record",
             "source_agent": "target_agent",
         },
         "instructions": [
@@ -873,11 +873,11 @@ ACTION_REQUEST_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
     },
     "platform_job_posting_ingest_request": {
         "description": "Deterministic non-PDF ingest request for job postings from platforms, APIs, or pre-parsed sources.",
-        "actions": ["ingest_job_posting", "store_job_posting", "store_job_posting_result"],
+        "actions": ["ingest_object", "store_object_result"],
         "required_paths": ["action"],
         "conditions": {
             "all": [
-                {"action": {"in": ["ingest_job_posting", "store_job_posting", "store_job_posting_result"]}},
+                {"action": {"in": ["ingest_object", "store_object_result"]}},
                 {
                     "any": [
                         {"job_posting_result": {"exists": True}},
@@ -888,17 +888,39 @@ ACTION_REQUEST_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
         },
         "recommended_paths": ["correlation_id", "source_agent", "source_payload"],
         "request_resolution": {
-            "job_posting_obj_name": "job_postings",
-            "job_posting_db_path_field": "job_postings_db_path",
+            "objects": [
+                {
+                    "binding_name": "job_posting",
+                    "request_field": "job_posting",
+                    "result_field": "job_posting_result",
+                    "default_obj_name": "job_postings",
+                    "obj_name_config_key": "job_posting_obj_name",
+                    "db_path_field_key": "job_posting_db_path_field",
+                    "default_source": "text",
+                }
+            ],
+        },
+        "action_execution": {
+            "handler_name": "ingest_object",
+            "binding_name": "job_posting",
+            "object_payload_field": "job_posting",
+            "request_payload_field": "job_posting",
+            "result_payload_field": "job_posting_result",
+            "correlation_id_fields": ["correlation_id"],
+            "db_path_fields": ["obj_db_path", "job_postings_db_path", "db_path"],
+            "source_agent_fields": ["source_agent"],
+            "source_payload_fields": ["source_payload"],
+            "parse_fields": ["parse"],
+            "default_request_source": "text",
         },
     },
     "dispatcher_job_record_upsert_request": {
         "description": "Deterministic combined request that updates both job_postings_db and dispatcher_doc_db for the same correlation id.",
-        "actions": ["upsert_dispatcher_job_record", "upsert_job_record"],
-        "required_paths": ["action", "dispatcher_db_path", "job_postings_db_path"],
+        "actions": ["upsert_object_record"],
+        "required_paths": ["action", "dispatcher_db_path", "obj_db_path"],
         "conditions": {
             "all": [
-                {"action": {"in": ["upsert_dispatcher_job_record", "upsert_job_record"]}},
+                {"action": {"in": ["upsert_object_record"]}},
                 {
                     "any": [
                         {"job_posting_result": {"exists": True}},
@@ -909,17 +931,41 @@ ACTION_REQUEST_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
         },
         "recommended_paths": ["correlation_id", "processing_state", "source_agent"],
         "request_resolution": {
-            "job_posting_obj_name": "job_postings",
-            "job_posting_db_path_field": "job_postings_db_path",
+            "objects": [
+                {
+                    "binding_name": "job_posting",
+                    "request_field": "job_posting",
+                    "result_field": "job_posting_result",
+                    "default_obj_name": "job_postings",
+                    "obj_name_config_key": "job_posting_obj_name",
+                    "db_path_field_key": "job_posting_db_path_field",
+                    "default_source": "text",
+                }
+            ],
+        },
+        "action_execution": {
+            "handler_name": "upsert_object_record",
+            "binding_name": "job_posting",
+            "object_payload_field": "job_posting",
+            "result_payload_field": "job_posting_result",
+            "correlation_id_fields": ["correlation_id"],
+            "dispatcher_db_path_fields": ["dispatcher_db_path"],
+            "obj_db_path_fields": ["obj_db_path", "job_postings_db_path", "db_path"],
+            "processing_state_fields": ["processing_state"],
+            "processed_fields": ["processed"],
+            "failed_reason_fields": ["failed_reason"],
+            "source_agent_fields": ["source_agent"],
+            "source_payload_fields": ["source_payload"],
+            "dispatcher_updates_fields": ["dispatcher_updates"],
         },
     },
     "platform_profile_ingest_request": {
         "description": "Deterministic ingest request for applicant profiles from platforms, APIs, or pre-parsed sources.",
-        "actions": ["ingest_profile", "store_profile", "store_profile_result", "persist_profile"],
+        "actions": ["ingest_object", "store_object_result"],
         "required_paths": ["action"],
         "conditions": {
             "all": [
-                {"action": {"in": ["ingest_profile", "store_profile", "store_profile_result", "persist_profile"]}},
+                {"action": {"in": ["ingest_object", "store_object_result"]}},
                 {
                     "any": [
                         {"profile_result": {"exists": True}},
@@ -931,8 +977,29 @@ ACTION_REQUEST_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
         },
         "recommended_paths": ["correlation_id", "source_agent"],
         "request_resolution": {
-            "profile_obj_name": "profiles",
-            "profile_db_path_field": "profiles_db_path",
+            "objects": [
+                {
+                    "binding_name": "profile",
+                    "request_field": "applicant_profile",
+                    "result_field": "profile_result",
+                    "default_obj_name": "profiles",
+                    "obj_name_config_key": "profile_obj_name",
+                    "db_path_field_key": "profile_db_path_field",
+                    "default_source": "text",
+                }
+            ],
+        },
+        "action_execution": {
+            "handler_name": "ingest_object",
+            "binding_name": "profile",
+            "object_payload_field": "profile",
+            "request_payload_field": "applicant_profile",
+            "result_payload_field": "profile_result",
+            "correlation_id_fields": ["correlation_id"],
+            "db_path_fields": ["obj_db_path", "profiles_db_path", "db_path"],
+            "source_agent_fields": ["source_agent"],
+            "source_payload_fields": ["source_payload"],
+            "default_request_source": "text",
         },
     },
     "cover_letter_generation_request": {
@@ -952,12 +1019,43 @@ ACTION_REQUEST_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
         },
         "recommended_paths": ["options.language", "options.tone", "options.max_words"],
         "request_resolution": {
-            "job_posting_store_sources": ["correlation_id", "job_postings_db", "stored_job_posting", "persisted_job_posting"],
-            "job_posting_obj_name": "job_postings",
-            "job_posting_db_path_field": "job_postings_db_path",
-            "profile_file_sources": ["file", "path", "json_file", "structured_file", "document_file"],
-            "profile_inline_sources": ["text", "json", "dict", "object", "structured", "inline"],
-            "profile_store_sources": ["profile_id", "profiles_db", "stored_profile", "persisted_profile"],
+            "objects": [
+                {
+                    "binding_name": "profile",
+                    "request_field": "applicant_profile",
+                    "result_field": "profile_result",
+                    "default_obj_name": "profiles",
+                    "obj_name_config_key": "profile_obj_name",
+                    "db_path_field_key": "profile_db_path_field",
+                    "default_source": "text",
+                    "store_sources": ["profile_id", "profiles_db", "stored_profile", "persisted_profile"],
+                    "file_sources": ["file", "path", "json_file", "structured_file", "document_file"],
+                    "inline_sources": ["text", "json", "dict", "object", "structured", "inline"],
+                },
+                {
+                    "binding_name": "job_posting",
+                    "request_field": "job_posting",
+                    "result_field": "job_posting_result",
+                    "default_obj_name": "job_postings",
+                    "obj_name_config_key": "job_posting_obj_name",
+                    "db_path_field_key": "job_posting_db_path_field",
+                    "default_source": "text",
+                    "store_sources": ["correlation_id", "job_postings_db", "stored_job_posting", "persisted_job_posting"],
+                    "drop_request_field_when_resolved": True,
+                    "drop_db_path_field_when_resolved": True,
+                }
+            ],
+            "default_fields": [
+                {
+                    "field": "batch_tool_name",
+                    "config_key": "batch_tool_name",
+                    "normalize": "tool_name",
+                },
+                {
+                    "field": "batch_workflow_name",
+                    "config_key": "batch_workflow_name",
+                }
+            ],
             "dispatcher_route_target": "_data_dispatcher",
             "ready_route_target": "_cover_letter_agent",
             "batch_tool_name": "batch_generate_documents",
@@ -1343,14 +1441,14 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
         "implementation_name": "dispatch_docs",
         "dispatch_policy": {
             "obj_name": "job_postings",
-            "obj_db_path_field": "job_postings_db_path",
+            "obj_db_path_field": "obj_db_path",
             "document_type": "file",
-            "requested_actions": ["parse", "extract_text", "store_job_posting", "mark_processed_on_success"],
+            "requested_actions": ["parse", "extract_text", "store_object_result", "mark_processed_on_success"],
             "default_target_agent": "_job_posting_parser",
             "source_agent": "_data_dispatcher",
             "handoff_protocol": "agent_handoff_v1",
             "metadata_defaults": {
-                "job_postings_db_path": {
+                "obj_db_path": {
                     "resolver": "default_document_db_path",
                     "obj_name": "job_postings"
                 }
@@ -1372,7 +1470,7 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
     },
     {
         "name": "execute_action_request",
-        "description": "Execute a deterministic action request via the action layer, e.g. ingest_job_posting or ingest_profile, so workflow agents can update stores explicitly through a single tool entry point.",
+        "description": "Execute a deterministic action request via the action layer, e.g. ingest_object, store_object_result, or upsert_object_record, so workflow agents can update stores explicitly through a single tool entry point.",
         "snapshot_view": {
             "kind": "dispatcher_action",
             "title": "Dispatcher action executed",
@@ -1380,13 +1478,36 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
         },
         "parameters": [
             {"name": "action_request", "type": "object", "description": "Full action request object including action and payload fields.", "required": False},
-            {"name": "action", "type": "string", "description": "Optional action name used with payload, e.g. ingest_job_posting or store_profile.", "required": False},
+            {"name": "action", "type": "string", "description": "Optional action name used with payload, e.g. ingest_object, store_object_result, or upsert_object_record.", "required": False},
             {"name": "payload", "type": "object", "description": "Optional payload object merged with action when action_request is not supplied.", "required": False},
+        ],
+    },
+    {
+        "name": "upsert_object_record",
+        "description": "Atomically update an object store and the dispatcher DB for the same logical record, with rollback if the second write fails.",
+        "snapshot_view": {
+            "kind": "dispatcher_action",
+            "title": "Dispatcher object record upserted",
+            "summary_fields": ["action", "correlation_id"],
+        },
+        "parameters": [
+            {"name": "object_result", "type": "object", "description": "Normalized or parser-style object result payload to persist.", "required": True},
+            {"name": "correlation_id", "type": "string", "description": "Optional explicit correlation id for both stores.", "required": False},
+            {"name": "dispatcher_db_path", "type": "string", "description": "Path to dispatcher_doc_db.json.", "required": False},
+            {"name": "obj_db_path", "type": "string", "description": "Path to the target object DB file.", "required": False},
+            {"name": "obj_name", "type": "string", "description": "Logical object/store name to upsert in the object DB.", "required": False, "default": "documents"},
+            {"name": "processing_state", "type": "string", "description": "Optional dispatcher processing state override.", "required": False},
+            {"name": "processed", "type": "boolean", "description": "Optional processed flag override.", "required": False},
+            {"name": "failed_reason", "type": "string", "description": "Optional dispatcher failure reason.", "required": False},
+            {"name": "source_agent", "type": "string", "description": "Optional logical source label.", "required": False},
+            {"name": "source_payload", "type": "object", "description": "Optional source envelope for traceability.", "required": False},
+            {"name": "dispatcher_updates", "type": "object", "description": "Optional extra dispatcher record fields to upsert.", "required": False},
         ],
     },
     {
         "name": "upsert_dispatcher_job_record",
         "description": "Atomically update the job postings store and dispatcher DB for the same job record, with rollback if the second write fails.",
+        "implementation_name": "upsert_object_record",
         "snapshot_view": {
             "kind": "dispatcher_action",
             "title": "Dispatcher job record upserted",
@@ -1407,8 +1528,21 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
         ],
     },
     {
+        "name": "store_object_result",
+        "description": "Persist a normalized or parser-style object result directly into the selected object store.",
+        "parameters": [
+            {"name": "object_result", "type": "object", "description": "Object result payload to store.", "required": True},
+            {"name": "correlation_id", "type": "string", "description": "Optional explicit correlation id.", "required": False},
+            {"name": "db_path", "type": "string", "description": "Optional path to the target object DB file.", "required": False},
+            {"name": "obj_name", "type": "string", "description": "Logical object/store name to persist into.", "required": False, "default": "documents"},
+            {"name": "source_agent", "type": "string", "description": "Optional logical source label.", "required": False},
+            {"name": "source_payload", "type": "object", "description": "Optional source envelope or original payload for traceability.", "required": False},
+        ],
+    },
+    {
         "name": "store_job_posting_result",
         "description": "Persist a parsed job-posting result directly into the job postings store, independent of the PDF dispatcher workflow.",
+        "implementation_name": "store_object_result",
         "parameters": [
             {"name": "job_posting_result", "type": "object", "description": "Parsed job-posting result payload to store.", "required": True},
             {"name": "correlation_id", "type": "string", "description": "Optional explicit correlation id. Falls back to job_posting_result.correlation_id or file.content_sha256.", "required": False},
@@ -1421,6 +1555,7 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
     {
         "name": "store_profile_result",
         "description": "Persist a parsed applicant-profile result directly into the profiles store.",
+        "implementation_name": "store_object_result",
         "parameters": [
             {"name": "profile_result", "type": "object", "description": "Parsed profile result payload to store.", "required": True},
             {"name": "correlation_id", "type": "string", "description": "Optional explicit correlation id. Falls back to profile_result.correlation_id or profile.profile_id.", "required": False},
@@ -1430,8 +1565,24 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
         ],
     },
     {
+        "name": "ingest_object",
+        "description": "Ingest a normalized object payload or a parser-style object result directly into the selected object store.",
+        "parameters": [
+            {"name": "object_payload", "type": "object", "description": "Normalized object payload to persist when no parser-style result object is supplied.", "required": False},
+            {"name": "request_payload", "type": "object", "description": "Optional request-style envelope using source/value fields.", "required": False},
+            {"name": "object_result", "type": "object", "description": "Optional parser-style object result payload to persist directly.", "required": False},
+            {"name": "correlation_id", "type": "string", "description": "Optional explicit correlation id.", "required": False},
+            {"name": "db_path", "type": "string", "description": "Optional path to the target object DB file.", "required": False},
+            {"name": "obj_name", "type": "string", "description": "Logical object/store name to persist into.", "required": False, "default": "documents"},
+            {"name": "source_agent", "type": "string", "description": "Optional logical source label.", "required": False},
+            {"name": "source_payload", "type": "object", "description": "Optional source envelope or original payload for traceability.", "required": False},
+            {"name": "parse", "type": "object", "description": "Optional parse metadata used when only object_payload is supplied.", "required": False},
+        ],
+    },
+    {
         "name": "ingest_profile",
         "description": "Ingest an applicant profile from a platform/API payload or a parser-style result directly into the profiles store.",
+        "implementation_name": "ingest_object",
         "parameters": [
             {"name": "profile", "type": "object", "description": "Normalized profile payload to persist when no parser-style result object is supplied.", "required": False},
             {"name": "applicant_profile", "type": "object", "description": "Optional request-style applicant_profile envelope using source/value fields.", "required": False},
@@ -1446,6 +1597,7 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
     {
         "name": "ingest_job_posting",
         "description": "Ingest a platform/API job-posting payload directly into the job postings store, with or without an existing parser-style result envelope.",
+        "implementation_name": "ingest_object",
         "parameters": [
             {"name": "job_posting", "type": "object", "description": "Normalized job posting payload to persist when no parser-style result object is supplied.", "required": False},
             {"name": "job_posting_result", "type": "object", "description": "Optional parser-style job-posting result payload to persist directly.", "required": False},
@@ -1553,14 +1705,37 @@ TOOL_NAME_ALIASES: dict[str, str] = {
     "dispatch_docs": "dispatch_documents",
     "dispatch_documents": "dispatch_documents",
     "dispatch_job_posting_pdfs": "dispatch_documents",
+    "ingest_object": "ingest_object",
     "ingest_profile": "ingest_profile",
     "ingest_job_posting": "ingest_job_posting",
+    "ingest_document": "ingest_object",
+    "persist_cover_letter_artifacts": "persist_document_artifacts",
+    "persist_document_artifacts": "persist_document_artifacts",
+    "store_object_result": "store_object_result",
+    "store_document_result": "store_object_result",
+    "upsert_object_record": "upsert_object_record",
     "upsert_job_record": "upsert_dispatcher_job_record",
     "batch_document_generator": "batch_generate_documents",
     "batch_generate_documents": "batch_generate_documents",
     "batch_generate_cover_letters": "batch_generate_documents",
     "store_profile": "store_profile_result",
     "persist_profile": "store_profile_result",
+}
+
+
+ACTION_REQUEST_NAME_ALIASES: dict[str, str] = {
+    "ingest_object": "ingest_object",
+    "store_object_result": "store_object_result",
+    "upsert_object_record": "upsert_object_record",
+    "ingest_job_posting": "ingest_object",
+    "store_job_posting": "store_object_result",
+    "store_job_posting_result": "store_object_result",
+    "ingest_profile": "ingest_object",
+    "store_profile": "store_object_result",
+    "store_profile_result": "store_object_result",
+    "persist_profile": "store_object_result",
+    "upsert_dispatcher_job_record": "upsert_object_record",
+    "upsert_job_record": "upsert_object_record",
 }
 
 
@@ -1585,7 +1760,7 @@ TOOL_GROUP_CONFIGS: dict[str, list[str]] = {
     "web": ["fetch_url", "fetch_data", "call_api"],
     "comms": ["send_mail", "calendar", "call", "accept_call", "reject_call"],
     "code": ["code_tool", "iter_documents"],
-    "dispatcher": ["dispatch_documents", "execute_action_request", "upsert_dispatcher_job_record", "ingest_profile", "ingest_job_posting", "store_job_posting_result", "store_profile_result", "batch_generate_documents", "vdb_worker"],
+    "dispatcher": ["dispatch_documents", "execute_action_request", "upsert_object_record", "ingest_object", "store_object_result", "batch_generate_documents", "vdb_worker"],
 }
 
 
@@ -2028,7 +2203,7 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
                 "terminal": False,
             },
             "job_record_upserted": {
-                "actor": {"kind": "tool", "name": "upsert_dispatcher_job_record"},
+                "actor": {"kind": "tool", "name": "upsert_object_record"},
                 "terminal": False,
             },
             "documents_batched": {
@@ -2070,7 +2245,7 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
             },
             {
                 "from": "dispatcher_ready",
-                "on": {"kind": "tool", "name": "upsert_dispatcher_job_record"},
+                "on": {"kind": "tool", "name": "upsert_object_record"},
                 "to": "job_record_upserted",
             },
             {
@@ -2108,7 +2283,7 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
                     "name": ["tool_failed", "model_failed", "routed_agent_failed"],
                     "conditions": {
                         "any": [
-                            {"tool_name": {"in": ["dispatch_documents", "batch_generate_documents", "execute_action_request", "upsert_dispatcher_job_record", "route_to_agent"]}},
+                            {"tool_name": {"in": ["dispatch_documents", "batch_generate_documents", "execute_action_request", "upsert_object_record", "route_to_agent"]}},
                             {"error": {"exists": True}},
                             {"target_agent": "_job_posting_parser"},
                         ]
