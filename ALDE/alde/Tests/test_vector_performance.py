@@ -4,9 +4,17 @@ Test-Script für Vector Store Performance Monitoring und Validierung.
 Demonstriert die neuen Features für Performance-Tracking und Store-Validierung.
 """
 
+from pathlib import Path
+import sys
+
 from vector_smanager import VectorStoreManager, query_vector_store
-from get_path import GetPath
 import time
+
+try:
+    from alde.get_path import GetPath
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from get_path import GetPath
 
 def test_performance_monitoring():
     """Testet das Performance Monitoring."""

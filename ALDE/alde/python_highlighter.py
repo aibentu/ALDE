@@ -149,7 +149,15 @@ from __future__ import annotations
 from hashlib import sha1
 from pathlib import Path
 from typing import Iterable, Sequence
-from get_path import GetPath
+
+try:
+    from .get_path import GetPath
+except ImportError as e:  # allow running directly from the package directory
+    msg = str(e)
+    if "no known parent package" in msg or "attempted relative import" in msg:
+        from get_path import GetPath
+    else:
+        raise
 
 from langchain_community.document_loaders import (
     PyPDFLoader,

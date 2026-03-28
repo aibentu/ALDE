@@ -4,11 +4,13 @@
 import sys
 from pathlib import Path
 
-# Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent))
-
 from PySide6.QtWidgets import QApplication
-from jstree_widget import JsonTreeWidgetWithToolbar
+
+try:
+    from alde.jstree_widget import JsonTreeWidgetWithToolbar
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from jstree_widget import JsonTreeWidgetWithToolbar
 
 def test_save_load():
     """Test saving and loading data."""

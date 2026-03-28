@@ -5,9 +5,15 @@ Demonstriert die VS Code Explorer-ähnliche Struktur mit PROJECTS und DATABASES.
 """
 
 import sys
+from pathlib import Path
 from PySide6.QtWidgets import QApplication, QMainWindow, QDockWidget
 from PySide6.QtCore import Qt
-from jstree_widget import JsonTreeWidgetWithToolbar
+
+try:
+    from alde.jstree_widget import JsonTreeWidgetWithToolbar
+except ImportError:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from jstree_widget import JsonTreeWidgetWithToolbar
 
 
 def main():

@@ -13,8 +13,16 @@ from PySide6.QtWidgets import QApplication, QWidget, QVBoxLayout, QPushButton, Q
 # Optional: Per Umgebungsvariable APP_CUDA_VISIBLE_DEVICES steuern (z.B. "0" oder "0,1")
 preferred = os.environ.get("APP_CUDA_VISIBLE_DEVICES", '0')
 
-from torch_init import init_torch_cuda, summarize_torch_environment, select_device
-import torch_init
+try:
+    from .torch_init import init_torch_cuda, summarize_torch_environment, select_device
+    from . import torch_init
+except ImportError as e:
+    msg = str(e)
+    if "no known parent package" in msg or "attempted relative import" in msg:
+        from torch_init import init_torch_cuda, summarize_torch_environment, select_device
+        import torch_init
+    else:
+        raise
 
 torch_init.init_torch_cuda('0')
 

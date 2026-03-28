@@ -6,7 +6,15 @@ from dotenv import load_dotenv
 import os
 import sys
 from pysys_Cmd import sys_Cmd
-from counter import Counter
+
+try:
+    from .counter import Counter
+except ImportError as e:
+    msg = str(e)
+    if "no known parent package" in msg or "attempted relative import" in msg:
+        from counter import Counter
+    else:
+        raise
  
 
 class Caller():
