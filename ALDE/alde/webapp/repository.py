@@ -227,6 +227,27 @@ class SqlRepository:
                 for r in rows
             ]
 
+    def list_recent_audit(self, *, limit: int = 100) -> list[dict]:
+        with session_scope() as session:
+            rows = list(
+                session.scalars(
+                    select(AuditEventEntity)
+                    .order_by(desc(AuditEventEntity.created_at))
+                    .limit(limit),
+                ),
+            )
+            return [
+                {
+                    "id": r.id,
+                    "tenant_id": r.tenant_id,
+                    "user_id": r.user_id,
+                    "event_type": r.event_type,
+                    "detail": r.detail_json,
+                    "created_at": r.created_at,
+                }
+                for r in rows
+            ]
+
     def save_oidc_state(self, *, tenant_slug: str, state: str, nonce: str) -> None:
         with session_scope() as session:
             row = OIDCStateEntity(tenant_slug=tenant_slug, state=state, nonce=nonce)

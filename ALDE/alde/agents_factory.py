@@ -46,6 +46,7 @@ try:
         get_tool_spec,
         memorydb,
         md_to_pdf,
+        store_object_result_tool,
         upsert_object_record_tool,
         vectordb,
         write_document,
@@ -60,6 +61,7 @@ except ImportError as e:
             get_tool_spec,
             memorydb,
             md_to_pdf,
+            store_object_result_tool,
             upsert_object_record_tool,
             vectordb,
             write_document,
@@ -807,7 +809,7 @@ class WorkflowHistoryQueryService:
                     "assistant_name": entry.get("assistant-name"),
                     "thread_id": entry.get("thread-id"),
                     "thread_name": entry.get("thread-name"),
-                    "time": entry.get("time"),
+                    "time": entry.get("time"), 
                     "workflow": deepcopy(workflow),
                 }
             )
@@ -886,7 +888,7 @@ class WorkflowHistoryLogService:
         workflow_session: dict[str, Any] | None,
     ) -> None:
         history._log(_role='assistant', _content=err,
-                     _name=agent_label or 'Primary Assistant',
+                     _name=agent_label or '_xplaner_xrouter',
                      _thread_name='tool_call', _obj='chat',
                      _data=_workflow_history_data(
                          workflow_session,
@@ -1848,6 +1850,19 @@ class RoutingHandoffViewService:
             or ""
         ).strip()
 
+    def load_job_name(self, routing_request: dict[str, Any] | None) -> str:
+        metadata = self.load_metadata(routing_request)
+        handoff_payload = self.load_payload(routing_request)
+        output_payload = handoff_payload.get("output") if isinstance(handoff_payload.get("output"), dict) else {}
+        for candidate in (
+            metadata.get("job_name"),
+            output_payload.get("job_name"),
+            handoff_payload.get("job_name"),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return ""
+
     def load_object_name(self, routing_request: dict[str, Any] | None) -> str:
         metadata = self.load_metadata(routing_request)
         handoff_payload = self.load_payload(routing_request)
@@ -1862,6 +1877,19 @@ class RoutingHandoffViewService:
         if isinstance(metadata.get("job_postings_db_path"), str) and str(metadata.get("job_postings_db_path") or "").strip():
             return "job_postings"
         if isinstance(metadata.get("profiles_db_path"), str) and str(metadata.get("profiles_db_path") or "").strip():
+            return "profiles"
+        job_name = self.load_job_name(routing_request)
+        job_object_map = {
+            "applicant_profile_parser": "profiles",
+            "job_posting_parser": "job_postings",
+            "cover_letter_writer": "cover_letters",
+            "agent_system_builder": "agent_system_configs",
+        }
+        if job_name in job_object_map:
+            return job_object_map[job_name]
+        if isinstance(output_payload.get("job_posting_result"), dict) or isinstance(output_payload.get("job_posting"), dict):
+            return "job_postings"
+        if isinstance(output_payload.get("profile_result"), dict) or isinstance(output_payload.get("profile"), dict):
             return "profiles"
         return "documents"
 
@@ -1910,7 +1938,7 @@ def execute_route_to_agent(
     )
 
 
-def execute_forced_route(args: dict, *, ChatCom=None, origin_agent_label: str = "_primary_assistant") -> str:
+def execute_forced_route(args: dict, *, ChatCom=None, origin_agent_label: str = "_xplaner_xrouter") -> str:
     return FORCED_ROUTE_DISPATCHER.dispatch_object(
         args or {},
         ChatCom=ChatCom,
@@ -1919,7 +1947,7 @@ def execute_forced_route(args: dict, *, ChatCom=None, origin_agent_label: str = 
 
 
 class ForcedRouteDispatcher:
-    def dispatch_object(self, args: dict[str, Any], *, ChatCom=None, origin_agent_label: str = "_primary_assistant") -> str:
+    def dispatch_object(self, args: dict[str, Any], *, ChatCom=None, origin_agent_label: str = "_xplaner_xrouter") -> str:
         tool_call = SimpleNamespace(
             id="forced_route_1",
             function=SimpleNamespace(
@@ -1932,7 +1960,7 @@ class ForcedRouteDispatcher:
             forced_message,
             depth=0,
             ChatCom=ChatCom,
-            agent_label=origin_agent_label or "_primary_assistant",
+            agent_label=origin_agent_label or "_xplaner_xrouter",
         )
         if result is None:
             return ""
@@ -2431,8 +2459,9 @@ class RoutingResultPostprocessService:
 
         output_dir = artifact_object.load_output_dir()
         os.makedirs(output_dir, exist_ok=True)
-        doc_id = artifact_object.load_doc_id(correlation_id=artifact_object.load_correlation_id())
-        write_result = write_document(content=full_text, path=output_dir, doc_id=doc_id)
+        correlation_id = artifact_object.load_correlation_id()
+        doc_id = artifact_object.load_doc_id(correlation_id=correlation_id)
+        write_result = write_document(content=full_text, path=output_dir, doc_id=doc_id, correlation_id=correlation_id)
         document_text_path = _extract_saved_document_path(write_result)
         document_pdf_path: str | None = None
 
@@ -2475,6 +2504,22 @@ class RoutingResultPostprocessService:
                 metadata=result_object.metadata,
                 fallback_result_text=result_text,
             )
+
+        if result_object.object_name == "store_object_result":
+            result = store_object_result_tool(
+                object_result=result_object.load_upsert_payload(),
+                correlation_id=result_object.correlation_id or None,
+                db_path=result_object.obj_db_path or None,
+                obj_name=result_object.obj_name,
+                source_agent=result_object.load_source_agent(),
+                source_payload=result_object.handoff_payload,
+            )
+            parsed_store = _parse_json_object(result)
+            if parsed_store:
+                parsed_store.setdefault("result", result_object.parsed_result)
+                parsed_store.setdefault("result_text", _result_text_from_payload(result_object.parsed_result, result_text))
+                return parsed_store
+            return {"ok": False, "raw_result": str(result)}
 
         if result_object.object_name not in {"upsert_object_record", "upsert_dispatcher_job_record"}:
             return None
@@ -2774,7 +2819,7 @@ class ToolCallFollowupService:
 
 class AssistantResponseService:
     def resolve_agent_label(self, routing_request: dict[str, Any] | None, agent_label: str) -> str:
-        return ROUTING_REQUEST_VIEW_SERVICE.load_agent_label(routing_request, fallback=agent_label) or 'Primary Assistant'
+        return ROUTING_REQUEST_VIEW_SERVICE.load_agent_label(routing_request, fallback=agent_label) or '_xplaner_xrouter'
 
     def resolve_object_label(self, routing_request: dict[str, Any] | None, agent_label: str) -> str:
         return self.resolve_agent_label(routing_request, agent_label)
@@ -2978,7 +3023,7 @@ def _handle_tool_calls(agent_msg, depth: int = 0,
     routing_request = execution_result.get('routing_request')
     tool_results = list(execution_result.get('tool_results') or [])
     terminal_tool_result = execution_result.get('terminal_tool_result')
-    agent_label = agent_label or 'Primary Assistant'
+    agent_label = agent_label or '_xplaner_xrouter'
 
     if terminal_tool_result is not None:
         return terminal_tool_result

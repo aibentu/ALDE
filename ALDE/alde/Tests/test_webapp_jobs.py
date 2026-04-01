@@ -118,7 +118,7 @@ class TestWebappJobs(unittest.TestCase):
             run_id="run-4",
             tenant_id="tenant-4",
             user_id="user-4",
-            target_agent="_writer_agent",
+            target_agent="_xworker",
             prompt="draft text",
             metadata={"source": "rq"},
         )
@@ -166,7 +166,7 @@ class TestWebappJobs(unittest.TestCase):
             run_id="run-5",
             tenant_id="tenant-5",
             user_id="user-5",
-            target_agent="_writer_agent",
+            target_agent="_xworker",
             prompt="draft text",
             metadata={"source": "rq"},
         )
@@ -196,7 +196,7 @@ class TestWebappJobs(unittest.TestCase):
             run_id="run-1",
             tenant_id="tenant-1",
             user_id="user-1",
-            target_agent="_writer_agent",
+            target_agent="_xworker",
             prompt="draft text",
             metadata={"source": "test"},
         )
@@ -224,7 +224,7 @@ class TestWebappJobs(unittest.TestCase):
             run_id="run-2",
             tenant_id="tenant-2",
             user_id="user-2",
-            target_agent="_writer_agent",
+            target_agent="_xworker",
             prompt="draft text",
             metadata={"source": "test"},
         )
@@ -251,7 +251,7 @@ class TestWebappJobs(unittest.TestCase):
             run_id="run-3",
             tenant_id="tenant-3",
             user_id="user-3",
-            target_agent="_writer_agent",
+            target_agent="_xworker",
             prompt="draft text",
             metadata={},
         )

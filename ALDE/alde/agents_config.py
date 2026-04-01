@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 from pprint import pformat
-from alde.agents_persisted_config import (
+from ALDE.alde.agents_pconfig import (
     ACTION_REQUEST_NAME_ALIASES,
     ACTION_REQUEST_SCHEMA_CONFIGS,
     AGENT_MANIFEST_OVERRIDES,
@@ -15,6 +15,7 @@ from alde.agents_persisted_config import (
     FORCED_ROUTE_CONFIGS,
     HANDOFF_PROTOCOL_CONFIGS,
     HANDOFF_SCHEMA_CONFIGS,
+    JOB_PROMPT_CONFIGS,
     PROMPT_FRAGMENT_CONFIGS,
     SYSTEM_PROMPT,
     TOOL_CONFIGS,
@@ -23,7 +24,7 @@ from alde.agents_persisted_config import (
     WORKFLOW_CONFIGS,
     _CANONICAL_AGENT_LABEL_MAP,
     _LEGACY_AGENT_NAME_MAP,
-    _SPECIALIZED_AGENT_MAP,
+    _SPECIALIZED_JOB_PROMPT_MAP,
 )
 from typing import Any
 
@@ -127,8 +128,8 @@ def _build_agent_manifest(agent_label: str) -> dict[str, Any]:
     canonical_name = str(runtime_config.get("canonical_name") or normalize_agent_name(agent_label))
     skill_profile_name = str(override.get("skill_profile") or "")
     skill_profile = AGENT_SKILL_PROFILES.get(skill_profile_name) or {}
-    role_name = str(override.get("role") or skill_profile.get("role") or "worker")
-    role_config = AGENT_ROLE_CONFIGS.get(role_name) or AGENT_ROLE_CONFIGS["worker"]
+    role_name = str(override.get("role") or skill_profile.get("role") or "xworker")
+    role_config = AGENT_ROLE_CONFIGS.get(role_name) or AGENT_ROLE_CONFIGS["xworker"]
     workflow_name = _workflow_definition_for_agent(agent_label)
     tools = list(runtime_config.get("tools") or [])
 
@@ -224,7 +225,7 @@ class AgentConfigObject:
         return {
             "agent_label": object_label,
             "canonical_name": self.load_canonical_name(),
-            "role": "worker",
+            "role": "xworker",
             "model": "",
             "system": self.agent_config_service.load_system_object(self.object_name),
             "tools": [],
@@ -232,7 +233,7 @@ class AgentConfigObject:
             "workflow": {},
             "workflow_name": "",
             "instance_policy": "ephemeral",
-            "routing_policy": {"mode": "worker", "can_route": False},
+            "routing_policy": {"mode": "xworker", "can_route": False},
             "handoff_policy": {
                 "default_protocol": "message_text",
                 "accepted_protocols": ["message_text", "agent_handoff_v1"],
@@ -343,7 +344,7 @@ class AgentConfigService:
 
     def build_missing_manifest_override_object(self) -> dict[str, Any]:
         return {
-            "role": "worker",
+            "role": "xworker",
             "skill_profile": "",
             "routing_policy": {},
             "handoff_policy": {},
@@ -381,6 +382,14 @@ def create_prompt_config(agent_name: str, config_updates: dict[str, Any] | None 
 
 def get_system_prompt(agent_name: str) -> str:
     return AGENT_CONFIG_SERVICE.load_system_object(agent_name)
+
+
+def get_job_prompt_config(job_name: str) -> dict[str, Any]:
+    return deepcopy(JOB_PROMPT_CONFIGS.get(str(job_name or ""), {}))
+
+
+def get_job_prompt(job_name: str) -> str:
+    return _compose_prompt(get_job_prompt_config(job_name))
 
 
 def _materialize_agent_manifests() -> dict[str, dict[str, Any]]:
@@ -1808,7 +1817,7 @@ class AgentSystemActionRequestObject:
             {
                 "system_name": system_name,
                 "system_slug": system_slug,
-                "assistant_agent_name": "_primary_assistant",
+                "assistant_agent_name": "_xplaner_xrouter",
                 "planner_agent_name": f"_{system_slug}_planner",
                 "worker_agent_name": f"_{system_slug}_worker",
                 "planner_prompt_name": f"{system_slug}_planner",
@@ -1827,14 +1836,14 @@ class AgentSystemActionRequestObject:
                     {
                         "name": "planner",
                         "agent_name": f"_{system_slug}_planner",
-                        "role": "planner_router",
+                        "role": "xplaner_xrouter",
                         "responsibility": "Interactively clarify the requested agent system and prepare a structured build brief.",
                         "tools": ["route_to_agent"],
                     },
                     {
                         "name": "worker",
                         "agent_name": f"_{system_slug}_worker",
-                        "role": "worker",
+                        "role": "xworker",
                         "responsibility": "Materialize persisted prompt, runtime, handoff, builder workflow, and route config bundles.",
                         "tools": ["build_agent_system_configs", "@doc_rw"],
                     },
@@ -1854,7 +1863,7 @@ class AgentSystemActionRequestObject:
                     },
                 ],
                 "integration_targets": {
-                    "assistant_agent_name": "_primary_assistant",
+                    "assistant_agent_name": "_xplaner_xrouter",
                     "route_prefix": "/create agents",
                     "persisted_config_target": f"generated_agent_system_configs/{system_slug}_persisted_config.py",
                 },
@@ -1903,7 +1912,7 @@ class AgentSystemActionRequestObject:
         return _normalize_config_object_token(str(self.config.get("system_slug") or self.load_system_name()), fallback="agent_system")
 
     def load_assistant_agent_name(self) -> str:
-        return normalize_agent_label(str(self.config.get("assistant_agent_name") or "_primary_assistant"))
+        return normalize_agent_label(str(self.config.get("assistant_agent_name") or "_xplaner_xrouter"))
 
     def load_agent_name(self, object_name: str) -> str:
         normalized_object_name = str(object_name or "").strip()
@@ -2111,8 +2120,8 @@ class AgentSystemBasicConfigService:
             "TOOL_CONFIGS": list((config_bundle.get("tool_configs") or {}).values()),
             "WORKFLOW_CONFIGS": deepcopy(config_bundle.get("workflow_configs") or {}),
             "FORCED_ROUTE_CONFIGS": deepcopy(config_bundle.get("forced_route_configs") or {}),
-            "PRIMARY_ASSISTANT_MANIFEST_OVERRIDE": deepcopy((config_bundle.get("assistant_integration") or {}).get("manifest_override") or {}),
-            "PRIMARY_ASSISTANT_WORKFLOW_CONFIG": deepcopy((config_bundle.get("assistant_integration") or {}).get("workflow_config") or {}),
+            "XPLANER_XROUTER_MANIFEST_OVERRIDE": deepcopy((config_bundle.get("assistant_integration") or {}).get("manifest_override") or {}),
+            "XPLANER_XROUTER_WORKFLOW_CONFIG": deepcopy((config_bundle.get("assistant_integration") or {}).get("workflow_config") or {}),
         }
 
     def render_persisted_config_module(
@@ -2129,8 +2138,8 @@ class AgentSystemBasicConfigService:
             "TOOL_CONFIGS": "TOOL_CONFIG_UPDATES",
             "WORKFLOW_CONFIGS": "WORKFLOW_CONFIG_UPDATES",
             "FORCED_ROUTE_CONFIGS": "FORCED_ROUTE_CONFIG_UPDATES",
-            "PRIMARY_ASSISTANT_MANIFEST_OVERRIDE": "PRIMARY_ASSISTANT_MANIFEST_OVERRIDE_UPDATE",
-            "PRIMARY_ASSISTANT_WORKFLOW_CONFIG": "PRIMARY_ASSISTANT_WORKFLOW_CONFIG_UPDATE",
+            "XPLANER_XROUTER_MANIFEST_OVERRIDE": "XPLANER_XROUTER_MANIFEST_OVERRIDE_UPDATE",
+            "XPLANER_XROUTER_WORKFLOW_CONFIG": "XPLANER_XROUTER_WORKFLOW_CONFIG_UPDATE",
         }
         section_lines = [
             "from __future__ import annotations",
@@ -2155,7 +2164,7 @@ class AgentSystemBasicConfigService:
 
     def build_assistant_workflow_config(self, action_request: AgentSystemActionRequestObject) -> dict[str, Any]:
         planner_agent_name = action_request.load_planner_agent_name()
-        workflow_config = create_workflow_config("primary_assistant_router")
+        workflow_config = create_workflow_config("xplaner_xrouter_router")
         states = dict(workflow_config.get("states") or {})
         transitions = list(workflow_config.get("transitions") or [])
 
@@ -2173,7 +2182,7 @@ class AgentSystemBasicConfigService:
         ):
             transitions.append(
                 {
-                    "from": "assistant_ready",
+                    "from": "xplaner_ready",
                     "on": {
                         "kind": "tool",
                         "name": "route_to_agent",
@@ -2209,7 +2218,7 @@ class AgentSystemBasicConfigService:
             (
                 transition
                 for transition in transitions
-                if str(transition.get("to") or "") == "assistant_retry_pending"
+                if str(transition.get("to") or "") == "xplaner_retry_pending"
             ),
             None,
         )
@@ -2266,7 +2275,7 @@ class AgentSystemBasicConfigService:
             {
                 "prompt": (
                     f"=== Agent: {planner_prompt_name} ===\n"
-                    "Description: Interactive planner for building agentic systems from a user request.\n"
+                    "Description: Interactive planning job wrapper for building agentic systems from a user request.\n"
                     "Goal: Clarify the target system, produce a schema-aligned plan, then delegate the concrete config generation to the builder worker.\n\n"
                     "Rules:\n"
                     "- Ask focused follow-up questions until the requested agent system is specific enough to implement.\n"
@@ -2274,7 +2283,7 @@ class AgentSystemBasicConfigService:
                     f"- Delegate config bundle creation only to {worker_agent_name}.\n"
                     f"- When the user already provided enough detail, hand off to {worker_agent_name} immediately with a structured brief."
                 ),
-                "task.mode": "agent_system_planner",
+                "task.mode": "agent_system_planning",
                 "task.route_prefix": route_prefix,
                 "task.planning_schema": planning_schema,
                 "output_schema.plan.required": planning_schema.get("required_steps") or [],
@@ -2286,7 +2295,7 @@ class AgentSystemBasicConfigService:
             {
                 "prompt": (
                     f"=== Agent: {worker_prompt_name} ===\n"
-                    "Description: Worker agent that materializes planner-approved agent/workflow configuration bundles.\n"
+                    "Description: Worker job wrapper that materializes planner-approved agent/workflow configuration bundles.\n"
                     "Goal: Convert the planning brief into concrete prompt, runtime, manifest, workflow, handoff, and forced-route configs.\n\n"
                     "Rules:\n"
                     f"- Use {action_tool_name} to generate the canonical config bundle.\n"
@@ -2294,7 +2303,7 @@ class AgentSystemBasicConfigService:
                     "- Preserve Domain -> Object -> Function structure in the generated configuration.\n"
                     "- Return the produced config bundle and call out remaining manual integration steps when needed."
                 ),
-                "task.mode": "agent_system_worker",
+                "task.mode": "agent_system_builder",
                 "task.action_tool": action_tool_name,
                 "task.action_request_schema": action_request_schema_name,
                 "output_schema.bundle_sections": [
@@ -2335,10 +2344,10 @@ class AgentSystemBasicConfigService:
         planner_manifest_override = create_agent_manifest_override_config(
             planner_agent_name,
             {
-                "role": "planner_router",
-                "skill_profile": "conversation_router",
+                "role": "xplaner_xrouter",
+                "skill_profile": "xplaner_xrouter_agent_system_planning",
                 "instance_policy": "session_scoped",
-                "routing_policy.mode": "planner_router",
+                "routing_policy.mode": "xplaner_xrouter",
                 "routing_policy.can_route": True,
                 "handoff_policy.allowed_sources": [request.load_assistant_agent_name()],
                 "handoff_policy.allowed_targets": [worker_agent_name],
@@ -2352,8 +2361,8 @@ class AgentSystemBasicConfigService:
         worker_manifest_override = create_agent_manifest_override_config(
             worker_agent_name,
             {
-                "role": "worker",
-                "skill_profile": "structured_writer",
+                "role": "xworker",
+                "skill_profile": "xworker_agent_system_builder",
                 f"handoff_policy.allowed_sources": [planner_agent_name],
                 f"handoff_policy.source_policies.{planner_agent_name}.accepted_protocols": ["agent_handoff_v1"],
                 f"handoff_policy.source_policies.{planner_agent_name}.handoff_schema": planner_to_worker_schema_name,
@@ -2378,7 +2387,7 @@ class AgentSystemBasicConfigService:
             primary_to_planner_schema_name,
             {
                 "protocol": "agent_handoff_v1",
-                "description": "Primary assistant brief for the agent-system planner.",
+                "description": "xplaner_xrouter brief for the agent-system planner.",
                 "required_payload_any": ["output", "generated", "msg"],
                 "preferred_payload_paths": ["output", "generated", "msg"],
                 "workflow_name": planner_workflow_name,
@@ -2754,13 +2763,12 @@ def validate_all_action_request_schemas() -> dict[str, Any]:
 
 
 def get_specialized_system_prompt(agent_type: str, task_name: str) -> str:
-    canonical_name = _SPECIALIZED_AGENT_MAP.get((agent_type, task_name))
-    if not canonical_name:
+    job_prompt_name = _SPECIALIZED_JOB_PROMPT_MAP.get((agent_type, task_name))
+    if not job_prompt_name:
         return ""
 
-    base_name = f"{agent_type}_agent"
-    base_prompt = get_system_prompt(base_name)
-    specialized_prompt = get_system_prompt(canonical_name)
+    base_prompt = get_system_prompt("xworker")
+    specialized_prompt = get_job_prompt(job_prompt_name)
 
     if base_prompt and specialized_prompt and base_prompt != specialized_prompt:
         return f"{base_prompt}\n\n{specialized_prompt}".strip()

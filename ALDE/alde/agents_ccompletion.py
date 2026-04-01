@@ -1306,7 +1306,7 @@ class ChatCom(ChatCompletion,ChatHistory):
             ChatHistory._history_ = ChatHistory._load()
         _chat = ChatHistory()
 
-        # system message: instructions for the Primary Assistant (Agent #1)
+        # system message: instructions for the planner/router entry agent
         # Use the unified tool registry (shared with agenszie_factory) instead of a
         # custom, inconsistent schema. Keep the list small to reduce model confusion.
         try:
@@ -1327,16 +1327,16 @@ class ChatCom(ChatCompletion,ChatHistory):
         except Exception:
             from agents_config import get_agent_config, resolve_forced_route  # type: ignore
 
-        _agent_cfg = get_agent_config("_primary_assistant") or agents_registry.AGENTS_REGISTRY.get("_primary_assistant") or {
+        _agent_cfg = get_agent_config("_xplaner_xrouter") or agents_registry.AGENTS_REGISTRY.get("_xplaner_xrouter") or {
             "model": "gpt-4.1-mini-2025-04-14",
-            "system": "You are the Primary Assistant.",
+            "system": "You are xplaner_xrouter.",
             "tools": ["route_to_agent"],
         }
-        self._agent_label = "_primary_assistant"
+        self._agent_label = "_xplaner_xrouter"
         self._agent_runtime = {
             "agent_label": _agent_cfg.get("agent_label") or self._agent_label,
-            "canonical_name": _agent_cfg.get("canonical_name") or "primary_assistant",
-            "role": _agent_cfg.get("role") or "worker",
+            "canonical_name": _agent_cfg.get("canonical_name") or "xplaner_xrouter",
+            "role": _agent_cfg.get("role") or "xplaner_xrouter",
             "skill_profile": _agent_cfg.get("skill_profile") or "",
             "instance_policy": _agent_cfg.get("instance_policy") or "ephemeral",
             "routing_policy": dict(_agent_cfg.get("routing_policy") or {}),
@@ -1450,7 +1450,7 @@ class ChatCom(ChatCompletion,ChatHistory):
             'user', 
             _msg_user_content_data_img if _url 
             else msg_user_text,
-            _object, _name = 'Primary Assistant',
+            _object, _name = 'xplaner_xrouter',
             _data={"agent_runtime": dict(self._agent_runtime)},
         )
         # initialize vector store -
@@ -1583,7 +1583,7 @@ class ChatCom(ChatCompletion,ChatHistory):
                     'assistant',
                     err_text,
                     _object,
-                    _name='Primary Assistant',
+                    _name='xplaner_xrouter',
                     _data={"agent_runtime": dict(self._agent_runtime)},
                 )
                 return
@@ -1603,7 +1603,7 @@ class ChatCom(ChatCompletion,ChatHistory):
             assistant_log_content,
             _object,
             _tool_calls=getattr(self.assistant_msg, 'tool_calls'),
-            _name = 'Primary Assistant',
+            _name = 'xplaner_xrouter',
             _data={
                 "agent_runtime": dict(self._agent_runtime),
                 "deterministic_action": dict(self._deterministic_action_meta or {}),
@@ -1635,7 +1635,7 @@ class ChatCom(ChatCompletion,ChatHistory):
                     return _agents_factory.execute_forced_route(
                         dict(getattr(self, "_forced_route") or {}),
                         ChatCom=ChatCom,
-                        origin_agent_label=getattr(self, "_agent_label", "_primary_assistant"),
+                        origin_agent_label=getattr(self, "_agent_label", "_xplaner_xrouter"),
                     )
                 except Exception as e:
                     return f"Routing failed: {e}"
@@ -1653,7 +1653,7 @@ class ChatCom(ChatCompletion,ChatHistory):
                     self.assistant_msg,
                     ChatCom=ChatCom,
                     depth=0,
-                    agent_label=getattr(self, "_agent_label", "_primary_assistant"),
+                    agent_label=getattr(self, "_agent_label", "_xplaner_xrouter"),
                 )
 
                 print(f'FINAL_RESULT: {final_result}')

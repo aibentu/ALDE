@@ -6,6 +6,7 @@ import os
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from alde.webapp.config import settings
 from alde.webapp.db import Base
 from alde.webapp import entities  # noqa: F401
 
@@ -13,7 +14,7 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-config.set_main_option("sqlalchemy.url", os.getenv("ALDE_WEB_DATABASE_URL", "sqlite:///./AppData/alde_web.db"))
+config.set_main_option("sqlalchemy.url", settings.database_url)
 target_metadata = Base.metadata
 
 

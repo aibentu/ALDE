@@ -40,10 +40,10 @@ class TestWebappWorkflowStatusView(unittest.TestCase):
 
     def test_call_agent_runtime_returns_fallback_text_on_runtime_error(self) -> None:
         with patch("alde.agents_config.normalize_agent_label", side_effect=RuntimeError("broken normalize")):
-            result = services._call_agent_runtime(target_agent="_writer_agent", prompt="draft text")
+            result = services._call_agent_runtime(target_agent="_xworker", prompt="draft text")
 
         self.assertIn("Agent runtime fallback path activated.", result)
-        self.assertIn("target=_writer_agent", result)
+        self.assertIn("target=_xworker", result)
         self.assertIn("RuntimeError: broken normalize", result)
 
     def test_workflow_validation_report_returns_unavailable_report_on_error(self) -> None:
@@ -163,7 +163,7 @@ class TestWebappWorkflowStatusView(unittest.TestCase):
             result = services.queue_agent_run(
                 tenant_id="tenant-1",
                 user_id="user-1",
-                target_agent="_data_dispatcher",
+                target_agent="_xworker",
                 prompt="hello",
                 metadata={"idempotency_key": "key-42"},
             )
@@ -175,7 +175,7 @@ class TestWebappWorkflowStatusView(unittest.TestCase):
                 {
                     "tenant_id": "tenant-1",
                     "user_id": "user-1",
-                    "target_agent": "_data_dispatcher",
+                    "target_agent": "_xworker",
                     "prompt": "hello",
                     "metadata": {"idempotency_key": "key-42"},
                 },
@@ -208,7 +208,7 @@ class TestWebappWorkflowStatusView(unittest.TestCase):
         rotate_auth_session.assert_called_once()
         append_audit.assert_called_once()
 
-    def test_call_agent_runtime_uses_chatcom_for_primary_assistant(self) -> None:
+    def test_call_agent_runtime_uses_chatcom_for_xplaner_xrouter(self) -> None:
         fake_agent_config = {"model": "gpt-4o-mini"}
 
         class _FakeChatCom:
@@ -219,24 +219,24 @@ class TestWebappWorkflowStatusView(unittest.TestCase):
             def get_response(self) -> str:
                 return f"primary:{self.model}:{self.input_text}"
 
-        with patch("alde.agents_config.normalize_agent_label", return_value="_primary_assistant"), patch(
+        with patch("alde.agents_config.normalize_agent_label", return_value="_xplaner_xrouter"), patch(
             "alde.agents_config.get_agent_config", return_value=fake_agent_config
         ), patch("alde.agents_ccompletion.ChatCom", _FakeChatCom):
-            result = services._call_agent_runtime(target_agent="_primary_assistant", prompt="hello")
+            result = services._call_agent_runtime(target_agent="_xplaner_xrouter", prompt="hello")
 
         self.assertEqual(result, "primary:gpt-4o-mini:hello")
 
     def test_call_agent_runtime_uses_forced_route_for_specialist_targets(self) -> None:
-        with patch("alde.agents_config.normalize_agent_label", return_value="_writer_agent"), patch(
+        with patch("alde.agents_config.normalize_agent_label", return_value="_xworker"), patch(
             "alde.agents_factory.execute_forced_route", return_value="writer response"
         ) as forced_route:
-            result = services._call_agent_runtime(target_agent="_writer_agent", prompt="draft text")
+            result = services._call_agent_runtime(target_agent="_xworker", prompt="draft text")
 
         self.assertEqual(result, "writer response")
         forced_route.assert_called_once_with(
-            {"target_agent": "_writer_agent", "user_question": "draft text"},
+            {"target_agent": "_xworker", "user_question": "draft text"},
             ChatCom=unittest.mock.ANY,
-            origin_agent_label="_primary_assistant",
+            origin_agent_label="_xplaner_xrouter",
         )
 
     def test_run_agent_persists_runtime_output(self) -> None:
@@ -247,7 +247,7 @@ class TestWebappWorkflowStatusView(unittest.TestCase):
             run = services.run_agent(
                 tenant_id="tenant-1",
                 user_id="user-1",
-                target_agent="_writer_agent",
+                target_agent="_xworker",
                 prompt="draft text",
                 metadata={"source": "test"},
             )
@@ -261,13 +261,13 @@ class TestWebappWorkflowStatusView(unittest.TestCase):
         item = {
             "message_id": 11,
             "role": "tool",
-            "assistant_name": "_data_dispatcher",
+            "assistant_name": "_xworker",
             "thread_id": 100,
             "thread_name": "snapshot-thread",
             "time": "2025-03-01T10:00:02Z",
             "workflow": {
                 "workflow_name": "data_dispatcher_chain",
-                "agent_label": "_data_dispatcher",
+                "agent_label": "_xworker",
                 "current_state": "action_executed",
                 "snapshot": {
                     "workflow_name": "data_dispatcher_chain",
@@ -295,7 +295,7 @@ class TestWebappWorkflowStatusView(unittest.TestCase):
                 "workflows": [],
             },
         ):
-            result = services.get_workflow_status_view(target_agent="_data_dispatcher", thread_id=100, limit=10)
+            result = services.get_workflow_status_view(target_agent="_xworker", thread_id=100, limit=10)
 
         latest = result["latest"]
         self.assertIsNotNone(latest)
@@ -311,13 +311,13 @@ class TestWebappWorkflowStatusView(unittest.TestCase):
         item = {
             "message_id": 21,
             "role": "assistant",
-            "assistant_name": "_writer_agent",
+            "assistant_name": "_xworker",
             "thread_id": 200,
             "thread_name": "writer-thread",
             "time": "2025-03-01T10:02:00Z",
             "workflow": {
                 "workflow_name": "writer_agent_leaf",
-                "agent_label": "_writer_agent",
+                "agent_label": "_xworker",
                 "current_state": "writer_complete",
                 "snapshot": {
                     "workflow_name": "writer_agent_leaf",
@@ -341,7 +341,7 @@ class TestWebappWorkflowStatusView(unittest.TestCase):
                 "workflows": [],
             },
         ):
-            result = services.get_workflow_status_view(target_agent="_writer_agent", thread_id=200, limit=5)
+            result = services.get_workflow_status_view(target_agent="_xworker", thread_id=200, limit=5)
 
         latest = result["latest"]
         self.assertIsNotNone(latest)
@@ -359,7 +359,7 @@ class TestWebappWorkflowStatusView(unittest.TestCase):
             job_id, run_id = services.queue_agent_run(
                 tenant_id="tenant-1",
                 user_id="user-1",
-                target_agent="_writer_agent",
+                target_agent="_xworker",
                 prompt="draft text",
                 metadata={"source": "test"},
             )
@@ -388,6 +388,25 @@ class TestWebappWorkflowStatusView(unittest.TestCase):
         get_run.assert_called_once_with(tenant_id="tenant-1", run_id="run-1")
         get_async_job.assert_called_once_with(tenant_id="tenant-1", job_id="job-1")
         list_audit.assert_called_once_with(tenant_id="tenant-1", limit=5)
+
+    def test_operator_activity_view_normalizes_recent_audit_entries(self) -> None:
+        audit_items = [
+            {
+                "created_at": "2026-04-01T10:00:00+00:00",
+                "tenant_id": "tenant-1",
+                "event_type": "agent.run_completed",
+                "detail": {"target_agent": "_xworker", "run_id": "run-1"},
+            }
+        ]
+
+        with patch("alde.webapp.services.repo.list_recent_audit", return_value=audit_items) as list_recent_audit:
+            result = services.get_operator_activity_view(limit=5)
+
+        self.assertEqual(result["item_count"], 1)
+        self.assertEqual(result["items"][0]["source"], "webapp")
+        self.assertEqual(result["items"][0]["title"], "agent.run_completed")
+        self.assertIn("_xworker", result["items"][0]["summary"])
+        list_recent_audit.assert_called_once_with(limit=5)
 
 
 if __name__ == "__main__":

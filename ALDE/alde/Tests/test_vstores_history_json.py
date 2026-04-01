@@ -64,7 +64,7 @@ def _write_history_json(path: Path) -> None:
             "time": "2026-03-08 10:00:00",
             "thread-name": "chat",
             "thread-id": 2324,
-            "assistant-name": "_data_dispatcher",
+            "assistant-name": "_xworker",
             "tool_calls": [
                 {
                     "id": "call_1",
@@ -81,7 +81,7 @@ def _write_history_json(path: Path) -> None:
             "time": "2026-03-08 10:00:01",
             "thread-name": "chat",
             "thread-id": 2324,
-            "assistant-name": "_data_dispatcher",
+            "assistant-name": "_xworker",
             "tool_call_id": "call_1",
             "name": "route_to_agent",
             "data": {"status": "ok"},

@@ -68,14 +68,22 @@ Copy them to `dispatcher_doc_db.json` / `db.json` locally if needed (these copie
 
 The current agent runtime is documented from three complementary angles:
 
+Migration note:
+- The runtime manifest surface is now limited to `_xplaner_xrouter` and `_xworker`.
+- Execution specialization is selected through `job_name` instead of switching between multiple specialist manifest agent names.
+
 - `ALDE/ARCHITECTURE_REFACTOR.md` describes the current manifest-driven runtime model and the remaining refactor direction.
 - `ALDE/AGENT_SEQUENCE_STATE_DIAGRAM.md` captures the current routing and tool-call sequence/state model.
 - `ALDE/AUTONOMOUS_MULTI_AGENT_ROADMAP.md` describes the future adaptive learning evolution on top of that runtime.
+- `ALDE/TARGET_ARCHITECTURE.md` describes the intended runtime layering and phase-1 event/metrics scaffolding.
+- `ALDE/REQUEST_RESPONSE_HANDOFF_FLOW.md` captures the request, tool, and handoff flow with Mermaid and ASCII fallback.
 
 Use these documents together when changing agent configuration, routing, or workflow structure.
 
 For orientation:
 - Current runtime source of truth: `ALDE/alde/agents_config.py`
 - Current runtime behavior reference: `ALDE/ARCHITECTURE_REFACTOR.md` and `ALDE/AGENT_SEQUENCE_STATE_DIAGRAM.md`
+- Target runtime layering reference: `ALDE/TARGET_ARCHITECTURE.md`
+- Request and handoff flow reference: `ALDE/REQUEST_RESPONSE_HANDOFF_FLOW.md`
 - Future learning/runtime evolution: `ALDE/AUTONOMOUS_MULTI_AGENT_ROADMAP.md`
 - Historical cleanup note: `ALDE/WORKFLOW_FIXES.md`

@@ -485,7 +485,7 @@ The system uses **rule-based heuristics** for agent selection and workflow routi
 
 ### Decision Tree
 
-From the primary assistant prompt in `agents_config.py`:
+From the current two-agent routing model in `agents_config.py`:
 
 ```python
 def route_decision(job_posting, applicant_profile):
@@ -495,19 +495,19 @@ def route_decision(job_posting, applicant_profile):
     Complexity: O(1) - constant time branching
     """
     if not applicant_profile:
-        return route_to("_profile_parser")
+        return route_to("_xworker", job_name="applicant_profile_parser")
     
     elif not job_posting:
-        return route_to("_job_posting_parser")
+        return route_to("_xworker", job_name="job_posting_parser")
     
     elif applicant_profile and job_posting:
         # Check if parsed versions exist in DB
         if not db.has_parsed_profile(applicant_profile):
-            return route_to("_profile_parser")
+            return route_to("_xworker", job_name="applicant_profile_parser")
         elif not db.has_parsed_job(job_posting):
-            return route_to("_job_posting_parser")
+            return route_to("_xworker", job_name="job_posting_parser")
         else:
-            return route_to("_cover_letter_agent")
+            return route_to("_xworker", job_name="cover_letter_writer")
     
     else:
         return ask_user_for_clarification()

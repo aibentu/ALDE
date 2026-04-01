@@ -125,7 +125,7 @@ def run_benchmark(
                 f"{base}/api/v1/agents/runs/async",
                 headers=headers,
                 json={
-                    "target_agent": "_primary_assistant",
+                    "target_agent": "_xplaner_xrouter",
                     "prompt": f"benchmark job {idx}",
                     "metadata": {"bench": True, "idx": idx},
                 },

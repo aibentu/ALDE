@@ -1,4 +1,4 @@
-# Quick Start: Primary Agent Orchestrator
+# Quick Start: Two-Agent Runtime
 
 ## Scenario 1: Generate Cover Letter (Simple)
 
@@ -13,12 +13,12 @@
 ```
 
 **Workflow:**
-1. Primary agent validates input
-2. Primary agent loads profile from DB
-3. Primary agent routes job posting to `_job_posting_parser`
-4. Primary agent waits for parser result
-5. Primary agent routes aggregated data to `_cover_letter_agent`
-6. Primary agent returns structured output with cover letter
+1. `_xplaner_xrouter` validates the request and selects the required worker job.
+2. `_xplaner_xrouter` loads any existing profile context from storage.
+3. `_xplaner_xrouter` routes parsing work to `_xworker` with `job_name="job_posting_parser"`.
+4. `_xplaner_xrouter` waits for the worker result.
+5. `_xplaner_xrouter` routes generation work to `_xworker` with `job_name="cover_letter_writer"`.
+6. `_xplaner_xrouter` returns the structured cover-letter result.
 
 **Duration:** ~8-12 seconds
 
@@ -49,13 +49,13 @@
 ```
 
 **Workflow:**
-1. Primary agent validates input
-2. Primary agent routes CV to `_profile_parser` (extracts & stores)
-3. Primary agent routes job posting to `_job_posting_parser` (extracts & stores)
-4. Primary agent waits for both parsers
-5. Primary agent routes aggregated data to `_cover_letter_agent`
-6. Primary agent saves letter to file system
-7. Primary agent returns complete response with quality metrics
+1. `_xplaner_xrouter` validates input and plans the execution order.
+2. `_xplaner_xrouter` routes CV parsing to `_xworker` with `job_name="applicant_profile_parser"`.
+3. `_xplaner_xrouter` routes job parsing to `_xworker` with `job_name="job_posting_parser"`.
+4. `_xplaner_xrouter` waits for both worker results.
+5. `_xplaner_xrouter` routes writing to `_xworker` with `job_name="cover_letter_writer"`.
+6. `_xworker` saves the generated letter.
+7. `_xplaner_xrouter` returns the complete response with quality metrics.
 
 **Duration:** ~12-18 seconds
 
@@ -104,11 +104,11 @@
 ```
 
 **Workflow:**
-1. Primary agent routes to `_data_dispatcher` with directory path
-2. Dispatcher scans PDFs, checks DB status, forwards unprocessed to `_job_posting_parser`
-3. Each job posting is parsed and stored
-4. Primary agent generates cover letter for each job (parallel possible)
-5. Primary agent returns batch results with summary
+1. `_xplaner_xrouter` triggers `dispatch_documents` or routes `_xworker` with `job_name="document_dispatch"`.
+2. `_xworker` scans PDFs, checks DB status, and prepares parse work for unprocessed inputs.
+3. `_xworker` executes parsing jobs and stores the results.
+4. `_xplaner_xrouter` triggers generation for each job using `_xworker` with `job_name="cover_letter_writer"`.
+5. `_xplaner_xrouter` returns batch results with a summary.
 
 **Duration:** ~5-10 seconds per job (after dispatcher)
 
@@ -174,20 +174,20 @@
 
 ---
 
-## Key Tools Used by Primary Agent
+## Key Tools Used By `_xplaner_xrouter`
 
-### 1. `route_to_agent` - Delegate to specialists
+### 1. `route_to_agent` - Delegate to `_xworker`
 ```python
 route_to_agent(
-    target_agent="_job_posting_parser",
+    target_agent="_xworker",
     message_text={...payload...}
 )
 ```
 
-### 2. `load_dispatcher_db` - Access persistent DB
+### 2. `dispatch_documents` / persistence tools - Access runtime stores
 ```python
-load_dispatcher_db()
-# Access stored profiles, job postings, cover letters
+dispatch_documents(scan_dir="/path/to/jobs")
+# Combined with worker persistence and retrieval helpers
 ```
 
 ### 3. `read_document` - Load profile from file

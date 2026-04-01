@@ -108,13 +108,13 @@ class TestWorkflowRagIntegration(unittest.TestCase):
             captured_execute_tool_calls.append((name, dict(args)))
             if name == "route_to_agent":
                 return (
-                    "Routing to _data_dispatcher",
+                    "Routing to _xworker",
                     {
                         "messages": [
                             {"role": "system", "content": "dispatcher system"},
                             {"role": "user", "content": json.dumps(request, ensure_ascii=False)},
                         ],
-                        "agent_label": "_data_dispatcher",
+                        "agent_label": "_xworker",
                         "tools": [],
                         "model": "gpt-4o-mini",
                         "include_history": False,
@@ -137,18 +137,12 @@ class TestWorkflowRagIntegration(unittest.TestCase):
         payload = json.loads(response)
         self.assertTrue(payload["rag"]["used"])
         self.assertEqual(payload["quality"]["language"], "de")
-        self.assertEqual(
-            captured_execute_tool_calls,
-            [
-                (
-                    "route_to_agent",
-                    {
-                        "target_agent": "_data_dispatcher",
-                        "user_question": json.dumps(request, ensure_ascii=False),
-                    },
-                )
-            ],
-        )
+        self.assertEqual(len(captured_execute_tool_calls), 1)
+        self.assertEqual(captured_execute_tool_calls[0][0], "route_to_agent")
+        self.assertEqual(captured_execute_tool_calls[0][1]["target_agent"], "_xworker")
+        self.assertEqual(captured_execute_tool_calls[0][1]["handoff_protocol"], "agent_handoff_v1")
+        self.assertIn("agent_response", captured_execute_tool_calls[0][1])
+        self.assertEqual(captured_execute_tool_calls[0][1]["agent_response"]["handoff_to"], "_xworker")
 
 
 if __name__ == "__main__":

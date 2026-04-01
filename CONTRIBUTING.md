@@ -121,9 +121,12 @@ If your change alters agent configuration layout, tool configuration ownership, 
 
 Use `ALDE/AGENT_SEQUENCE_STATE_DIAGRAM.md` as the current-state execution reference and treat `ALDE/AUTONOMOUS_MULTI_AGENT_ROADMAP.md` as the broader roadmap rather than the implementation spec for structural refactors.
 
+Use `ALDE/TARGET_ARCHITECTURE.md` when the change introduces new runtime layers, event contracts, persistence adapters, or orchestration seams that go beyond the current in-process runtime.
+
 When in doubt:
 - `ALDE/alde/agents_config.py` defines manifests, runtime instructions, roles, tool policy, and workflow schemas.
 - `ALDE/ARCHITECTURE_REFACTOR.md` explains the intended structure and remaining gaps.
+- `ALDE/TARGET_ARCHITECTURE.md` explains the intended runtime layering and the phase-1 event and metric scaffolding modules.
 - `ALDE/WORKFLOW_FIXES.md` is historical archive material, not a current runtime guide.
 
 ## 🐛 Reporting Bugs

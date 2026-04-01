@@ -11,6 +11,7 @@ from jwt import PyJWKClient
 
 from .models import AgentRun
 from .repository import repo
+from ..runtime_core import AgentRuntimeCoreService
 from .security import hash_refresh_token, issue_access_token, issue_refresh_token
 from .config import settings
 
@@ -653,35 +654,10 @@ def revoke_refresh_session(*, refresh_token: str) -> bool:
     return WEBAPP_PUBLIC_FACADE_SERVICE.revoke_object_refresh_session(refresh_token=refresh_token)
 
 
-class AgentRuntimeService:
-    def build_runtime_fallback(self, *, target_agent: str, exc: Exception) -> str:
-        return (
-            "Agent runtime fallback path activated. "
-            f"target={target_agent}; reason={type(exc).__name__}: {exc}"
-        )
-
+class AgentRuntimeService(AgentRuntimeCoreService):
     def run_object(self, target_agent: str, prompt: str) -> str:
         """Run the existing ALDE agent runtime and return the final response text."""
-        try:
-            from alde.agents_config import get_agent_config, normalize_agent_label  # type: ignore
-            from alde.agents_ccompletion import ChatCom  # type: ignore
-            from alde.agents_factory import execute_forced_route  # type: ignore
-
-            normalized_target = normalize_agent_label(target_agent)
-            if normalized_target == "_primary_assistant":
-                model = str((get_agent_config(normalized_target) or {}).get("model") or "gpt-4o")
-                return str(ChatCom(_model=model, _input_text=prompt).get_response() or "")
-
-            return str(
-                execute_forced_route(
-                    {"target_agent": normalized_target, "user_question": prompt},
-                    ChatCom=ChatCom,
-                    origin_agent_label="_primary_assistant",
-                )
-                or ""
-            )
-        except Exception as exc:
-            return self.build_runtime_fallback(target_agent=target_agent, exc=exc)
+        return self.run_chat_object(target_agent=target_agent, prompt=prompt)
 
     def store_object_run(
         self,
@@ -713,6 +689,44 @@ AGENT_RUNTIME_SERVICE = AgentRuntimeService()
 
 def _call_agent_runtime(target_agent: str, prompt: str) -> str:
     return AGENT_RUNTIME_SERVICE.run_object(target_agent=target_agent, prompt=prompt)
+
+
+class OperatorActivityViewService:
+    def format_audit_item(self, entry: dict[str, Any]) -> dict[str, Any]:
+        detail = entry.get("detail") if isinstance(entry.get("detail"), dict) else {}
+        event_type = str(entry.get("event_type") or "audit.event")
+        target_agent = str(detail.get("target_agent") or "")
+        run_id = str(detail.get("run_id") or "")
+        error = str(detail.get("error") or "")
+        summary_parts = [part for part in [target_agent, run_id, error] if part]
+        return {
+            "timestamp": str(entry.get("created_at") or "n/a"),
+            "source": "webapp",
+            "kind": "audit_event",
+            "title": event_type,
+            "summary": " | ".join(summary_parts) or "webapp operator event",
+            "status": event_type,
+            "tenant_id": str(entry.get("tenant_id") or ""),
+            "run_id": run_id,
+            "target_agent": target_agent,
+        }
+
+    def load_activity_view(self, *, limit: int = 20) -> dict[str, Any]:
+        items = [
+            self.format_audit_item(entry)
+            for entry in repo.list_recent_audit(limit=limit)
+        ]
+        return {
+            "item_count": len(items),
+            "items": items,
+        }
+
+
+OPERATOR_ACTIVITY_VIEW_SERVICE = OperatorActivityViewService()
+
+
+def get_operator_activity_view(*, limit: int = 20) -> dict[str, Any]:
+    return OPERATOR_ACTIVITY_VIEW_SERVICE.load_activity_view(limit=limit)
 
 
 class WorkflowValidationService:
@@ -1024,6 +1038,9 @@ class WebappOperationsFacadeService:
 
     def list_audit_events(self, *, tenant_id: str, limit: int = 100) -> list[dict]:
         return AGENT_RUN_LIFECYCLE_SERVICE.list_audit_entries(tenant_id=tenant_id, limit=limit)
+
+    def load_operator_activity_view(self, *, limit: int = 20) -> dict[str, Any]:
+        return get_operator_activity_view(limit=limit)
 
 
 WEBAPP_OPERATIONS_FACADE_SERVICE = WebappOperationsFacadeService()

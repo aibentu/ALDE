@@ -9,20 +9,20 @@ import importlib
 import base64
 import binascii
 import uuid
-from datetime import datetime
+import html
+import subprocess
+import shutil
+from datetime import datetime, timezone
 
-# If this file is executed directly (e.g. `python alde/ai_ide_v1756.py`),
-# Python sets sys.path[0] to the package directory, which can break
-# absolute imports like `import alde.<module>`.
-if not __package__:
-    _repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if _repo_root not in sys.path:
-        sys.path.insert(0, _repo_root)
+# Keep both repository roots on sys.path so local imports work in direct-script
+# mode and when the module is imported through the lowercase package alias.
+_repo_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _repo_root not in sys.path:
+    sys.path.insert(0, _repo_root)
 
-    # Make top-level package imports work too (ALDE.*)
-    _workspace_root = os.path.dirname(_repo_root)
-    if _workspace_root not in sys.path:
-        sys.path.insert(0, _workspace_root)
+_workspace_root = os.path.dirname(_repo_root)
+if _workspace_root not in sys.path:
+    sys.path.insert(0, _workspace_root)
 
 # Workaround für GNOME GLib-GIO-ERROR mit antialiasing
 # Verhindert Crash durch fehlende GNOME-Settings-Keys
@@ -33,7 +33,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')
 import warnings
 warnings.filterwarnings('ignore', category=Warning)
 from pathlib import Path
-from typing import Final, List, Optional
+from typing import Any, Final, List, Optional
 from io import BytesIO
 import mimetypes
 
@@ -222,7 +222,9 @@ from PySide6.QtGui import (
 
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFileDialog,
+    QFormLayout,
     QInputDialog,
     QDockWidget,
     QFrame,
@@ -258,13 +260,16 @@ from PySide6.QtWidgets import (
 
 try:
     if __package__:
-        from .agents_ccompletion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore
+        from .agents_ccompletion import ChatHistory  # type: ignore
+        from .desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
     else:
-        from alde.agents_ccompletion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore
+        from alde.agents_ccompletion import ChatHistory  # type: ignore
+        from alde.desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
 except ImportError as e:
     msg = str(e)
     if "attempted relative import" in msg or "no known parent package" in msg:
-        from agents_ccompletion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore  # noqa: E402
+        from agents_ccompletion import ChatHistory  # type: ignore  # noqa: E402
+        from desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore  # noqa: E402
     else:
         raise
 
@@ -1587,9 +1592,15 @@ class AIWidget(QWidget):
         self._api_key_missing: bool = not bool(self.api_key)
         self._model:   str = "o3-2025-04-16"                 # <<< zentrales Modell
         self._dropped_files: List[str] = []
+        self._pending_local_run_ids: list[str] = []
         self.scheme = _build_scheme(accent, base)                # Farbschema mergen
         self._build_ui()
         self._wire()
+
+        self._local_run_timer = QTimer(self)
+        self._local_run_timer.setInterval(500)
+        self._local_run_timer.timeout.connect(self._poll_local_runs)
+        self._local_run_timer.start()
 
         if self._api_key_missing:
             try:
@@ -1666,12 +1677,20 @@ class AIWidget(QWidget):
         self.btn_send        = ToolButton("send.svg",    "Send",
                                           slot=self._send)
         self.btn_mic         = ToolButton("mic.svg",     "Record speech")
+        self.run_mode_box    = QComboBox(footer)
+        self.run_mode_box.addItem("Async local", "async")
+        self.run_mode_box.addItem("Sync local", "sync")
+        self.run_mode_box.setCurrentIndex(0 if os.getenv("AI_IDE_LOCAL_CHAT_RUN_MODE", "async").strip().lower() == "async" else 1)
+        self.run_status_label = QLabel("Local chat mode", footer)
+        self.run_status_label.setObjectName("controlMeta")
 
         for w in (self.btn_img_create,
                   self.btn_img_analyse,
                   self.btn_send,
                   self.btn_mic):
             flay.addWidget(w, 0, Qt.AlignLeft)
+        flay.addWidget(self.run_mode_box, 0, Qt.AlignLeft)
+        flay.addWidget(self.run_status_label, 0, Qt.AlignLeft)
         flay.addStretch()
 
         # 5) Gesamtlayout
@@ -1692,6 +1711,42 @@ class AIWidget(QWidget):
     def _remember_files(self, paths:list|None) -> None:
                 self._dropped_files = paths
                 self.prompt_edit.append(f'{paths}')
+
+    def _refresh_local_run_status(self) -> None:
+        mode = str(self.run_mode_box.currentData() or "async")
+        pending_count = len(self._pending_local_run_ids)
+        mode_label = "Async" if mode == "async" else "Sync"
+        self.run_status_label.setText(f"{mode_label} local | pending: {pending_count}")
+
+    def _refresh_control_plane(self) -> None:
+        win = self.window()
+        control_plane = getattr(win, "control_plane_widget", None)
+        if control_plane is not None:
+            try:
+                control_plane.refresh_view()
+            except Exception:
+                pass
+
+    @Slot()
+    def _poll_local_runs(self) -> None:
+        if not self._pending_local_run_ids:
+            self._refresh_local_run_status()
+            return
+
+        remaining_run_ids: list[str] = []
+        for run_id in self._pending_local_run_ids:
+            run = DESKTOP_AGENT_RUN_FACADE_SERVICE.load_object_run(run_id)
+            if run is None or run.status in {"queued", "running"}:
+                remaining_run_ids.append(run_id)
+                continue
+            if run.status == "completed":
+                self._append("AI", str(run.output or ""))
+            else:
+                self._append("AI", f"[ERROR] {run.error or 'Local async run failed'}")
+            self._refresh_control_plane()
+
+        self._pending_local_run_ids = remaining_run_ids
+        self._refresh_local_run_status()
     # ---------------------------------------------------------------------------
     #  CHAT – Text-Prompt
     # ---------------------------------------------------------------------------
@@ -1710,18 +1765,33 @@ class AIWidget(QWidget):
         url = self._dropped_files[:] 
         self._append("You", prompt)
         self.prompt_edit.clear()
-        
-        try:
-            reply = ChatCom(
-                _model=self._model,
-                _url=url,
-                _input_text=prompt
-            ).get_response()
-        except Exception as exc:
-            reply = f"[ERROR] {exc}"
+        run_mode = str(self.run_mode_box.currentData() or "async")
 
-        self._append("AI", str(reply))
+        if run_mode == "async":
+            run = DESKTOP_AGENT_RUN_FACADE_SERVICE.queue_object_run(
+                request_kind="chat",
+                target_agent="_xplaner_xrouter",
+                prompt=prompt,
+                attachments=url,
+                model_name=self._model,
+                metadata={"source": "desktop_chat", "mode": "async"},
+            )
+            self._pending_local_run_ids.append(run.run_id)
+            self._append("System", f"Queued local async run {run.run_id[:8]} …")
+        else:
+            run = DESKTOP_AGENT_RUN_FACADE_SERVICE.run_object_sync(
+                request_kind="chat",
+                target_agent="_xplaner_xrouter",
+                prompt=prompt,
+                attachments=url,
+                model_name=self._model,
+                metadata={"source": "desktop_chat", "mode": "sync"},
+            )
+            self._append("AI", str(run.output or (f"[ERROR] {run.error}" if run.error else "")))
+            self._refresh_control_plane()
+
         self._dropped_files = []
+        self._refresh_local_run_status()
 
     # ---------------------------------------------------------------------------
     #  CHAT – Bild analysieren
@@ -1745,23 +1815,19 @@ class AIWidget(QWidget):
         url = self._dropped_files[0]
 
         try:
-            resp = ImageDescription(
-                _model="gpt-5",
-                _url=url,
-                _input_text=prompt
-            ).get_descript()
-
-            if hasattr(resp, 'choices') and resp.choices:
-                reply = (resp.choices[0].message.content or "")
-            elif hasattr(resp, 'content'):
-                reply = (resp.content or "")
-            else:
-                reply = str(resp)
+            run = DESKTOP_AGENT_RUN_FACADE_SERVICE.describe_object_image(
+                prompt=prompt,
+                image_path=url,
+                model_name="gpt-5",
+                metadata={"source": "desktop_image_description"},
+            )
+            reply = str(run.output or "") if not run.error else f"[ERROR] {run.error}"
         except Exception as exc:
             reply = f"[ERROR] {exc}"
 
         self._append("AI", reply)
         self._dropped_files = []
+        self._refresh_control_plane()
 
     # ---------------------------------------------------------------------------
     #  CHAT – Bild generieren
@@ -1782,10 +1848,15 @@ class AIWidget(QWidget):
         self.prompt_edit.clear()    
 
         try:
-            raw = ImageCreate(
-                _model="gpt-5",
-                _input_text=prompt
-            ).get_img()
+            run = DESKTOP_AGENT_RUN_FACADE_SERVICE.create_object_image(
+                prompt=prompt,
+                model_name="gpt-5",
+                metadata={"source": "desktop_image_create"},
+            )
+            if run.error:
+                self._append("AI", f"[ERROR] {run.error}")
+                return
+            raw = run.output
         except Exception as exc:
             self._append("AI", f"[ERROR] {exc}")
             return
@@ -1805,6 +1876,7 @@ class AIWidget(QWidget):
             self._append("AI", f"[IMAGE] {path}")
         else:
             self._append("AI", f"[IMAGE SAVED] {path}")
+        self._refresh_control_plane()
 
     # ---------------------------------------------------------------------------
     #  HILFSFUNKTION – Nachricht an ChatWindow anhängen
@@ -2265,6 +2337,1433 @@ from PySide6.QtCore import (
 
 # -----------------------------------------------------------
 
+class ControlPlaneWidget(QWidget):
+    snapshotChanged = Signal(dict)
+
+    def __init__(self, accent: dict[str, str], base: dict[str, str], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._accent = accent
+        self._base = base
+        self.scheme = _build_scheme(accent, base)
+        self._metric_labels: dict[str, QLabel] = {}
+        self._last_snapshot: dict[str, Any] = {}
+        self._operator_log_entries: list[str] = []
+        self._agent_rows_by_label: dict[str, dict[str, Any]] = {}
+        self._build_ui()
+        self.update_scheme(accent, base)
+
+        self._refresh_timer = QTimer(self)
+        self._refresh_timer.setInterval(15000)
+        self._refresh_timer.timeout.connect(self.refresh_view)
+        self._refresh_timer.start()
+        self.refresh_view()
+
+    def _build_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(8)
+        self.setMinimumSize(0, 0)
+        self.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+
+        self.primary_splitter = self._create_viewport_splitter(self)
+        self.primary_splitter.setObjectName("controlPrimarySplitter")
+
+        hero = QFrame(self)
+        hero.setObjectName("controlHero")
+        hero.setMinimumHeight(0)
+        hero.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Minimum)
+        hero_layout = QVBoxLayout(hero)
+        hero_layout.setContentsMargins(12, 12, 12, 12)
+        hero_layout.setSpacing(8)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(8)
+
+        title_box = QVBoxLayout()
+        title_box.setContentsMargins(0, 0, 0, 0)
+        title_box.setSpacing(2)
+
+        title = QLabel("Agentic Control Plane", hero)
+        title.setObjectName("controlTitle")
+        subtitle = QLabel(
+            "Industrial workspace for agent configuration, workflow governance, and runtime monitoring.",
+            hero,
+        )
+        subtitle.setObjectName("controlSubtitle")
+        subtitle.setWordWrap(True)
+        title_box.addWidget(title)
+        title_box.addWidget(subtitle)
+
+        header_row.addLayout(title_box, 1)
+
+        header_meta = QVBoxLayout()
+        header_meta.setContentsMargins(0, 0, 0, 0)
+        header_meta.setSpacing(4)
+        self._last_refresh_label = QLabel("Refresh pending", hero)
+        self._last_refresh_label.setObjectName("controlMeta")
+        self._runtime_hint_label = QLabel("Auto refresh: 15s", hero)
+        self._runtime_hint_label.setObjectName("controlMeta")
+        header_meta.addWidget(self._last_refresh_label, 0, Qt.AlignRight)
+        header_meta.addWidget(self._runtime_hint_label, 0, Qt.AlignRight)
+        header_row.addLayout(header_meta)
+
+        self.btn_refresh = QPushButton("Refresh", hero)
+        self.btn_refresh.setObjectName("controlRefresh")
+        self.btn_refresh.clicked.connect(self.refresh_view)
+        header_row.addWidget(self.btn_refresh, 0, Qt.AlignTop)
+
+        hero_layout.addLayout(header_row)
+
+        metrics_row = QHBoxLayout()
+        metrics_row.setContentsMargins(0, 0, 0, 0)
+        metrics_row.setSpacing(8)
+        for metric_key, metric_label in (
+            ("agents", "Agents"),
+            ("workflows", "Workflows"),
+            ("sessions", "Signals"),
+            ("failures", "Failures"),
+        ):
+            card, value_label = self._create_metric_card(metric_label)
+            self._metric_labels[metric_key] = value_label
+            metrics_row.addWidget(card, 1)
+        hero_layout.addLayout(metrics_row)
+
+        self.tabs = QTabWidget(self)
+        self.tabs.setObjectName("controlPlaneTabs")
+        self.tabs.setMinimumSize(0, 0)
+        self.tabs.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.tabBar().setElideMode(Qt.ElideRight)
+        self.tabs.tabBar().setExpanding(False)
+
+        config_tab = QWidget(self.tabs)
+        config_tab.setMinimumSize(0, 0)
+        config_tab.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        config_layout = QVBoxLayout(config_tab)
+        config_layout.setContentsMargins(0, 0, 0, 0)
+        config_layout.setSpacing(8)
+
+        self.config_summary_view = QTextBrowser(config_tab)
+        self.config_summary_view.setObjectName("controlBrowser")
+        self.config_summary_view.setOpenExternalLinks(False)
+        self.config_summary_view.setMinimumHeight(0)
+        self.config_summary_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        config_layout.addWidget(self.config_summary_view)
+
+        self.config_manifest_view = QTextBrowser(config_tab)
+        self.config_manifest_view.setObjectName("controlBrowser")
+        self.config_manifest_view.setOpenExternalLinks(False)
+        self.config_manifest_view.setMinimumHeight(0)
+        self.config_manifest_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.config_splitter = self._create_viewport_splitter(config_tab)
+        self.config_splitter.addWidget(self.config_summary_view)
+        self.config_splitter.addWidget(self.config_manifest_view)
+        self.config_splitter.setSizes([140, 280])
+        config_layout.addWidget(self.config_splitter, 1)
+
+        monitor_tab = QWidget(self.tabs)
+        monitor_tab.setMinimumSize(0, 0)
+        monitor_tab.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        monitor_layout = QVBoxLayout(monitor_tab)
+        monitor_layout.setContentsMargins(0, 0, 0, 0)
+        monitor_layout.setSpacing(8)
+
+        self.monitor_summary_view = QTextBrowser(monitor_tab)
+        self.monitor_summary_view.setObjectName("controlBrowser")
+        self.monitor_summary_view.setOpenExternalLinks(False)
+        self.monitor_summary_view.setMinimumHeight(0)
+        self.monitor_summary_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+
+        drilldown_layout = QVBoxLayout()
+        drilldown_layout.setContentsMargins(0, 0, 0, 0)
+        drilldown_layout.setSpacing(6)
+
+        drilldown_form = QFormLayout()
+        drilldown_form.setContentsMargins(0, 0, 0, 0)
+        drilldown_form.setSpacing(8)
+        drilldown_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
+        agent_label = QLabel("Agent", monitor_tab)
+        agent_label.setObjectName("controlMeta")
+
+        self.agent_selector = QComboBox(monitor_tab)
+        self.agent_selector.setObjectName("controlSelector")
+        self.agent_selector.setMinimumContentsLength(10)
+        self.agent_selector.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.agent_selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.agent_selector.currentTextChanged.connect(self._refresh_drilldown_views)
+        drilldown_form.addRow(agent_label, self.agent_selector)
+
+        workflow_label = QLabel("Workflow", monitor_tab)
+        workflow_label.setObjectName("controlMeta")
+
+        self.workflow_selector = QComboBox(monitor_tab)
+        self.workflow_selector.setObjectName("controlSelector")
+        self.workflow_selector.setMinimumContentsLength(10)
+        self.workflow_selector.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.workflow_selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.workflow_selector.currentTextChanged.connect(self._refresh_drilldown_views)
+        drilldown_form.addRow(workflow_label, self.workflow_selector)
+
+        drilldown_layout.addLayout(drilldown_form)
+
+        detail_action_row = QHBoxLayout()
+        detail_action_row.setContentsMargins(0, 0, 0, 0)
+        detail_action_row.setSpacing(8)
+
+        self.btn_refresh_detail = QPushButton("Refresh Detail", monitor_tab)
+        self.btn_refresh_detail.setObjectName("controlAction")
+        self.btn_refresh_detail.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btn_refresh_detail.clicked.connect(self._refresh_drilldown_views)
+        detail_action_row.addWidget(self.btn_refresh_detail, 0)
+        detail_action_row.addStretch(1)
+        drilldown_layout.addLayout(detail_action_row)
+        monitor_layout.addLayout(drilldown_layout)
+
+        self.monitor_detail_view = QTextBrowser(monitor_tab)
+        self.monitor_detail_view.setObjectName("controlBrowser")
+        self.monitor_detail_view.setOpenExternalLinks(False)
+        self.monitor_detail_view.setMinimumHeight(0)
+        self.monitor_detail_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        monitor_layout.addWidget(self.monitor_detail_view)
+
+        self.monitor_timeline_view = QTextBrowser(monitor_tab)
+        self.monitor_timeline_view.setObjectName("controlBrowser")
+        self.monitor_timeline_view.setOpenExternalLinks(False)
+        self.monitor_timeline_view.setMinimumHeight(0)
+        self.monitor_timeline_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.monitor_splitter = self._create_viewport_splitter(monitor_tab)
+        self.monitor_splitter.addWidget(self.monitor_summary_view)
+        self.monitor_splitter.addWidget(self.monitor_detail_view)
+        self.monitor_splitter.addWidget(self.monitor_timeline_view)
+        self.monitor_splitter.setSizes([120, 220, 180])
+        monitor_layout.addWidget(self.monitor_splitter, 1)
+
+        operations_tab = QWidget(self.tabs)
+        operations_tab.setMinimumSize(0, 0)
+        operations_tab.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        operations_layout = QVBoxLayout(operations_tab)
+        operations_layout.setContentsMargins(0, 0, 0, 0)
+        operations_layout.setSpacing(8)
+
+        operator_actions_top = QHBoxLayout()
+        operator_actions_top.setContentsMargins(0, 0, 0, 0)
+        operator_actions_top.setSpacing(8)
+
+        operator_actions_bottom = QHBoxLayout()
+        operator_actions_bottom.setContentsMargins(0, 0, 0, 0)
+        operator_actions_bottom.setSpacing(8)
+
+        self.btn_refresh_health = QPushButton("Run Health Checks", operations_tab)
+        self.btn_refresh_health.setObjectName("controlAction")
+        self.btn_refresh_health.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btn_refresh_health.clicked.connect(self._run_operator_health_checks)
+        operator_actions_top.addWidget(self.btn_refresh_health, 0)
+
+        self.btn_probe_queue = QPushButton("Probe Queue", operations_tab)
+        self.btn_probe_queue.setObjectName("controlAction")
+        self.btn_probe_queue.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btn_probe_queue.clicked.connect(self._probe_queue_health)
+        operator_actions_top.addWidget(self.btn_probe_queue, 0)
+
+        self.btn_probe_dispatcher = QPushButton("Probe Dispatcher", operations_tab)
+        self.btn_probe_dispatcher.setObjectName("controlAction")
+        self.btn_probe_dispatcher.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btn_probe_dispatcher.clicked.connect(self._probe_dispatcher_health)
+        operator_actions_top.addWidget(self.btn_probe_dispatcher, 0)
+
+        operator_actions_top.addStretch(1)
+
+        self.btn_repair_dispatcher = QPushButton("Repair Dispatcher Store", operations_tab)
+        self.btn_repair_dispatcher.setObjectName("controlAction")
+        self.btn_repair_dispatcher.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btn_repair_dispatcher.clicked.connect(self._repair_dispatcher_store)
+        operator_actions_bottom.addWidget(self.btn_repair_dispatcher, 0)
+
+        self.btn_probe_mcp = QPushButton("Probe MCP", operations_tab)
+        self.btn_probe_mcp.setObjectName("controlAction")
+        self.btn_probe_mcp.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btn_probe_mcp.clicked.connect(self._probe_mcp_health)
+        operator_actions_bottom.addWidget(self.btn_probe_mcp, 0)
+
+        self.btn_export_runtime = QPushButton("Export Runtime JSON", operations_tab)
+        self.btn_export_runtime.setObjectName("controlAction")
+        self.btn_export_runtime.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self.btn_export_runtime.clicked.connect(self._export_runtime_snapshot_report)
+        operator_actions_bottom.addWidget(self.btn_export_runtime, 0)
+        operator_actions_bottom.addStretch(1)
+        operations_layout.addLayout(operator_actions_top)
+        operations_layout.addLayout(operator_actions_bottom)
+
+        self.operator_summary_view = QTextBrowser(operations_tab)
+        self.operator_summary_view.setObjectName("controlBrowser")
+        self.operator_summary_view.setOpenExternalLinks(False)
+        self.operator_summary_view.setMinimumHeight(0)
+        self.operator_summary_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+
+        self.operator_log_view = QTextBrowser(operations_tab)
+        self.operator_log_view.setObjectName("controlBrowser")
+        self.operator_log_view.setOpenExternalLinks(False)
+        self.operator_log_view.setMinimumHeight(0)
+        self.operator_log_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+        self.operations_splitter = self._create_viewport_splitter(operations_tab)
+        self.operations_splitter.addWidget(self.operator_summary_view)
+        self.operations_splitter.addWidget(self.operator_log_view)
+        self.operations_splitter.setSizes([220, 160])
+        operations_layout.addWidget(self.operations_splitter, 1)
+
+        self.tabs.addTab(config_tab, "Configuration")
+        self.tabs.addTab(monitor_tab, "Monitoring")
+        self.tabs.addTab(operations_tab, "Operations")
+        self.primary_splitter.addWidget(hero)
+        self.primary_splitter.addWidget(self.tabs)
+        self.primary_splitter.setSizes([170, 560])
+        self.primary_splitter.setStretchFactor(0, 1)
+        self.primary_splitter.setStretchFactor(1, 4)
+        root.addWidget(self.primary_splitter, 1)
+        self._render_operator_log()
+
+    def _create_metric_card(self, title: str) -> tuple[QFrame, QLabel]:
+        card = QFrame(self)
+        card.setObjectName("controlMetricCard")
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(2)
+
+        title_label = QLabel(title, card)
+        title_label.setObjectName("controlMetricLabel")
+        value_label = QLabel("--", card)
+        value_label.setObjectName("controlMetricValue")
+        layout.addWidget(title_label)
+        layout.addWidget(value_label)
+        layout.addStretch(1)
+        return card, value_label
+
+    def _create_viewport_splitter(self, parent: QWidget) -> QSplitter:
+        splitter = QSplitter(Qt.Vertical, parent)
+        splitter.setObjectName("controlViewportSplitter")
+        splitter.setChildrenCollapsible(True)
+        splitter.setHandleWidth(10)
+        splitter.setOpaqueResize(True)
+        splitter.setMinimumSize(0, 0)
+        splitter.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        return splitter
+
+    def update_scheme(self, accent: dict[str, str], base: dict[str, str]) -> None:
+        self._accent = accent
+        self._base = base
+        self.scheme = _build_scheme(accent, base)
+        self.setStyleSheet(
+            f"""
+            QFrame#controlHero, QFrame#controlMetricCard {{
+                background: {self.scheme['col5']};
+                border: 1px solid {self.scheme['col10']};
+                border-radius: 14px;
+            }}
+            QLabel#controlTitle {{
+                color: {self.scheme['col6']};
+                font-size: 18px;
+                font-weight: 700;
+            }}
+            QLabel#controlSubtitle, QLabel#controlMeta, QLabel#controlMetricLabel {{
+                color: {self.scheme['col8']};
+                font-size: 12px;
+            }}
+            QLabel#controlMetricValue {{
+                color: {self.scheme['col1']};
+                font-size: 24px;
+                font-weight: 700;
+            }}
+            QTextBrowser#controlBrowser {{
+                background: {self.scheme['col9']};
+                border: 1px solid {self.scheme['col10']};
+                border-radius: 12px;
+                padding: 8px;
+                font-size: 13px;
+            }}
+            QTextBrowser#controlBrowser QScrollBar:vertical,
+            QTextBrowser#controlBrowser QScrollBar:horizontal {{
+                background: transparent;
+                margin: 0px;
+                border: none;
+            }}
+            QTextBrowser#controlBrowser QScrollBar:vertical {{
+                width: 6px;
+            }}
+            QTextBrowser#controlBrowser QScrollBar:horizontal {{
+                height: 6px;
+            }}
+            QTextBrowser#controlBrowser QScrollBar:hover,
+            QTextBrowser#controlBrowser QScrollBar:vertical:hover,
+            QTextBrowser#controlBrowser QScrollBar:horizontal:hover {{
+                background: transparent;
+            }}
+            QTextBrowser#controlBrowser QScrollBar::handle:vertical,
+            QTextBrowser#controlBrowser QScrollBar::handle:horizontal {{
+                background: rgba(0, 0, 0, 0.0);
+                border-radius: 3px;
+                min-height: 28px;
+                min-width: 28px;
+            }}
+            QTextBrowser#controlBrowser QScrollBar::handle:vertical:hover,
+            QTextBrowser#controlBrowser QScrollBar::handle:horizontal:hover {{
+                background: {self.scheme['col10']};
+            }}
+            QTextBrowser#controlBrowser QScrollBar::handle:vertical:pressed,
+            QTextBrowser#controlBrowser QScrollBar::handle:horizontal:pressed {{
+                background: {self.scheme['col2']};
+            }}
+            QTextBrowser#controlBrowser QScrollBar::add-line,
+            QTextBrowser#controlBrowser QScrollBar::sub-line,
+            QTextBrowser#controlBrowser QScrollBar::add-page,
+            QTextBrowser#controlBrowser QScrollBar::sub-page {{
+                background: none;
+                border: none;
+                width: 0px;
+                height: 0px;
+            }}
+            QSplitter#controlViewportSplitter::handle {{
+                background: {self.scheme['col10']};
+                margin: 2px 0;
+                border-radius: 4px;
+            }}
+            QSplitter#controlViewportSplitter::handle:hover {{
+                background: {self.scheme['col2']};
+            }}
+            QSplitter#controlPrimarySplitter::handle {{
+                background: {self.scheme['col10']};
+                margin: 2px 0;
+                border-radius: 4px;
+            }}
+            QSplitter#controlPrimarySplitter::handle:hover {{
+                background: {self.scheme['col2']};
+            }}
+            QComboBox#controlSelector {{
+                background: {self.scheme['col9']};
+                color: {self.scheme['col6']};
+                border: 1px solid {self.scheme['col10']};
+                border-radius: 10px;
+                padding: 6px 10px;
+                min-height: 18px;
+            }}
+            QPushButton#controlRefresh {{
+                background: {self.scheme['col1']};
+                color: {self.scheme['col7']};
+                border: 1px solid {self.scheme['col1']};
+                border-radius: 10px;
+                padding: 6px 12px;
+                font-weight: 600;
+            }}
+            QPushButton#controlRefresh:hover {{
+                background: {self.scheme['col2']};
+                border-color: {self.scheme['col2']};
+            }}
+            QPushButton#controlAction {{
+                background: {self.scheme['col5']};
+                color: {self.scheme['col6']};
+                border: 1px solid {self.scheme['col10']};
+                border-radius: 10px;
+                padding: 6px 12px;
+                font-weight: 600;
+            }}
+            QPushButton#controlAction:hover {{
+                border-color: {self.scheme['col2']};
+                color: {self.scheme['col2']};
+            }}
+            """
+        )
+
+    def refresh_view(self) -> None:
+        try:
+            configuration_snapshot = self._load_configuration_snapshot()
+            monitoring_snapshot = self._load_monitoring_snapshot()
+            operator_snapshot = self._load_operator_snapshot()
+            self._render_configuration_snapshot(configuration_snapshot)
+            self._render_monitoring_snapshot(monitoring_snapshot)
+            self._render_operator_snapshot(operator_snapshot)
+            self._populate_drilldown_selectors(configuration_snapshot)
+            self._refresh_drilldown_views()
+            self._last_snapshot = {
+                "configuration": configuration_snapshot,
+                "monitoring": monitoring_snapshot,
+                "operations": operator_snapshot,
+            }
+            self._render_operator_log()
+            self._last_refresh_label.setText(
+                f"Updated {datetime.now().strftime('%H:%M:%S')}"
+            )
+            self.snapshotChanged.emit(dict(self._last_snapshot))
+        except Exception as exc:
+            error_text = html.escape(f"{type(exc).__name__}: {exc}")
+            self.config_summary_view.setHtml(f"<h3>Configuration unavailable</h3><p>{error_text}</p>")
+            self.config_manifest_view.setHtml(
+                "<h3>Manifest projection failed</h3><p>Check agents_config.py imports and runtime state.</p>"
+            )
+            self.monitor_summary_view.setHtml(f"<h3>Monitoring unavailable</h3><p>{error_text}</p>")
+            self.monitor_detail_view.setHtml(
+                "<h3>Drill-down unavailable</h3><p>Workflow status detail could not be projected.</p>"
+            )
+            self.monitor_timeline_view.setHtml(
+                "<h3>Timeline unavailable</h3><p>Runtime event projection could not be loaded.</p>"
+            )
+            self.operator_summary_view.setHtml(f"<h3>Operations unavailable</h3><p>{error_text}</p>")
+            self._last_snapshot = {
+                "configuration": {"agent_count": 0, "workflow_count": 0},
+                "monitoring": {"session_count": 0, "failure_count": 0},
+                "operations": {"queue_backend": "n/a", "queue_healthy": False},
+            }
+            self._render_operator_log()
+            self.snapshotChanged.emit(dict(self._last_snapshot))
+
+    def _load_configuration_snapshot(self) -> dict[str, Any]:
+        try:
+            if __package__:
+                from .agents_config import (  # type: ignore
+                    get_agent_manifests,
+                    get_tool_configs,
+                    get_tool_group_configs,
+                    get_workflow_configs,
+                )
+            else:
+                from alde.agents_config import (  # type: ignore
+                    get_agent_manifests,
+                    get_tool_configs,
+                    get_tool_group_configs,
+                    get_workflow_configs,
+                )
+        except ImportError as exc:
+            msg = str(exc)
+            if "attempted relative import" in msg or "no known parent package" in msg:
+                from agents_config import (  # type: ignore
+                    get_agent_manifests,
+                    get_tool_configs,
+                    get_tool_group_configs,
+                    get_workflow_configs,
+                )
+            else:
+                raise
+
+        manifests = get_agent_manifests()
+        workflows = get_workflow_configs()
+        tool_configs = get_tool_configs()
+        tool_groups = get_tool_group_configs()
+
+        role_counts: dict[str, int] = {}
+        workflow_usage: dict[str, int] = {}
+        agent_rows: list[dict[str, Any]] = []
+
+        for agent_label, manifest in sorted(manifests.items()):
+            role = str(manifest.get("role") or "worker")
+            workflow_name = str(manifest.get("workflow_name") or "unassigned")
+            role_counts[role] = role_counts.get(role, 0) + 1
+            workflow_usage[workflow_name] = workflow_usage.get(workflow_name, 0) + 1
+            agent_rows.append(
+                {
+                    "agent_label": agent_label,
+                    "role": role,
+                    "model": str(manifest.get("model") or "unspecified"),
+                    "workflow_name": workflow_name,
+                    "tool_count": len(manifest.get("tools") or []),
+                    "instance_policy": str(manifest.get("instance_policy") or "ephemeral"),
+                }
+            )
+
+        providers: list[str] = []
+        if os.getenv("OPENAI_API_KEY"):
+            providers.append("OpenAI")
+        if os.getenv("ANTHROPIC_API_KEY"):
+            providers.append("Anthropic")
+        if os.getenv("AZURE_OPENAI_API_KEY") or os.getenv("AZURE_OPENAI_ENDPOINT"):
+            providers.append("Azure OpenAI")
+        if os.getenv("OLLAMA_HOST") or os.getenv("OLLAMA_BASE_URL"):
+            providers.append("Ollama")
+
+        env_rows = [
+            ("OpenAI key", bool(os.getenv("OPENAI_API_KEY"))),
+            ("Mongo knowledge", bool(os.getenv("AI_IDE_KNOWLEDGE_MONGO_URI"))),
+            ("GPU vstore", os.getenv("AI_IDE_VSTORE_GPU_ONLY", "0") in {"1", "true", "True"}),
+            ("Verbose HTTP", os.getenv("AI_IDE_VERBOSE_HTTP", "0") in {"1", "true", "True"}),
+        ]
+
+        return {
+            "agent_count": len(agent_rows),
+            "workflow_count": len(workflows),
+            "tool_count": len(tool_configs),
+            "tool_group_count": len(tool_groups),
+            "providers": providers,
+            "role_counts": role_counts,
+            "workflow_usage": workflow_usage,
+            "workflow_names": sorted(name for name in workflow_usage if name and name != "unassigned"),
+            "agent_labels": [str(row.get("agent_label") or "") for row in agent_rows],
+            "agent_rows_by_label": {
+                str(row.get("agent_label") or ""): dict(row) for row in agent_rows if str(row.get("agent_label") or "")
+            },
+            "agent_rows": agent_rows,
+            "env_rows": env_rows,
+        }
+
+    def _load_monitoring_snapshot(self) -> dict[str, Any]:
+        try:
+            if __package__:
+                from .desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
+                from .runtime_view import load_runtime_view  # type: ignore
+            else:
+                from alde.desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
+                from alde.runtime_view import load_runtime_view  # type: ignore
+        except ImportError as exc:
+            msg = str(exc)
+            if "attempted relative import" in msg or "no known parent package" in msg:
+                from desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
+                from runtime_view import load_runtime_view  # type: ignore
+            else:
+                raise
+
+        runtime_view = load_runtime_view(event_limit=40)
+        local_monitoring = DESKTOP_AGENT_RUN_FACADE_SERVICE.load_monitoring_snapshot(limit=8)
+        sessions = runtime_view.get("sessions") or []
+        metrics = runtime_view.get("metrics") or {}
+        events = runtime_view.get("events") or []
+        latest_session = sessions[-1] if sessions else {}
+        runtime_session_count = int(runtime_view.get("session_count") or 0)
+        runtime_event_count = int(runtime_view.get("event_count") or 0)
+        runtime_failure_count = int(metrics.get("failure_count") or 0)
+        local_run_count = int(local_monitoring.get("run_count") or 0)
+        local_active_count = int(local_monitoring.get("active_count") or 0)
+        local_failure_count = int(local_monitoring.get("failure_count") or 0)
+        signal_count = runtime_event_count + local_run_count
+        source_count = int(runtime_session_count > 0 or runtime_event_count > 0) + int(local_run_count > 0)
+        connected_sources = []
+        if runtime_session_count > 0 or runtime_event_count > 0:
+            connected_sources.append("workflow projection")
+        if local_run_count > 0:
+            connected_sources.append("desktop runtime")
+
+        alerts: list[str] = []
+        failure_count = runtime_failure_count + local_failure_count
+        if not sessions and local_run_count <= 0 and runtime_event_count <= 0:
+            alerts.append("No projected runtime sessions yet. Execute a workflow to populate observability.")
+        elif not sessions and (local_run_count > 0 or runtime_event_count > 0):
+            alerts.append("Workflow projection is currently idle, but the monitor is receiving desktop runtime signals.")
+        if runtime_failure_count > 0:
+            alerts.append(f"{runtime_failure_count} failed runtime outcomes recorded in the current projection.")
+        average_latency_ms = float(metrics.get("average_latency_ms") or 0.0)
+        if average_latency_ms >= 1500:
+            alerts.append(f"Average latency is elevated at {average_latency_ms:.0f} ms.")
+        if local_active_count > 0:
+            alerts.append(f"{local_active_count} local desktop runs are still queued or running.")
+        if local_failure_count > 0:
+            alerts.append(f"{local_failure_count} local desktop runs ended in failure.")
+
+        return {
+            "session_count": runtime_session_count,
+            "event_count": runtime_event_count,
+            "success_count": int(metrics.get("success_count") or 0),
+            "failure_count": failure_count,
+            "average_latency_ms": average_latency_ms,
+            "alerts": alerts,
+            "latest_session": latest_session,
+            "events": list(events[-12:]),
+            "local_run_count": local_run_count,
+            "local_active_count": local_active_count,
+            "local_failure_count": local_failure_count,
+            "local_latest_run": local_monitoring.get("latest_run"),
+            "local_recent_runs": list(local_monitoring.get("recent_runs") or []),
+            "signal_count": signal_count,
+            "source_count": source_count,
+            "connected_sources": connected_sources,
+        }
+
+    def _load_agent_drilldown_snapshot(self, agent_label: str) -> dict[str, Any]:
+        try:
+            if __package__:
+                from .webapp.services import get_workflow_status_view  # type: ignore
+            else:
+                from alde.webapp.services import get_workflow_status_view  # type: ignore
+        except ImportError as exc:
+            msg = str(exc)
+            if "attempted relative import" in msg or "no known parent package" in msg:
+                from webapp.services import get_workflow_status_view  # type: ignore
+            else:
+                raise
+
+        detail = get_workflow_status_view(target_agent=agent_label, limit=8)
+        detail["agent_label"] = agent_label
+        return detail
+
+    def _load_workflow_drilldown_snapshot(self, workflow_name: str) -> dict[str, Any]:
+        try:
+            if __package__:
+                from .agents_factory import get_latest_workflow_status, get_workflow_history_entries  # type: ignore
+                from .webapp.services import _enrich_workflow_status_entry, get_workflow_validation_report  # type: ignore
+            else:
+                from alde.agents_factory import get_latest_workflow_status, get_workflow_history_entries  # type: ignore
+                from alde.webapp.services import _enrich_workflow_status_entry, get_workflow_validation_report  # type: ignore
+        except ImportError as exc:
+            msg = str(exc)
+            if "attempted relative import" in msg or "no known parent package" in msg:
+                from agents_factory import get_latest_workflow_status, get_workflow_history_entries  # type: ignore
+                from webapp.services import _enrich_workflow_status_entry, get_workflow_validation_report  # type: ignore
+            else:
+                raise
+
+        latest = _enrich_workflow_status_entry(get_latest_workflow_status(workflow_name=workflow_name))
+        items = [
+            _enrich_workflow_status_entry(item)
+            for item in get_workflow_history_entries(workflow_name=workflow_name, limit=8)
+        ]
+        return {
+            "workflow_name": workflow_name,
+            "latest": latest,
+            "items": items,
+            "validation": get_workflow_validation_report(),
+        }
+
+    def _load_operator_snapshot(self) -> dict[str, Any]:
+        try:
+            if __package__:
+                from .desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
+                from .tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
+                from .webapp.jobs import get_queue_health  # type: ignore
+                from .webapp.services import get_operator_activity_view, get_workflow_validation_report  # type: ignore
+            else:
+                from alde.desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
+                from alde.tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
+                from alde.webapp.jobs import get_queue_health  # type: ignore
+                from alde.webapp.services import get_operator_activity_view, get_workflow_validation_report  # type: ignore
+        except ImportError as exc:
+            msg = str(exc)
+            if "attempted relative import" in msg or "no known parent package" in msg:
+                from desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
+                from tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
+                from webapp.jobs import get_queue_health  # type: ignore
+                from webapp.services import get_operator_activity_view, get_workflow_validation_report  # type: ignore
+            else:
+                raise
+
+        queue_backend, queue_healthy = get_queue_health()
+        local_monitoring = DESKTOP_AGENT_RUN_FACADE_SERVICE.load_monitoring_snapshot(limit=5)
+        local_queue_health = DESKTOP_AGENT_RUN_FACADE_SERVICE.load_queue_health()
+        local_activity_items = DESKTOP_AGENT_RUN_FACADE_SERVICE.load_activity_view(limit=8)
+        webapp_activity_view = get_operator_activity_view(limit=8)
+        dispatcher_db_path = _default_dispatcher_db_path()
+        dispatcher_error = DOCUMENT_DISPATCH_SERVICE.check_dispatcher_access(
+            resolved_db_path=dispatcher_db_path
+        )
+        validation = get_workflow_validation_report()
+        mcp_config_path = Path(__file__).with_name("mcp_servers.json")
+        previous_operations = dict(self._last_snapshot.get("operations") or {})
+        mcp_probe = dict(previous_operations.get("mcp_probe") or {})
+        if not mcp_probe:
+            mcp_probe = {
+                "ok": None,
+                "returncode": None,
+                "stdout": "",
+                "stderr": "probe not executed yet" if mcp_config_path.is_file() else "mcp_servers.json not found",
+            }
+
+        activity_items = sorted(
+            [*local_activity_items, *(webapp_activity_view.get("items") or [])],
+            key=lambda item: str(item.get("timestamp") or ""),
+            reverse=True,
+        )[:12]
+
+        return {
+            "queue_backend": queue_backend,
+            "queue_healthy": bool(queue_healthy),
+            "dispatcher_db_path": dispatcher_db_path,
+            "dispatcher_healthy": dispatcher_error is None,
+            "dispatcher_error": dispatcher_error,
+            "workflow_validation": validation,
+            "mcp_config_path": str(mcp_config_path),
+            "mcp_config_present": mcp_config_path.is_file(),
+            "mcp_probe": mcp_probe,
+            "local_queue_backend": str(local_queue_health.get("backend") or "inmemory"),
+            "local_queue_healthy": bool(local_queue_health.get("healthy", True)),
+            "local_runner_alive": bool(local_queue_health.get("runner_alive", False)),
+            "local_pending_count": int(local_queue_health.get("pending_count") or 0),
+            "local_recent_runs": list(local_monitoring.get("recent_runs") or []),
+            "activity_items": activity_items,
+        }
+
+    def _render_configuration_snapshot(self, snapshot: dict[str, Any]) -> None:
+        self._set_metric_value("agents", snapshot.get("agent_count", 0))
+        self._set_metric_value("workflows", snapshot.get("workflow_count", 0))
+
+        env_rows_html = "".join(
+            f"<li><b>{html.escape(label)}:</b> {self._render_bool_chip(bool(value))}</li>"
+            for label, value in snapshot.get("env_rows") or []
+        )
+        role_rows_html = "".join(
+            f"<li><b>{html.escape(role)}:</b> {count}</li>"
+            for role, count in sorted((snapshot.get("role_counts") or {}).items())
+        )
+        provider_text = ", ".join(snapshot.get("providers") or []) or "No provider credentials detected"
+        self.config_summary_view.setHtml(
+            "".join(
+                [
+                    "<h3>Configuration Readiness</h3>",
+                    "<p>Canonical data source: <code>agents_config.py</code>. This panel projects manifests, workflows, tools, and critical runtime flags into a single operational view.</p>",
+                    f"<p><b>Providers:</b> {html.escape(provider_text)}</p>",
+                    f"<p><b>Tool catalog:</b> {snapshot.get('tool_count', 0)} tools across {snapshot.get('tool_group_count', 0)} tool groups.</p>",
+                    "<h4>Environment Gate</h4>",
+                    f"<ul>{env_rows_html}</ul>",
+                    "<h4>Role Mix</h4>",
+                    f"<ul>{role_rows_html or '<li>No agents materialized</li>'}</ul>",
+                ]
+            )
+        )
+
+        manifest_blocks: list[str] = []
+        for row in (snapshot.get("agent_rows") or [])[:10]:
+            manifest_blocks.append(
+                "".join(
+                    [
+                        f"<h4>{html.escape(str(row.get('agent_label') or 'unknown'))}</h4>",
+                        "<ul>",
+                        f"<li><b>Role:</b> {html.escape(str(row.get('role') or 'worker'))}</li>",
+                        f"<li><b>Workflow:</b> {html.escape(str(row.get('workflow_name') or 'unassigned'))}</li>",
+                        f"<li><b>Model:</b> {html.escape(str(row.get('model') or 'unspecified'))}</li>",
+                        f"<li><b>Tools:</b> {int(row.get('tool_count') or 0)}</li>",
+                        f"<li><b>Instance policy:</b> {html.escape(str(row.get('instance_policy') or 'ephemeral'))}</li>",
+                        "</ul>",
+                    ]
+                )
+            )
+        self.config_manifest_view.setHtml(
+            "<h3>Manifest Preview</h3>" + "".join(manifest_blocks or ["<p>No manifests available.</p>"])
+        )
+
+    def _render_monitoring_snapshot(self, snapshot: dict[str, Any]) -> None:
+        self._set_metric_value("sessions", snapshot.get("signal_count", 0))
+        self._set_metric_value("failures", snapshot.get("failure_count", 0))
+
+        latest_session = snapshot.get("latest_session") or {}
+        latest_state = (latest_session.get("latest_workflow_state") or {}) if isinstance(latest_session, dict) else {}
+        latest_handoff = (latest_session.get("latest_handoff") or {}) if isinstance(latest_session, dict) else {}
+        connected_sources = ", ".join(snapshot.get("connected_sources") or []) or "none"
+        alerts_html = "".join(
+            f"<li>{html.escape(str(alert))}</li>" for alert in (snapshot.get("alerts") or [])
+        )
+        self.monitor_summary_view.setHtml(
+            "".join(
+                [
+                    "<h3>Runtime Monitoring</h3>",
+                    f"<p><b>Connected sources:</b> {html.escape(connected_sources)} | <b>signals:</b> {snapshot.get('signal_count', 0)}</p>",
+                    f"<p><b>Projected sessions:</b> {snapshot.get('session_count', 0)} | <b>runtime events:</b> {snapshot.get('event_count', 0)}</p>",
+                    f"<p><b>Success:</b> {snapshot.get('success_count', 0)} | <b>Failures:</b> {snapshot.get('failure_count', 0)} | <b>Avg latency:</b> {snapshot.get('average_latency_ms', 0.0):.0f} ms</p>",
+                    f"<p><b>Local desktop runs:</b> {snapshot.get('local_run_count', 0)} total | <b>active:</b> {snapshot.get('local_active_count', 0)} | <b>failed:</b> {snapshot.get('local_failure_count', 0)}</p>",
+                    f"<p><b>Latest workflow state:</b> {html.escape(str(latest_state.get('summary') or 'n/a'))}</p>",
+                    f"<p><b>Latest handoff:</b> {html.escape(str(latest_handoff.get('summary') or 'n/a'))}</p>",
+                    f"<p><b>Latest local run:</b> {html.escape(str(((snapshot.get('local_latest_run') or {}).get('status') or 'n/a')))} | {html.escape(str(((snapshot.get('local_latest_run') or {}).get('target_agent') or 'n/a')))}</p>",
+                    "<p><b>Drill-downs:</b> Use the selectors below to inspect the latest workflow state per agent and per workflow definition.</p>",
+                    "<h4>Alerts</h4>",
+                    f"<ul>{alerts_html or '<li>No active alerts in the current projection.</li>'}</ul>",
+                ]
+            )
+        )
+
+        timeline_rows: list[str] = []
+        for event_object in reversed(snapshot.get("events") or []):
+            timeline_rows.append(
+                "".join(
+                    [
+                        f"<p><b>{html.escape(str(event_object.get('timestamp') or 'n/a'))}</b><br>",
+                        f"{html.escape(str(event_object.get('summary') or event_object.get('event_type') or 'event'))}<br>",
+                        f"<span style=\"color:{self.scheme['col8']};\">agent={html.escape(str(event_object.get('agent_label') or 'n/a'))} | workflow={html.escape(str(event_object.get('workflow_name') or 'n/a'))}</span></p>",
+                    ]
+                )
+            )
+        local_run_rows = []
+        for run_object in snapshot.get("local_recent_runs") or []:
+            local_run_rows.append(
+                "".join(
+                    [
+                        f"<p><b>{html.escape(str(run_object.get('updated_at') or 'n/a'))}</b><br>",
+                        f"local {html.escape(str(run_object.get('status') or 'unknown'))}: ",
+                        f"{html.escape(str(run_object.get('target_agent') or 'n/a'))} / {html.escape(str(run_object.get('request_kind') or 'chat'))}<br>",
+                        f"<span style=\"color:{self.scheme['col8']};\">",
+                        f"{html.escape(str(run_object.get('prompt_preview') or ''))}",
+                        "</span></p>",
+                    ]
+                )
+            )
+        self.monitor_timeline_view.setHtml(
+            "<h3>Recent Event Timeline</h3>"
+            + "".join(timeline_rows or ["<p>No runtime events available.</p>"])
+            + "<h4>Local Desktop Runs</h4>"
+            + "".join(local_run_rows or ["<p>No local desktop runs recorded.</p>"])
+        )
+
+    def _render_operator_snapshot(self, snapshot: dict[str, Any]) -> None:
+        validation = snapshot.get("workflow_validation") or {}
+        mcp_probe = snapshot.get("mcp_probe") or {}
+        validation_errors = "".join(
+            f"<li>{html.escape(str(item))}</li>"
+            for item in (validation.get("errors") or [])[:8]
+        )
+        dispatcher_detail = html.escape(str(snapshot.get("dispatcher_error") or "Dispatcher projection ready"))
+        mcp_stdout = html.escape(str(mcp_probe.get("stdout") or ""))
+        mcp_stderr = html.escape(str(mcp_probe.get("stderr") or ""))
+        if mcp_probe.get("ok") is None:
+            mcp_status = self._render_status_chip("not-run", "#7a6f4b")
+        elif bool(mcp_probe.get("ok")):
+            mcp_status = self._render_status_chip("pass", self.scheme["col1"])
+        else:
+            mcp_status = self._render_status_chip("fail", "#b04848")
+        self.operator_summary_view.setHtml(
+            "".join(
+                [
+                    "<h3>Operator Status</h3>",
+                    f"<p><b>Queue backend:</b> {html.escape(str(snapshot.get('queue_backend') or 'n/a'))} {self._render_bool_chip(bool(snapshot.get('queue_healthy')))}</p>",
+                    f"<p><b>Local runner:</b> {html.escape(str(snapshot.get('local_queue_backend') or 'inmemory'))} {self._render_bool_chip(bool(snapshot.get('local_queue_healthy')))} | pending={int(snapshot.get('local_pending_count') or 0)} | thread_alive={html.escape(str(bool(snapshot.get('local_runner_alive'))))}</p>",
+                    f"<p><b>Dispatcher DB:</b> {html.escape(str(snapshot.get('dispatcher_db_path') or 'n/a'))}<br>{self._render_bool_chip(bool(snapshot.get('dispatcher_healthy')))} {dispatcher_detail}</p>",
+                    f"<p><b>MCP config:</b> {html.escape(str(snapshot.get('mcp_config_path') or 'n/a'))} {self._render_bool_chip(bool(snapshot.get('mcp_config_present')))}</p>",
+                    f"<p><b>MCP probe:</b> {mcp_status}<br>{mcp_stdout or mcp_stderr or 'No MCP probe output available.'}</p>",
+                    f"<p><b>Workflow validation:</b> {self._render_bool_chip(bool(validation.get('valid')))}</p>",
+                    "<h4>Validation Errors</h4>",
+                    f"<ul>{validation_errors or '<li>No active workflow validation errors.</li>'}</ul>",
+                    "<h4>Recent Local Runs</h4>",
+                    "<ul>"
+                    + "".join(
+                        f"<li>{html.escape(str(item.get('updated_at') or 'n/a'))} | {html.escape(str(item.get('status') or 'unknown'))} | {html.escape(str(item.get('target_agent') or 'n/a'))}</li>"
+                        for item in (snapshot.get('local_recent_runs') or [])[:5]
+                    )
+                    + ("" if (snapshot.get('local_recent_runs') or []) else "<li>No local desktop runs recorded.</li>")
+                    + "</ul>",
+                ]
+            )
+        )
+
+    def _populate_drilldown_selectors(self, configuration_snapshot: dict[str, Any]) -> None:
+        agent_labels = [label for label in (configuration_snapshot.get("agent_labels") or []) if label]
+        workflow_names = [name for name in (configuration_snapshot.get("workflow_names") or []) if name]
+        self._agent_rows_by_label = dict(configuration_snapshot.get("agent_rows_by_label") or {})
+
+        current_agent = self.agent_selector.currentText().strip()
+        current_workflow = self.workflow_selector.currentText().strip()
+
+        agent_blocker = QtCore.QSignalBlocker(self.agent_selector)
+        workflow_blocker = QtCore.QSignalBlocker(self.workflow_selector)
+        self.agent_selector.clear()
+        self.workflow_selector.clear()
+        self.agent_selector.addItems(agent_labels)
+        self.workflow_selector.addItems(workflow_names)
+
+        if current_agent and current_agent in agent_labels:
+            self.agent_selector.setCurrentText(current_agent)
+        elif agent_labels:
+            self.agent_selector.setCurrentIndex(0)
+
+        if current_workflow and current_workflow in workflow_names:
+            self.workflow_selector.setCurrentText(current_workflow)
+        elif workflow_names:
+            self.workflow_selector.setCurrentIndex(0)
+
+        del agent_blocker
+        del workflow_blocker
+
+    def _refresh_drilldown_views(self) -> None:
+        agent_label = self.agent_selector.currentText().strip()
+        workflow_name = self.workflow_selector.currentText().strip()
+
+        agent_row = dict(self._agent_rows_by_label.get(agent_label) or {})
+        mapped_workflow = str(agent_row.get("workflow_name") or "").strip()
+        if mapped_workflow and mapped_workflow != "unassigned" and mapped_workflow != workflow_name:
+            blocker = QtCore.QSignalBlocker(self.workflow_selector)
+            self.workflow_selector.setCurrentText(mapped_workflow)
+            del blocker
+            workflow_name = self.workflow_selector.currentText().strip() or mapped_workflow
+
+        agent_snapshot: dict[str, Any] | None = None
+        workflow_snapshot: dict[str, Any] | None = None
+
+        try:
+            if agent_label:
+                agent_snapshot = self._load_agent_drilldown_snapshot(agent_label)
+                agent_snapshot["manifest"] = agent_row
+            if workflow_name:
+                workflow_snapshot = self._load_workflow_drilldown_snapshot(workflow_name)
+            self._render_drilldown_snapshot(agent_snapshot, workflow_snapshot)
+        except Exception as exc:
+            error_text = html.escape(f"{type(exc).__name__}: {exc}")
+            self.monitor_detail_view.setHtml(f"<h3>Drill-down unavailable</h3><p>{error_text}</p>")
+
+    def _render_drilldown_snapshot(
+        self,
+        agent_snapshot: dict[str, Any] | None,
+        workflow_snapshot: dict[str, Any] | None,
+    ) -> None:
+        agent_section = self._render_drilldown_section(
+            title=f"Agent Focus: {str((agent_snapshot or {}).get('agent_label') or 'n/a')}",
+            latest=(agent_snapshot or {}).get("latest"),
+            items=(agent_snapshot or {}).get("items") or [],
+            validation=(agent_snapshot or {}).get("validation") or {},
+            error=(agent_snapshot or {}).get("error"),
+            manifest=(agent_snapshot or {}).get("manifest"),
+            empty_message="No workflow history for the selected agent.",
+        )
+        workflow_section = self._render_drilldown_section(
+            title=f"Workflow Focus: {str((workflow_snapshot or {}).get('workflow_name') or 'n/a')}",
+            latest=(workflow_snapshot or {}).get("latest"),
+            items=(workflow_snapshot or {}).get("items") or [],
+            validation=(workflow_snapshot or {}).get("validation") or {},
+            error=(workflow_snapshot or {}).get("error"),
+            manifest=None,
+            empty_message="No workflow history for the selected workflow.",
+        )
+        self.monitor_detail_view.setHtml("".join([agent_section, workflow_section]))
+
+    def _render_drilldown_section(
+        self,
+        *,
+        title: str,
+        latest: dict[str, Any] | None,
+        items: list[dict[str, Any]],
+        validation: dict[str, Any],
+        error: Any,
+        manifest: dict[str, Any] | None,
+        empty_message: str,
+    ) -> str:
+        latest_view = self._summarize_workflow_entry(latest)
+        activity = self._derive_activity_signal(latest_view)
+        recovery_actions = self._derive_recovery_actions(latest_view, items, manifest, activity)
+        manifest_html = ""
+        if manifest:
+            manifest_html = "".join(
+                [
+                    "<h4>Assigned Manifest</h4>",
+                    "<ul>",
+                    f"<li><b>Role:</b> {html.escape(str(manifest.get('role') or 'worker'))}</li>",
+                    f"<li><b>Workflow:</b> {html.escape(str(manifest.get('workflow_name') or 'unassigned'))}</li>",
+                    f"<li><b>Model:</b> {html.escape(str(manifest.get('model') or 'unspecified'))}</li>",
+                    f"<li><b>Tools:</b> {int(manifest.get('tool_count') or 0)}</li>",
+                    f"<li><b>Instance policy:</b> {html.escape(str(manifest.get('instance_policy') or 'ephemeral'))}</li>",
+                    "</ul>",
+                ]
+            )
+        latest_health_html = self._render_health_signal(latest_view, items)
+        activity_html = self._render_activity_signal(activity)
+        recovery_html = "".join(
+            f"<li>{html.escape(str(item))}</li>" for item in recovery_actions
+        )
+        history_rows = "".join(
+            "".join(
+                [
+                    f"<li><b>{html.escape(str(entry_view.get('title') or 'workflow event'))}</b> ",
+                    f"{html.escape(str(entry_view.get('summary') or 'n/a'))}<br>",
+                    f"<span style=\"color:{self.scheme['col8']};\">",
+                    f"state={html.escape(str(entry_view.get('state') or 'n/a'))} | ",
+                    f"actor={html.escape(str(entry_view.get('actor') or 'n/a'))} | ",
+                    f"time={html.escape(str(entry_view.get('timestamp') or 'n/a'))}",
+                    "</span></li>",
+                ]
+            )
+            for entry_view in [self._summarize_workflow_entry(item) for item in items]
+        )
+        validation_errors = "".join(
+            f"<li>{html.escape(str(item))}</li>"
+            for item in (validation.get("errors") or [])[:5]
+        )
+        error_html = f"<p>{html.escape(str(error))}</p>" if error else ""
+        latest_html = "".join(
+            [
+                f"<p><b>Latest:</b> {html.escape(str(latest_view.get('title') or 'n/a'))}<br>",
+                f"{html.escape(str(latest_view.get('summary') or 'n/a'))}<br>",
+                f"<span style=\"color:{self.scheme['col8']};\">state={html.escape(str(latest_view.get('state') or 'n/a'))} | workflow={html.escape(str(latest_view.get('workflow_name') or 'n/a'))} | actor={html.escape(str(latest_view.get('actor') or 'n/a'))}</span></p>",
+            ]
+        ) if latest else f"<p>{html.escape(empty_message)}</p>"
+        return "".join(
+            [
+                f"<h3>{html.escape(title)}</h3>",
+                error_html,
+                manifest_html,
+                latest_html,
+                latest_health_html,
+                activity_html,
+                "<h4>Recent History</h4>",
+                f"<ul>{history_rows or f'<li>{html.escape(empty_message)}</li>'}</ul>",
+                "<h4>Recovery</h4>",
+                f"<ul>{recovery_html or '<li>No immediate operator action suggested.</li>'}</ul>",
+                "<h4>Validation</h4>",
+                f"<p>{self._render_bool_chip(bool(validation.get('valid', True)))}</p>",
+                f"<ul>{validation_errors or '<li>No validation errors reported.</li>'}</ul>",
+            ]
+        )
+
+    def _summarize_workflow_entry(self, entry: dict[str, Any] | None) -> dict[str, str]:
+        if not isinstance(entry, dict):
+            return {}
+
+        workflow = entry.get("workflow") if isinstance(entry.get("workflow"), dict) else {}
+        snapshot_view = workflow.get("snapshot_view") if isinstance(workflow.get("snapshot_view"), dict) else {}
+        snapshot = workflow.get("snapshot") if isinstance(workflow.get("snapshot"), dict) else {}
+        actor = snapshot.get("actor") if isinstance(snapshot.get("actor"), dict) else {}
+        event = snapshot.get("event") if isinstance(snapshot.get("event"), dict) else {}
+
+        return {
+            "title": str(snapshot_view.get("title") or workflow.get("current_state") or entry.get("event_name") or "workflow event"),
+            "summary": str(snapshot_view.get("summary") or event.get("name") or workflow.get("workflow_name") or "n/a"),
+            "state": str(snapshot_view.get("state") or workflow.get("current_state") or entry.get("state") or "n/a"),
+            "workflow_name": str(snapshot_view.get("workflow_name") or workflow.get("workflow_name") or entry.get("workflow_name") or "n/a"),
+            "actor": str(snapshot_view.get("actor_name") or actor.get("name") or entry.get("agent_label") or "n/a"),
+            "timestamp": str(entry.get("timestamp") or workflow.get("updated_at") or snapshot.get("timestamp") or "n/a"),
+            "retry_attempts": str((workflow.get("retry") or {}).get("attempt_count") or 0),
+            "retry_remaining": str((workflow.get("retry") or {}).get("remaining_attempts") or 0),
+            "retry_exhausted": str(bool((workflow.get("retry") or {}).get("exhausted"))),
+        }
+
+    def _derive_activity_signal(self, latest_view: dict[str, str]) -> dict[str, Any]:
+        timestamp = self._parse_timestamp(latest_view.get("timestamp"))
+        if timestamp is None:
+            return {
+                "last_seen": "unknown",
+                "age_minutes": None,
+                "escalation": "unknown",
+                "chip_color": "#7a6f4b",
+                "detail": "No reliable timestamp is available for this workflow focus.",
+            }
+
+        age_seconds = max((datetime.now(timezone.utc) - timestamp).total_seconds(), 0.0)
+        age_minutes = int(age_seconds // 60)
+        if age_minutes >= 60:
+            escalation = "critical"
+            chip_color = "#b04848"
+        elif age_minutes >= 15:
+            escalation = "elevated"
+            chip_color = "#b36b2c"
+        elif age_minutes >= 5:
+            escalation = "watch"
+            chip_color = "#7a6f4b"
+        else:
+            escalation = "fresh"
+            chip_color = self.scheme["col1"]
+
+        return {
+            "last_seen": timestamp.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%SZ"),
+            "age_minutes": age_minutes,
+            "escalation": escalation,
+            "chip_color": chip_color,
+            "detail": f"Last workflow activity was {self._format_elapsed(age_seconds)} ago.",
+        }
+
+    def _render_activity_signal(self, activity: dict[str, Any]) -> str:
+        age_minutes = activity.get("age_minutes")
+        age_label = f"{age_minutes} min" if isinstance(age_minutes, int) else "n/a"
+        return "".join(
+            [
+                "<h4>Activity</h4>",
+                f"<p><b>Last seen:</b> {html.escape(str(activity.get('last_seen') or 'unknown'))}</p>",
+                f"<p><b>Inactivity:</b> {html.escape(age_label)} | <b>Escalation:</b> {self._render_status_chip(str(activity.get('escalation') or 'unknown'), str(activity.get('chip_color') or '#7a6f4b'))}</p>",
+                f"<p>{html.escape(str(activity.get('detail') or ''))}</p>",
+            ]
+        )
+
+    def _derive_recovery_actions(
+        self,
+        latest_view: dict[str, str],
+        items: list[dict[str, Any]],
+        manifest: dict[str, Any] | None,
+        activity: dict[str, Any],
+    ) -> list[str]:
+        actions: list[str] = []
+        state_text = str(latest_view.get("state") or "").lower()
+        summary_text = str(latest_view.get("summary") or "").lower()
+        workflow_name = str((manifest or {}).get("workflow_name") or latest_view.get("workflow_name") or "workflow")
+        retry_exhausted = str(latest_view.get("retry_exhausted") or "False").lower() == "true"
+        retry_remaining = int(str(latest_view.get("retry_remaining") or 0) or 0)
+        age_minutes = activity.get("age_minutes")
+
+        if retry_exhausted:
+            actions.append(f"Retry budget for {workflow_name} is exhausted. Re-run the originating request or raise the retry policy ceiling before restarting.")
+        elif "retry" in state_text and retry_remaining > 0:
+            actions.append(f"Workflow is in a retry state with {retry_remaining} attempts left. Inspect the last tool failure before forcing another run.")
+
+        if any(token in state_text for token in ("failed", "error", "blocked")) or any(token in summary_text for token in ("failed", "error", "blocked")):
+            actions.append("Latest state indicates failure or blockage. Probe queue and dispatcher first, then trigger a fresh workflow run from the originating agent.")
+
+        if isinstance(age_minutes, int) and age_minutes >= 15:
+            actions.append("Workflow focus is stale. Compare the last activity timestamp with current queue health and confirm whether the session is abandoned.")
+
+        if manifest and str(manifest.get("workflow_name") or "") == "unassigned":
+            actions.append("Selected agent is not bound to a workflow definition. Assign a workflow before expecting runtime transitions.")
+
+        if not items:
+            actions.append("No history entries are projected for this focus. Start or replay a workflow run to establish runtime evidence.")
+
+        return actions[:4]
+
+    def _parse_timestamp(self, value: Any) -> datetime | None:
+        raw = str(value or "").strip()
+        if not raw or raw == "n/a":
+            return None
+        try:
+            if raw.endswith("Z"):
+                return datetime.fromisoformat(raw.replace("Z", "+00:00"))
+            parsed = datetime.fromisoformat(raw)
+            return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+
+    def _format_elapsed(self, age_seconds: float) -> str:
+        if age_seconds < 60:
+            return f"{int(age_seconds)}s"
+        if age_seconds < 3600:
+            return f"{int(age_seconds // 60)}m"
+        hours = int(age_seconds // 3600)
+        minutes = int((age_seconds % 3600) // 60)
+        return f"{hours}h {minutes}m"
+
+    def _render_health_signal(self, latest_view: dict[str, str], items: list[dict[str, Any]]) -> str:
+        state_text = str(latest_view.get("state") or "").lower()
+        summary_text = str(latest_view.get("summary") or "")
+        if not latest_view:
+            return f"<p><b>Health:</b> {self._render_status_chip('cold', '#7a6f4b')}</p>"
+
+        if any(token in state_text for token in ("fail", "error", "blocked")):
+            return f"<p><b>Health:</b> {self._render_status_chip('attention', '#b04848')} {html.escape(summary_text)}</p>"
+
+        if len(items) <= 1:
+            return f"<p><b>Health:</b> {self._render_status_chip('warming', '#7a6f4b')} recent history is still sparse</p>"
+
+        return f"<p><b>Health:</b> {self._render_status_chip('stable', self.scheme['col1'])} workflow transitions are present</p>"
+
+    def _run_operator_health_checks(self) -> None:
+        try:
+            snapshot = self._load_operator_snapshot()
+            self._last_snapshot["operations"] = snapshot
+            self._render_operator_snapshot(snapshot)
+            self._append_operator_log("Health checks refreshed.")
+        except Exception as exc:
+            self._append_operator_log(f"Health checks failed: {type(exc).__name__}: {exc}")
+
+    def _probe_queue_health(self) -> None:
+        try:
+            try:
+                if __package__:
+                    from .webapp.jobs import get_queue_health  # type: ignore
+                else:
+                    from alde.webapp.jobs import get_queue_health  # type: ignore
+            except ImportError as exc:
+                msg = str(exc)
+                if "attempted relative import" in msg or "no known parent package" in msg:
+                    from webapp.jobs import get_queue_health  # type: ignore
+                else:
+                    raise
+
+            queue_backend, queue_healthy = get_queue_health()
+            self._append_operator_log(
+                f"Queue probe: backend={queue_backend} healthy={queue_healthy}"
+            )
+            operations = dict(self._last_snapshot.get("operations") or {})
+            operations.update({"queue_backend": queue_backend, "queue_healthy": bool(queue_healthy)})
+            self._last_snapshot["operations"] = operations
+            self._render_operator_snapshot(operations)
+        except Exception as exc:
+            self._append_operator_log(f"Queue probe failed: {type(exc).__name__}: {exc}")
+
+    def _probe_dispatcher_health(self) -> None:
+        try:
+            try:
+                if __package__:
+                    from .tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
+                else:
+                    from alde.tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
+            except ImportError as exc:
+                msg = str(exc)
+                if "attempted relative import" in msg or "no known parent package" in msg:
+                    from tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
+                else:
+                    raise
+
+            dispatcher_db_path = _default_dispatcher_db_path()
+            dispatcher_error = DOCUMENT_DISPATCH_SERVICE.check_dispatcher_access(
+                resolved_db_path=dispatcher_db_path
+            )
+            operations = dict(self._last_snapshot.get("operations") or {})
+            operations.update(
+                {
+                    "dispatcher_db_path": dispatcher_db_path,
+                    "dispatcher_healthy": dispatcher_error is None,
+                    "dispatcher_error": dispatcher_error,
+                }
+            )
+            self._last_snapshot["operations"] = operations
+            self._render_operator_snapshot(operations)
+            if dispatcher_error is None:
+                self._append_operator_log(f"Dispatcher probe passed: {dispatcher_db_path}")
+            else:
+                self._append_operator_log(f"Dispatcher probe failed: {dispatcher_error}")
+        except Exception as exc:
+            self._append_operator_log(f"Dispatcher probe failed: {type(exc).__name__}: {exc}")
+
+    def _repair_dispatcher_store(self) -> None:
+        try:
+            result = self._repair_dispatcher_store_path()
+            operations = dict(self._last_snapshot.get("operations") or {})
+            operations.update(
+                {
+                    "dispatcher_db_path": result.get("dispatcher_db_path"),
+                    "dispatcher_healthy": bool(result.get("dispatcher_healthy")),
+                    "dispatcher_error": result.get("dispatcher_error"),
+                }
+            )
+            self._last_snapshot["operations"] = operations
+            self._render_operator_snapshot(operations)
+            backup_text = f" backup={result.get('backup_path')}" if result.get("backup_path") else ""
+            self._append_operator_log(f"Dispatcher repair completed:{backup_text}")
+        except Exception as exc:
+            self._append_operator_log(f"Dispatcher repair failed: {type(exc).__name__}: {exc}")
+
+    def _repair_dispatcher_store_path(self, dispatcher_db_path: str | None = None) -> dict[str, Any]:
+        try:
+            if __package__:
+                from .tools import DOCUMENT_DISPATCH_SERVICE, DOCUMENT_REPOSITORY, _default_dispatcher_db_path  # type: ignore
+            else:
+                from alde.tools import DOCUMENT_DISPATCH_SERVICE, DOCUMENT_REPOSITORY, _default_dispatcher_db_path  # type: ignore
+        except ImportError as exc:
+            msg = str(exc)
+            if "attempted relative import" in msg or "no known parent package" in msg:
+                from tools import DOCUMENT_DISPATCH_SERVICE, DOCUMENT_REPOSITORY, _default_dispatcher_db_path  # type: ignore
+            else:
+                raise
+
+        resolved_path = str(dispatcher_db_path or _default_dispatcher_db_path())
+        backup_path: str | None = None
+        if os.path.isfile(resolved_path):
+            backup_path = f"{resolved_path}.{datetime.now().strftime('%Y%m%d_%H%M%S')}.bak"
+            shutil.copy2(resolved_path, backup_path)
+
+        db = DOCUMENT_REPOSITORY.load_db(resolved_path, db_name="dispatcher_documents")
+        if not isinstance(db, dict):
+            db = {"schema": "dispatcher_doc_db_v1", "documents": {}}
+        if not isinstance(db.get("documents"), dict):
+            db["documents"] = {}
+        if not str(db.get("schema") or "").strip():
+            db["schema"] = "dispatcher_doc_db_v1"
+        DOCUMENT_REPOSITORY.save_db(resolved_path, db, db_name="dispatcher_documents")
+
+        dispatcher_error = DOCUMENT_DISPATCH_SERVICE.check_dispatcher_access(
+            resolved_db_path=resolved_path
+        )
+        return {
+            "dispatcher_db_path": resolved_path,
+            "dispatcher_healthy": dispatcher_error is None,
+            "dispatcher_error": dispatcher_error,
+            "backup_path": backup_path,
+        }
+
+    def _probe_mcp_health(self) -> None:
+        try:
+            probe = self._run_mcp_health_probe()
+            operations = dict(self._last_snapshot.get("operations") or {})
+            operations["mcp_probe"] = probe
+            self._last_snapshot["operations"] = operations
+            self._render_operator_snapshot(operations)
+            if probe.get("ok"):
+                self._append_operator_log("MCP probe passed.")
+            else:
+                self._append_operator_log(
+                    f"MCP probe failed: {str(probe.get('stderr') or probe.get('stdout') or 'unknown error')[:180]}"
+                )
+        except Exception as exc:
+            self._append_operator_log(f"MCP probe failed: {type(exc).__name__}: {exc}")
+
+    def _run_mcp_health_probe(self) -> dict[str, Any]:
+        probe_path = Path(__file__).with_name("mcp_health.py")
+        if not probe_path.is_file():
+            return {
+                "ok": False,
+                "returncode": None,
+                "stdout": "",
+                "stderr": f"{probe_path.name} not found",
+            }
+
+        completed = subprocess.run(
+            [sys.executable, str(probe_path)],
+            capture_output=True,
+            text=True,
+            timeout=12,
+            cwd=str(probe_path.parent),
+        )
+        return {
+            "ok": completed.returncode == 0,
+            "returncode": completed.returncode,
+            "stdout": (completed.stdout or "").strip(),
+            "stderr": (completed.stderr or "").strip(),
+        }
+
+    def _export_runtime_snapshot_report(self) -> None:
+        try:
+            if __package__:
+                from .runtime_view import export_runtime_view  # type: ignore
+            else:
+                from alde.runtime_view import export_runtime_view  # type: ignore
+        except ImportError as exc:
+            msg = str(exc)
+            if "attempted relative import" in msg or "no known parent package" in msg:
+                from runtime_view import export_runtime_view  # type: ignore
+            else:
+                raise
+
+        try:
+            export_path = export_runtime_view(event_limit=80)
+            self._append_operator_log(f"Runtime snapshot exported to {export_path}")
+            QMessageBox.information(self, "Runtime Snapshot", f"Runtime snapshot exported to:\n{export_path}")
+        except Exception as exc:
+            self._append_operator_log(f"Runtime export failed: {type(exc).__name__}: {exc}")
+            QMessageBox.warning(self, "Runtime Snapshot", f"Export failed:\n{type(exc).__name__}: {exc}")
+
+    def _append_operator_log(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self._operator_log_entries.append(f"{timestamp} | {message}")
+        self._operator_log_entries = self._operator_log_entries[-12:]
+        self._render_operator_log()
+
+    def _render_operator_log(self) -> None:
+        action_rows = "".join(
+            f"<li>{html.escape(str(item))}</li>" for item in reversed(self._operator_log_entries)
+        )
+        activity_items = []
+        if isinstance(self._last_snapshot, dict):
+            activity_items = list(((self._last_snapshot.get("operations") or {}).get("activity_items") or []))
+        activity_rows = "".join(
+            "".join(
+                [
+                    f"<li><b>{html.escape(str(item.get('timestamp') or 'n/a'))}</b> ",
+                    f"[{html.escape(str(item.get('source') or 'ops'))}] ",
+                    f"{html.escape(str(item.get('title') or 'event'))}<br>",
+                    f"<span style=\"color:{self.scheme['col8']};\">{html.escape(str(item.get('summary') or ''))}</span></li>",
+                ]
+            )
+            for item in activity_items
+        )
+        self.operator_log_view.setHtml(
+            "<h3>Operator Actions</h3>"
+            + (f"<ul>{action_rows}</ul>" if action_rows else "<p>No operator actions executed yet.</p>")
+            + "<h4>Unified Activity Feed</h4>"
+            + (f"<ul>{activity_rows}</ul>" if activity_rows else "<p>No desktop or webapp activity recorded yet.</p>")
+        )
+
+    def _render_status_chip(self, label: str, color: str) -> str:
+        return (
+            f"<span style=\"display:inline-block;padding:2px 8px;border-radius:999px;"
+            f"background:{color};color:{self.scheme['col7']};font-weight:600;\">{html.escape(label)}</span>"
+        )
+
+    def _set_metric_value(self, key: str, value: Any) -> None:
+        label = self._metric_labels.get(key)
+        if label is not None:
+            label.setText(str(value))
+
+    def _render_bool_chip(self, value: bool) -> str:
+        chip_color = self.scheme["col1"] if value else "#b04848"
+        chip_text = "ready" if value else "missing"
+        return (
+            f"<span style=\"display:inline-block;padding:2px 8px;border-radius:999px;"
+            f"background:{chip_color};color:{self.scheme['col7']};font-weight:600;\">{chip_text}</span>"
+        )
+
 class MainAIEditor(QMainWindow):
     ORG_NAME: Final = "ai.bentu"
 
@@ -2391,6 +3890,22 @@ class MainAIEditor(QMainWindow):
                 self.explorer.set_background_color(scheme.get("col9", "#1D1D1D"))
                 # Keep explorer icons/markers in sync with the current accent
                 self.explorer.set_accent_color(scheme.get("col1", "#3a5fff"))
+
+        disable_control_plane = _env_truthy("AI_IDE_DISABLE_CONTROL_PLANE", "0")
+        self.control_plane_dock = QDockWidget("Control Plane", self)
+        self.control_plane_dock.setObjectName("ControlPlaneDock")
+        self.control_plane_dock.setTitleBarWidget(QWidget())
+        self.control_plane_dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
+        self.control_plane_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
+        if not disable_control_plane:
+            self.control_plane_widget = ControlPlaneWidget(self._accent, self._base, self)
+            self.control_plane_dock.setWidget(self.control_plane_widget)
+        else:
+            self.control_plane_widget = None
+            self.control_plane_dock.setWidget(QWidget())
+        if self.control_plane_widget is not None:
+            self.control_plane_widget.snapshotChanged.connect(self._update_control_plane_status)
+            self.control_plane_widget.refresh_view()
     
     def _initialize_explorer_workspace(self):
         """Initialize example workspace structure in the explorer."""
@@ -2419,6 +3934,11 @@ class MainAIEditor(QMainWindow):
 
         disable_console = _env_truthy("AI_IDE_DISABLE_CONSOLE", "0")
         disable_tabs = _env_truthy("AI_IDE_DISABLE_TABS", "0")
+        disable_control_plane = _env_truthy("AI_IDE_DISABLE_CONTROL_PLANE", "0")
+
+        if not disable_control_plane:
+            self._strip_dock_decoration(self.control_plane_dock)
+            self.right_split.addWidget(self.control_plane_dock)
 
         if not disable_console:
             self._create_console_dock()      # unten
@@ -2430,14 +3950,18 @@ class MainAIEditor(QMainWindow):
             self._strip_dock_decoration(self.console_dock)
             self.right_split.addWidget(self.console_dock)
 
+        if not disable_control_plane and hasattr(self, "console_dock"):
+            self.console_dock.hide()
+
         if not disable_tabs:
             self._add_initial_tab_dock()     # oben
         else:
             tabs_placeholder = QTextEdit("Tabs disabled (AI_IDE_DISABLE_TABS=1)")
             self.right_split.addWidget(tabs_placeholder)
 
-        self.right_split.setStretchFactor(0, 3)
-        self.right_split.setStretchFactor(1, 1)
+        self.right_split.setStretchFactor(0, 4)
+        self.right_split.setStretchFactor(1, 2)
+        self.right_split.setStretchFactor(2, 1)
 
         # ----------- linker horizontaler Splitter ------------------------
 
@@ -2537,6 +4061,24 @@ class MainAIEditor(QMainWindow):
 
         self.act_toggle_chat.setToolTip("AI-Chat anzeigen/ausblenden")
 
+        self.act_toggle_control_plane = QAction(
+            sty.standardIcon(QStyle.SP_FileDialogDetailedView),
+            "Control Plane",
+            self,
+            checkable=True,
+            checked=True,
+        )
+        self.act_toggle_control_plane.setToolTip("Configuration- und Monitoring-Panel anzeigen/ausblenden")
+        self.act_toggle_control_plane.toggled.connect(self.control_plane_dock.setVisible)
+
+        self.act_refresh_control_plane = QAction(
+            sty.standardIcon(QStyle.SP_BrowserReload),
+            "Refresh Control Plane",
+            self,
+            triggered=self._refresh_control_plane,
+        )
+        self.act_refresh_control_plane.setToolTip("Control Plane aktualisieren")
+
         # ---------- Sichtbarkeit verknüpfen --------- # <– 10.07.2025 --------
         self.act_toggle_chat.toggled.connect(self.chat_dock.setVisible)
 
@@ -2583,7 +4125,7 @@ class MainAIEditor(QMainWindow):
         self.act_toggle_console = QAction(
             _icon("console.svg"),                    # Symbols/console.svg
             "Console", self,
-            checkable=True, checked=True
+            checkable=True, checked=False
             )
         
         self.act_toggle_console.setToolTip("Konsole anzeigen")      
@@ -2674,7 +4216,9 @@ class MainAIEditor(QMainWindow):
             self.act_open,
             self.act_toggle_accent,
             self.act_toggle_chat,
+            self.act_toggle_control_plane,
             self.act_clone_tabdock,
+            self.act_refresh_control_plane,
             self.act_toggle_console,
             self.act_save_tab,
             self.act_save_tab_as
@@ -2748,6 +4292,7 @@ class MainAIEditor(QMainWindow):
         action_list: list = \
             [
              self.act_toggle_chat,                        # <– 10.07.2025 
+             self.act_toggle_control_plane,
              self.act_toggle_explorer,
              self.act_toggle_tabdock,
              self.act_toggle_console,
@@ -2767,16 +4312,27 @@ class MainAIEditor(QMainWindow):
         
         tools = mbar.addMenu("Tools")
         tools.addAction(self.act_clone_tabdock)
+        tools.addSeparator()
+        tools.addAction(self.act_refresh_control_plane)
    
     # ================================================= status =============
     
     def _create_status(self):
         st = QStatusBar(self)
         st.showMessage("Ready")
+        self._st_agents = QLabel("0 agents")
+        self._st_workflows = QLabel("0 workflows")
+        self._st_sessions = QLabel("0 signals")
+        self._st_runtime = QLabel("runtime n/a")
+        st.addPermanentWidget(self._st_agents)
+        st.addPermanentWidget(self._st_workflows)
+        st.addPermanentWidget(self._st_sessions)
+        st.addPermanentWidget(self._st_runtime)
         # permanenter Encoding-Indikator
         self._st_enc = QLabel("UTF-8")
         st.addPermanentWidget(self._st_enc)
         self.setStatusBar(st)
+        self._update_control_plane_status(getattr(getattr(self, "control_plane_widget", None), "_last_snapshot", {}))
 
     # ================================================= misc helpers =======
     
@@ -2789,12 +4345,47 @@ class MainAIEditor(QMainWindow):
             )
         self.chat_dock.visibilityChanged.connect(        #  << NEU
             self.act_toggle_chat.setChecked)
+        self.control_plane_dock.visibilityChanged.connect(
+            self.act_toggle_control_plane.setChecked
+        )
 
         if hasattr(self, "act_toggle_right_dock"):
             self.chat_dock.visibilityChanged.connect(self.act_toggle_right_dock.setChecked)
             self.chat_dock.visibilityChanged.connect(self._update_right_dock_icon)
             # Initialize icon state
             self._update_right_dock_icon(self.chat_dock.isVisible())
+
+    @Slot()
+    def _refresh_control_plane(self) -> None:
+        if getattr(self, "control_plane_widget", None) is None:
+            self.statusBar().showMessage("Control Plane disabled", 2500)
+            return
+        self.control_plane_widget.refresh_view()
+        self.statusBar().showMessage("Control Plane refreshed", 2500)
+
+    def _update_control_plane_status(self, snapshot: dict[str, Any] | None) -> None:
+        configuration_snapshot = (snapshot or {}).get("configuration") if isinstance(snapshot, dict) else {}
+        monitoring_snapshot = (snapshot or {}).get("monitoring") if isinstance(snapshot, dict) else {}
+        if hasattr(self, "_st_agents"):
+            self._st_agents.setText(f"{int((configuration_snapshot or {}).get('agent_count') or 0)} agents")
+        if hasattr(self, "_st_workflows"):
+            self._st_workflows.setText(f"{int((configuration_snapshot or {}).get('workflow_count') or 0)} workflows")
+        if hasattr(self, "_st_sessions"):
+            self._st_sessions.setText(f"{int((monitoring_snapshot or {}).get('signal_count') or 0)} signals")
+        if hasattr(self, "_st_runtime"):
+            failure_count = int((monitoring_snapshot or {}).get("failure_count") or 0)
+            local_failure_count = int((monitoring_snapshot or {}).get("local_failure_count") or 0)
+            local_active_count = int((monitoring_snapshot or {}).get("local_active_count") or 0)
+            source_count = int((monitoring_snapshot or {}).get("source_count") or 0)
+            if source_count <= 0:
+                runtime_text = "monitor idle"
+            elif failure_count == 0 and local_failure_count == 0 and local_active_count == 0:
+                runtime_text = "monitor linked"
+            elif failure_count == 0 and local_failure_count == 0:
+                runtime_text = f"{local_active_count} local active"
+            else:
+                runtime_text = f"{failure_count} failures"
+            self._st_runtime.setText(runtime_text)
 
     def _update_right_dock_icon(self, visible: bool) -> None:
         """Update the right-toolbar icon depending on dock visibility."""
@@ -2832,10 +4423,9 @@ class MainAIEditor(QMainWindow):
 
         self._strip_dock_decoration(dock)
 
-        # insert above console (console is guaranteed to exist now)
-
-        self.right_split.insertWidget(
-            max(0, self.right_split.indexOf(self.console_dock)), dock)
+        # Insert above the lower work-surface panel so tabs remain the primary focus.
+        anchor = self.control_plane_dock if self.right_split.indexOf(self.control_plane_dock) >= 0 else self.console_dock
+        self.right_split.insertWidget(max(0, self.right_split.indexOf(anchor)), dock)
 
         self._tab_docks.append(dock)
         dock.visibilityChanged.connect(
@@ -3257,12 +4847,14 @@ class MainAIEditor(QMainWindow):
         self._accent = SCHEME_GREEN if self._accent is SCHEME_BLUE else SCHEME_BLUE
         _apply_style(self, _build_scheme(self._accent, self._base))
         self._sync_explorer_scheme()
+        self._sync_control_plane_scheme()
 
     @Slot(bool)
     def _toggle_grey(self, on: bool):
         self._base = SCHEME_GREY if on else SCHEME_DARK
         _apply_style(self, _build_scheme(self._accent, self._base))
         self._sync_explorer_scheme()
+        self._sync_control_plane_scheme()
 
     def _sync_explorer_scheme(self) -> None:
         """Keep explorer colors/icons synced after scheme changes."""
@@ -3272,6 +4864,14 @@ class MainAIEditor(QMainWindow):
             scheme = _build_scheme(self._accent, self._base)
             self.explorer.set_background_color(scheme.get("col9", "#1D1D1D"))
             self.explorer.set_accent_color(scheme.get("col1", "#3a5fff"))
+        except Exception:
+            pass
+
+    def _sync_control_plane_scheme(self) -> None:
+        try:
+            if getattr(self, "control_plane_widget", None) is None:
+                return
+            self.control_plane_widget.update_scheme(self._accent, self._base)
         except Exception:
             pass
 
@@ -3304,10 +4904,11 @@ class MainAIEditor(QMainWindow):
         self._sync_explorer_scheme()
         
         self.chat_dock.setVisible(s.value("showChat", True,  bool))
+        self.control_plane_dock.setVisible(s.value("showControlPlane", True, bool))
 
         
         self.files_dock.setVisible(s.value("showExplorer", True,  bool))
-        self.console_dock.setVisible(s.value("showConsole",  True,  bool))
+        self.console_dock.setVisible(s.value("showConsole",  False,  bool))
         tab_on = s.value("showTabDock", True, bool)
         for d in self._tab_docks:
             d.setVisible(tab_on)
@@ -3342,6 +4943,7 @@ class MainAIEditor(QMainWindow):
         s.setValue("showExplorer", self.files_dock.isVisible())
         s.setValue("showConsole",  self.console_dock.isVisible())
         s.setValue("showChat", self.chat_dock.isVisible())   
+        s.setValue("showControlPlane", self.control_plane_dock.isVisible())
         s.setValue("showTabDock",  all(d.isVisible() for d in self._tab_docks))
 
         tabs: EditorTabs = self._tab_docks[0].widget()
@@ -3421,20 +5023,23 @@ def main() -> None:
     # This avoids starting a Qt event loop and is safe for terminal testing.
     #
     # Usage:
-    #   AI_IDE_ONE_SHOT_PROMPT='@_data_dispatcher ...' python alde/ai_ide_v1756.py
+    #   AI_IDE_ONE_SHOT_PROMPT='@_xplaner_xrouter ...' python alde/ai_ide_v1756.py
     # ------------------------------------------------------------------
     one_shot = os.getenv("AI_IDE_ONE_SHOT_PROMPT", "").strip()
     if one_shot:
         try:
-            # Import locally to keep Qt startup out of the path.
-            try:
-                from .agents_ccompletion import ChatCom  # type: ignore
-            except Exception:
-                from agents_ccompletion import ChatCom  # type: ignore
-
             model_name = os.getenv("AI_IDE_MODEL", "").strip() or "gpt-4.1-mini-2025-04-14"
-            reply = ChatCom(_model=model_name, _input_text=one_shot).get_response()
-            print(str(reply))
+            run = DESKTOP_AGENT_RUN_FACADE_SERVICE.run_object_sync(
+                request_kind="chat",
+                target_agent="_xplaner_xrouter",
+                prompt=one_shot,
+                attachments=[],
+                model_name=model_name,
+                metadata={"source": "one_shot"},
+            )
+            if run.error:
+                raise RuntimeError(run.error)
+            print(str(run.output or ""))
         except Exception as exc:
             print(f"[ONE_SHOT_ERROR] {exc}")
             raise

@@ -9,6 +9,13 @@ Rahmenannahmen fuer den aktuellen Stand:
 - `alde/agents_factory.py` und `alde/chat_completion.py` setzen diese Runtime-Policies bereits um.
 - Diese Task-Liste erweitert die bestehende manifestbasierte Runtime um Learning-, Policy- und Evaluationsschichten; sie ersetzt nicht mehr die Agent-Konfigurationsstruktur selbst.
 
+Aktueller Repo-Stand fuer den naechsten Ausbau:
+- `alde/runtime_events.py` definiert die ersten runtime-orientierten Eventobjekte fuer Query, Outcome, Tool-Call, Handoff und Workflow-State.
+- `alde/event_store.py` stellt einen JSONL-basierten Runtime-Event-Store bereit.
+- `alde/runtime_metrics.py` erzeugt Baseline-Metriken aus diesen Runtime-Events.
+- `alde/runtime_view.py` exportiert eine normalisierte Runtime-Sicht aus Learning-Events und ChatHistory nach `AppData/generated/`.
+- Die verbleibende Arbeit in dieser Liste betrifft die Integration dieser Bausteine in `alde/tools.py`, `alde/agents_factory.py` und `alde/chat_completion.py`.
+
 ## P0 - Instrumentierung und sichere Basis
 
 ### 1) Event-Schema definieren

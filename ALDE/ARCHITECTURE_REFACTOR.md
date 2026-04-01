@@ -12,6 +12,12 @@ The goal is to centralize agent, model, tool, role, and workflow configuration i
 
 This refactor started as a staged plan. The current runtime now already uses manifest-driven configuration, role policies, workflow definitions, and validation hooks from `alde/agents_config.py`.
 
+Migration note:
+
+- the active manifest runtime is now standardized to `_xplaner_xrouter` and `_xworker`
+- task specialization now happens through `job_name`, prompt configuration, and skill profiles
+- earlier single-purpose manifest agent labels are no longer the current runtime interface
+
 ## Current State
 
 Today, configuration concerns are split across multiple runtime modules:
@@ -22,6 +28,8 @@ Today, configuration concerns are split across multiple runtime modules:
 - runtime orchestration lives in `alde/agents_factory.py` and `alde/chat_completion.py`
 
 This works, but it mixes declarative configuration with runtime concerns and makes larger workflow changes harder to reason about.
+
+The current runtime surface is already narrower than the original refactor plan: planner/router behavior is owned by `_xplaner_xrouter`, and execution behavior is owned by `_xworker`.
 
 ## Target Architecture
 
@@ -166,6 +174,26 @@ This phase is intentionally decoupled from the implementation inside this reposi
 - `alde/plan to refactor.md` for the original planning notes
 - `AGENT_SEQUENCE_STATE_DIAGRAM.md` for the current sequence and state model
 - `AUTONOMOUS_MULTI_AGENT_ROADMAP.md` for the broader evolution path
+- `TARGET_ARCHITECTURE.md` for the next runtime layering target and phase-1 event scaffolding
+- `REQUEST_RESPONSE_HANDOFF_FLOW.md` for request, tool, and handoff flow visualization
+
+## Next Architectural Increment
+
+The next increment after the manifest and workflow refactor is to make runtime execution observable and easier to externalize.
+
+This repository now carries phase-1 scaffolding for that direction in:
+
+- `alde/runtime_events.py`
+- `alde/event_store.py`
+- `alde/runtime_metrics.py`
+
+These modules intentionally do not replace the current runtime. They define the first stable seam for:
+
+- runtime event contracts
+- JSONL-backed runtime event persistence
+- baseline runtime metrics and snapshots
+
+This keeps the current manifest-driven in-process runtime intact while preparing a future split between control plane, runtime plane, capability plane, and learning plane.
 
 ## Explicit Non-Goals
 

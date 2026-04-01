@@ -226,8 +226,8 @@ def vectordb_tool_rag(query: str, k: int = 5) -> Dict[str, Any]:
     """
     try:
         manager = get_global_rag_manager()
-        # Use primary agent context for shared RAG
-        context = manager.get_or_create_context("_primary_assistant")
+        # Use the planner/router context for shared RAG queries.
+        context = manager.get_or_create_context("_xplaner_xrouter")
         results = context.rag_system.retrieve(query, k=min(k, 50))
         
         if not results:
@@ -358,7 +358,7 @@ if __name__ == "__main__":
     
     for doc in sample_docs:
         success = manager.add_document_for_agent(
-            "_cover_letter_agent",
+            "_xworker",
             doc["content"],
             doc["source"],
             doc["title"]
@@ -368,7 +368,7 @@ if __name__ == "__main__":
     # Example 2: Retrieve context
     print("\n[Example 2] Retrieving context for query...")
     query = "How to write a compelling cover letter for a tech role"
-    context = manager.retrieve_for_agent("_cover_letter_agent", query, k=2)
+    context = manager.retrieve_for_agent("_xworker", query, k=2)
     print(f"Query: {query}")
     print(f"Results:\n{context[:300]}...")
     

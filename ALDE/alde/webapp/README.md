@@ -45,7 +45,8 @@ The webapp should consume stable runtime entrypoints and avoid introducing its o
 Current runtime assumptions:
 
 - Agent identity is manifest-driven from `alde/agents_config.py`
-- `_primary_assistant` is the interactive planner/router entrypoint
+- `_xplaner_xrouter` is the interactive planner/router entrypoint
+- `_xworker` is the only worker manifest; specialization is selected by `job_name`
 - Deterministic workflow state and validation live in the runtime, not in the web layer
 - The webapp should treat workflow status and validation as read-only operational views
 
@@ -105,7 +106,7 @@ curl -sS -X POST http://localhost:8080/api/v1/agents/runs \
   -H "Authorization: Bearer <TOKEN>" \
   -H 'Content-Type: application/json' \
   -d '{
-    "target_agent": "_primary_assistant",
+    "target_agent": "_xplaner_xrouter",
     "prompt": "Create deployment-test checklist for tenant ACME",
     "metadata": {"pipeline": "deploy-test-v1"}
   }'
@@ -117,7 +118,7 @@ curl -sS -X POST http://localhost:8080/api/v1/agents/runs \
 curl -sS -X POST http://localhost:8080/api/v1/agents/runs/async \
   -H "Authorization: Bearer <TOKEN>" \
   -H 'Content-Type: application/json' \
-  -d '{"target_agent":"_primary_assistant","prompt":"run async","metadata":{}}'
+  -d '{"target_agent":"_xplaner_xrouter","prompt":"run async","metadata":{}}'
 
 curl -sS -H "Authorization: Bearer <TOKEN>" \
   http://localhost:8080/api/v1/agents/jobs/<JOB_ID>
@@ -130,7 +131,7 @@ curl -sS -H "Authorization: Bearer <TOKEN>" \
   http://localhost:8080/api/v1/agents/workflows/validation
 
 curl -sS -H "Authorization: Bearer <TOKEN>" \
-  'http://localhost:8080/api/v1/agents/workflows/status?target_agent=_data_dispatcher&limit=10'
+  'http://localhost:8080/api/v1/agents/workflows/status?target_agent=_xworker&limit=10'
 ```
 
 6. Check queue and API health:

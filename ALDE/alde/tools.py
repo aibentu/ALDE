@@ -17,7 +17,7 @@ import time
 import uuid
 import importlib
 from pathlib import Path
-from typing import Callable, Any
+from typing import Callable, Any, Sequence
 from dataclasses import dataclass, field
 import multiprocessing
 from copy import deepcopy
@@ -67,6 +67,30 @@ except ImportError as e:  # allow running directly from the repository root
         from iter_documents import iter_documents
     else:
         raise
+
+
+def _noop_sync_retrieval_run_to_mongodb_knowledge(**_: Any) -> None:
+    return None
+
+
+def _noop_sync_parser_result_to_mongodb_knowledge(**_: Any) -> None:
+    return None
+
+
+try:
+    from .agents_dbs import (
+        sync_parser_result_to_mongodb_knowledge,
+        sync_retrieval_run_to_mongodb_knowledge,
+    )
+except Exception:
+    try:
+        from ALDE.alde.agents_dbs import (  # type: ignore
+            sync_parser_result_to_mongodb_knowledge,
+            sync_retrieval_run_to_mongodb_knowledge,
+        )
+    except Exception:
+        sync_retrieval_run_to_mongodb_knowledge = _noop_sync_retrieval_run_to_mongodb_knowledge
+        sync_parser_result_to_mongodb_knowledge = _noop_sync_parser_result_to_mongodb_knowledge
 
 
 def _shutdown_loky_executor() -> None:
@@ -260,12 +284,16 @@ def _default_document_db_path(obj: str) -> str:
 _DOCUMENT_SECTION_KEYS: dict[str, str] = {
     "job_postings": "job_posting",
     "profiles": "profile",
+    "cover_letters": "cover_letter",
+    "agent_system_configs": "agent_system_config",
 }
 
 
 _DOCUMENT_DEFAULT_AGENTS: dict[str, str] = {
-    "job_postings": "job_posting_parser",
-    "profiles": "profile_parser",
+    "job_postings": "xworker",
+    "profiles": "xworker",
+    "cover_letters": "xworker",
+    "agent_system_configs": "xworker",
 }
 
 
@@ -299,6 +327,186 @@ def _extract_document_section(result_payload: dict[str, Any], resolved_obj: str)
     return {}
 
 
+@dataclass(frozen=True)
+class MongoDocumentBackendConfig:
+    mongo_uri: str
+    database_name: str
+
+
+class MongoDocumentBackend:
+    def __init__(self, config: MongoDocumentBackendConfig) -> None:
+        pymongo_module = importlib.import_module("pymongo")
+        mongo_client_class = getattr(pymongo_module, "MongoClient", None)
+        if mongo_client_class is None:
+            raise RuntimeError("pymongo is required to use the MongoDB document backend")
+        self._config = config
+        self._client = mongo_client_class(config.mongo_uri)
+        self._database = self._client[config.database_name]
+
+    @classmethod
+    def load_from_env(cls) -> "MongoDocumentBackend | None":
+        mongo_uri = str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_URI", "")).strip()
+        if not mongo_uri:
+            return None
+        database_name = str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_DB", "alde_knowledge")).strip() or "alde_knowledge"
+        return cls(MongoDocumentBackendConfig(mongo_uri=mongo_uri, database_name=database_name))
+
+    def _collection_name(self, *, db_name: str | None = None, obj_name: str | None = None) -> str:
+        normalized_db_name = str(db_name or "").strip().lower()
+        if normalized_db_name:
+            return normalized_db_name
+        return _normalize_document_obj_name(obj_name)
+
+    def _build_object_id(self, *, collection_name: str, storage_key: str, record_id: str) -> str:
+        return f"{collection_name}::{storage_key}::{record_id}"
+
+    def _serialize_record(
+        self,
+        *,
+        collection_name: str,
+        storage_key: str,
+        record_id: str,
+        record_value: dict[str, Any],
+    ) -> dict[str, Any]:
+        payload = deepcopy(record_value)
+        payload["_id"] = self._build_object_id(
+            collection_name=collection_name,
+            storage_key=storage_key,
+            record_id=record_id,
+        )
+        payload["_storage_key"] = storage_key
+        payload["_record_id"] = record_id
+        return payload
+
+    def _deserialize_record(self, raw_record: dict[str, Any] | None) -> dict[str, Any] | None:
+        if not isinstance(raw_record, dict):
+            return None
+        record = dict(raw_record)
+        record.pop("_id", None)
+        record.pop("_storage_key", None)
+        record.pop("_record_id", None)
+        return record
+
+    def load_db(
+        self,
+        *,
+        storage_key: str,
+        empty_db: dict[str, Any],
+        db_name: str | None = None,
+        obj_name: str | None = None,
+        root_key: str,
+    ) -> dict[str, Any]:
+        collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        records = self._database[collection_name].find({"_storage_key": storage_key})
+        db = deepcopy(empty_db)
+        db[root_key] = {}
+        for raw_record in records:
+            if not isinstance(raw_record, dict):
+                continue
+            record_id = str(raw_record.get("_record_id") or "").strip()
+            if not record_id:
+                continue
+            deserialized = self._deserialize_record(raw_record)
+            if deserialized is not None:
+                db[root_key][record_id] = deserialized
+        return db
+
+    def save_db(
+        self,
+        *,
+        storage_key: str,
+        db: dict[str, Any],
+        db_name: str | None = None,
+        obj_name: str | None = None,
+        root_key: str,
+    ) -> None:
+        collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        collection = self._database[collection_name]
+        root_payload = db.get(root_key) if isinstance(db, dict) else None
+        records = root_payload if isinstance(root_payload, dict) else {}
+        incoming_ids = {str(record_id) for record_id in records.keys()}
+        existing_cursor = collection.find({"_storage_key": storage_key}, {"_record_id": 1})
+        existing_ids = {
+            str(item.get("_record_id") or "").strip()
+            for item in existing_cursor
+            if isinstance(item, dict) and str(item.get("_record_id") or "").strip()
+        }
+
+        for record_id, record_value in records.items():
+            if not isinstance(record_value, dict):
+                continue
+            serialized = self._serialize_record(
+                collection_name=collection_name,
+                storage_key=storage_key,
+                record_id=str(record_id),
+                record_value=record_value,
+            )
+            collection.update_one({"_id": serialized["_id"]}, {"$set": serialized}, upsert=True)
+
+        stale_ids = sorted(existing_ids - incoming_ids)
+        if stale_ids:
+            collection.delete_many({"_storage_key": storage_key, "_record_id": {"$in": stale_ids}})
+        if not incoming_ids and existing_ids:
+            collection.delete_many({"_storage_key": storage_key})
+
+    def load_record(
+        self,
+        *,
+        storage_key: str,
+        record_id: str,
+        db_name: str | None = None,
+        obj_name: str | None = None,
+    ) -> dict[str, Any] | None:
+        collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        raw_record = self._database[collection_name].find_one(
+            {
+                "_id": self._build_object_id(
+                    collection_name=collection_name,
+                    storage_key=storage_key,
+                    record_id=record_id,
+                )
+            }
+        )
+        return self._deserialize_record(raw_record if isinstance(raw_record, dict) else None)
+
+    def upsert_record(
+        self,
+        *,
+        storage_key: str,
+        record_id: str,
+        record_value: dict[str, Any],
+        db_name: str | None = None,
+        obj_name: str | None = None,
+    ) -> None:
+        collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        serialized = self._serialize_record(
+            collection_name=collection_name,
+            storage_key=storage_key,
+            record_id=record_id,
+            record_value=record_value,
+        )
+        self._database[collection_name].update_one({"_id": serialized["_id"]}, {"$set": serialized}, upsert=True)
+
+    def delete_record(
+        self,
+        *,
+        storage_key: str,
+        record_id: str,
+        db_name: str | None = None,
+        obj_name: str | None = None,
+    ) -> None:
+        collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        self._database[collection_name].delete_one(
+            {
+                "_id": self._build_object_id(
+                    collection_name=collection_name,
+                    storage_key=storage_key,
+                    record_id=record_id,
+                )
+            }
+        )
+
+
 def _payload_value(payload: dict[str, Any], key: str) -> Any:
     current: Any = payload
     for segment in str(key or "").split("."):
@@ -312,6 +520,10 @@ def _payload_value(payload: dict[str, Any], key: str) -> Any:
 
 class DocumentRepository:
     _DISPATCHER_DB_NAMES = {"dispatcher", "dispatcher_db", "dispatcher_documents"}
+
+    def __init__(self) -> None:
+        self._mongo_backend: MongoDocumentBackend | None = None
+        self._mongo_backend_loaded = False
 
     def normalize_db_name(self, db_name: str | None = None, obj_name: str | None = None) -> str:
         normalized_db_name = str(db_name or "").strip().lower()
@@ -334,6 +546,19 @@ class DocumentRepository:
         resolved_obj_name = self._resolve_obj_name(db_name=normalized_db_name, obj_name=obj_name)
         return {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}}
 
+    def _load_mongo_backend(self) -> MongoDocumentBackend | None:
+        if self._mongo_backend_loaded:
+            return self._mongo_backend
+        self._mongo_backend_loaded = True
+        try:
+            self._mongo_backend = MongoDocumentBackend.load_from_env()
+        except Exception:
+            self._mongo_backend = None
+        return self._mongo_backend
+
+    def _use_mongo_backend(self) -> bool:
+        return self._load_mongo_backend() is not None
+
     def _resolve_db_path(self, db_path: str | None = None, *, db_name: str | None = None, obj_name: str | None = None) -> str:
         if db_path:
             return os.path.abspath(os.path.expanduser(str(db_path)))
@@ -347,6 +572,15 @@ class DocumentRepository:
         resolved_db_path = self._resolve_db_path(db_path, db_name=db_name, obj_name=obj_name)
         empty_db = self._build_db(db_name=db_name, obj_name=obj_name)
         root_key = "documents" if self.normalize_db_name(db_name=db_name, obj_name=obj_name) == "dispatcher_documents" else self._resolve_obj_name(db_name=db_name, obj_name=obj_name)
+        mongo_backend = self._load_mongo_backend()
+        if mongo_backend is not None:
+            return mongo_backend.load_db(
+                storage_key=resolved_db_path,
+                empty_db=empty_db,
+                db_name=db_name,
+                obj_name=obj_name,
+                root_key=root_key,
+            )
         if not os.path.exists(resolved_db_path):
             return empty_db
         raw = _load_json_file(resolved_db_path)
@@ -356,6 +590,17 @@ class DocumentRepository:
 
     def save_db(self, db_path: str | None, db: dict[str, Any], *, db_name: str | None = None, obj_name: str | None = None) -> str:
         resolved_db_path = self._resolve_db_path(db_path, db_name=db_name, obj_name=obj_name)
+        mongo_backend = self._load_mongo_backend()
+        if mongo_backend is not None:
+            root_key = "documents" if self.normalize_db_name(db_name=db_name, obj_name=obj_name) == "dispatcher_documents" else self._resolve_obj_name(db_name=db_name, obj_name=obj_name)
+            mongo_backend.save_db(
+                storage_key=resolved_db_path,
+                db=db,
+                db_name=db_name,
+                obj_name=obj_name,
+                root_key=root_key,
+            )
+            return resolved_db_path
         _atomic_write_json(resolved_db_path, db)
         return resolved_db_path
 
@@ -389,12 +634,25 @@ class DocumentRepository:
         resolved_obj_name = _normalize_document_obj_name(obj_name)
         resolved_section_key = _document_section_key(resolved_obj_name)
         resolved_db_path = self._resolve_db_path(db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
-        db = self.load_db(resolved_db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
-        if not isinstance(db.get(resolved_obj_name), dict):
-            db[resolved_obj_name] = {}
-
-        document_records = db[resolved_obj_name]
-        record = document_records.get(correlation_id) if isinstance(document_records.get(correlation_id), dict) else {}
+        mongo_backend = self._load_mongo_backend()
+        existing_record = (
+            mongo_backend.load_record(
+                storage_key=resolved_db_path,
+                record_id=correlation_id,
+                db_name=resolved_obj_name,
+                obj_name=resolved_obj_name,
+            )
+            if mongo_backend is not None
+            else None
+        )
+        if existing_record is None:
+            db = self.load_db(resolved_db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+            if not isinstance(db.get(resolved_obj_name), dict):
+                db[resolved_obj_name] = {}
+            document_records = db[resolved_obj_name]
+            record = document_records.get(correlation_id) if isinstance(document_records.get(correlation_id), dict) else {}
+        else:
+            record = existing_record
         record = dict(record)
         ts = _now_utc_iso()
 
@@ -423,9 +681,18 @@ class DocumentRepository:
         record["handoff_metadata"] = deepcopy(metadata)
         record["source_payload"] = deepcopy(fallback_source_payload)
 
-        document_records[correlation_id] = record
-        db[resolved_obj_name] = document_records
-        self.save_db(resolved_db_path, db, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+        if mongo_backend is not None:
+            mongo_backend.upsert_record(
+                storage_key=resolved_db_path,
+                record_id=correlation_id,
+                record_value=record,
+                db_name=resolved_obj_name,
+                obj_name=resolved_obj_name,
+            )
+        else:
+            document_records[correlation_id] = record
+            db[resolved_obj_name] = document_records
+            self.save_db(resolved_db_path, db, db_name=resolved_obj_name, obj_name=resolved_obj_name)
         return {
             "ok": True,
             "db_path": resolved_db_path,
@@ -443,11 +710,21 @@ class DocumentRepository:
     ) -> dict[str, Any] | None:
         resolved_obj_name = _normalize_document_obj_name(obj_name)
         resolved_section_key = _document_section_key(resolved_obj_name)
-        db = self.load_db(db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
-        document_records = db.get(resolved_obj_name) if isinstance(db, dict) else None
-        if not isinstance(document_records, dict):
-            return None
-        record = document_records.get(correlation_id)
+        resolved_db_path = self._resolve_db_path(db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+        mongo_backend = self._load_mongo_backend()
+        if mongo_backend is not None:
+            record = mongo_backend.load_record(
+                storage_key=resolved_db_path,
+                record_id=correlation_id,
+                db_name=resolved_obj_name,
+                obj_name=resolved_obj_name,
+            )
+        else:
+            db = self.load_db(resolved_db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+            document_records = db.get(resolved_obj_name) if isinstance(db, dict) else None
+            if not isinstance(document_records, dict):
+                return None
+            record = document_records.get(correlation_id)
         if not isinstance(record, dict):
             return None
         return {
@@ -458,6 +735,65 @@ class DocumentRepository:
             "parse": deepcopy(record.get("parse") or {}),
             resolved_section_key: deepcopy(record.get(resolved_section_key) or record.get(resolved_obj_name) or {}),
             "db_updates": deepcopy(record.get("db_updates") or {}),
+        }
+
+    def get_dispatcher_record(
+        self,
+        correlation_id: str,
+        *,
+        db_path: str | None = None,
+    ) -> dict[str, Any] | None:
+        resolved_db_path = self._resolve_db_path(db_path, db_name="dispatcher_documents")
+        mongo_backend = self._load_mongo_backend()
+        if mongo_backend is not None:
+            record = mongo_backend.load_record(
+                storage_key=resolved_db_path,
+                record_id=correlation_id,
+                db_name="dispatcher_documents",
+                obj_name="documents",
+            )
+            return deepcopy(record) if isinstance(record, dict) else None
+
+        db = self.load_db(resolved_db_path, db_name="dispatcher_documents")
+        docs = db.get("documents") if isinstance(db, dict) else None
+        if not isinstance(docs, dict):
+            return None
+        record = docs.get(correlation_id)
+        return deepcopy(record) if isinstance(record, dict) else None
+
+    def get_dispatcher_records(
+        self,
+        correlation_ids: Sequence[str],
+        *,
+        db_path: str | None = None,
+    ) -> dict[str, dict[str, Any]]:
+        resolved_db_path = self._resolve_db_path(db_path, db_name="dispatcher_documents")
+        normalized_ids = [str(correlation_id).strip() for correlation_id in correlation_ids if str(correlation_id).strip()]
+        if not normalized_ids:
+            return {}
+
+        mongo_backend = self._load_mongo_backend()
+        if mongo_backend is not None:
+            records: dict[str, dict[str, Any]] = {}
+            for correlation_id in normalized_ids:
+                record = mongo_backend.load_record(
+                    storage_key=resolved_db_path,
+                    record_id=correlation_id,
+                    db_name="dispatcher_documents",
+                    obj_name="documents",
+                )
+                if isinstance(record, dict):
+                    records[correlation_id] = deepcopy(record)
+            return records
+
+        db = self.load_db(resolved_db_path, db_name="dispatcher_documents")
+        docs = db.get("documents") if isinstance(db, dict) else None
+        if not isinstance(docs, dict):
+            return {}
+        return {
+            correlation_id: deepcopy(docs[correlation_id])
+            for correlation_id in normalized_ids
+            if isinstance(docs.get(correlation_id), dict)
         }
 
     def update_dispatcher_status(
@@ -471,12 +807,21 @@ class DocumentRepository:
         extra_updates: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         resolved_db_path = self._resolve_db_path(db_path, db_name="dispatcher_documents")
-        db = self.load_db(resolved_db_path, db_name="dispatcher_documents")
-        if not isinstance(db.get("documents"), dict):
-            db["documents"] = {}
-
-        docs = db["documents"]
-        record = docs.get(correlation_id) if isinstance(docs.get(correlation_id), dict) else {}
+        mongo_backend = self._load_mongo_backend()
+        if mongo_backend is not None:
+            existing_record = mongo_backend.load_record(
+                storage_key=resolved_db_path,
+                record_id=correlation_id,
+                db_name="dispatcher_documents",
+                obj_name="documents",
+            )
+            record = existing_record if isinstance(existing_record, dict) else {}
+        else:
+            db = self.load_db(resolved_db_path, db_name="dispatcher_documents")
+            if not isinstance(db.get("documents"), dict):
+                db["documents"] = {}
+            docs = db["documents"]
+            record = docs.get(correlation_id) if isinstance(docs.get(correlation_id), dict) else {}
         record = dict(record)
 
         normalized_state = str(processing_state or "").strip().lower() or "failed"
@@ -507,8 +852,17 @@ class DocumentRepository:
                 elif value is not None:
                     record[str(key)] = value
 
-        docs[correlation_id] = record
-        self.save_db(resolved_db_path, db, db_name="dispatcher_documents")
+        if mongo_backend is not None:
+            mongo_backend.upsert_record(
+                storage_key=resolved_db_path,
+                record_id=correlation_id,
+                record_value=record,
+                db_name="dispatcher_documents",
+                obj_name="documents",
+            )
+        else:
+            docs[correlation_id] = record
+            self.save_db(resolved_db_path, db, db_name="dispatcher_documents")
         return {
             "ok": True,
             "db_path": resolved_db_path,
@@ -516,6 +870,37 @@ class DocumentRepository:
             "processing_state": normalized_state,
             "processed": effective_processed,
         }
+
+    def upsert_dispatcher_record_fields(
+        self,
+        *,
+        correlation_id: str,
+        db_path: str | None = None,
+        record_updates: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        existing_record = self.get_dispatcher_record(correlation_id, db_path=db_path) or {}
+        next_record = dict(existing_record)
+        next_record.setdefault("id", correlation_id)
+        next_record.setdefault("content_sha256", correlation_id)
+        next_record["last_seen_at"] = _now_utc_iso()
+
+        if isinstance(record_updates, dict):
+            for key, value in record_updates.items():
+                next_record[str(key)] = deepcopy(value)
+
+        normalized_state = str(next_record.get("processing_state") or existing_record.get("processing_state") or "failed").strip().lower() or "failed"
+        processed_value = next_record.get("processed")
+        effective_processed = processed_value if isinstance(processed_value, bool) else normalized_state == "processed"
+        failed_reason = str(next_record.get("failed_reason") or next_record.get("last_error") or "").strip() or None
+
+        return self.update_dispatcher_status(
+            correlation_id=correlation_id,
+            processing_state=normalized_state,
+            db_path=db_path,
+            processed=effective_processed,
+            failed_reason=failed_reason,
+            extra_updates=next_record,
+        )
 
     def upsert_db_record(
         self,
@@ -535,11 +920,7 @@ class DocumentRepository:
         resolved_obj_name = _normalize_document_obj_name(obj_name)
         resolved_dispatcher_db_path = self._resolve_db_path(dispatcher_db_path, db_name="dispatcher_documents")
         resolved_obj_db_path = self._resolve_db_path(obj_db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
-
-        original_obj_db = self.load_db(resolved_obj_db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
-        next_obj_db = deepcopy(original_obj_db if isinstance(original_obj_db, dict) else {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}})
-        if not isinstance(next_obj_db.get(resolved_obj_name), dict):
-            next_obj_db[resolved_obj_name] = {}
+        mongo_backend = self._load_mongo_backend()
 
         resolved_section_key = _document_section_key(resolved_obj_name)
         ts = _now_utc_iso()
@@ -549,7 +930,24 @@ class DocumentRepository:
         metadata = {"source_agent": str(source_agent or result_payload.get("agent") or _document_default_agent(resolved_obj_name))}
         source_payload_dict = deepcopy(source_payload) if isinstance(source_payload, dict) else {}
 
-        existing_record = next_obj_db[resolved_obj_name].get(record_id) if isinstance(next_obj_db[resolved_obj_name].get(record_id), dict) else {}
+        existing_record = (
+            mongo_backend.load_record(
+                storage_key=resolved_obj_db_path,
+                record_id=record_id,
+                db_name=resolved_obj_name,
+                obj_name=resolved_obj_name,
+            )
+            if mongo_backend is not None
+            else None
+        )
+        if existing_record is None:
+            original_obj_db = self.load_db(resolved_obj_db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+            next_obj_db = deepcopy(original_obj_db if isinstance(original_obj_db, dict) else {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}})
+            if not isinstance(next_obj_db.get(resolved_obj_name), dict):
+                next_obj_db[resolved_obj_name] = {}
+            existing_record = next_obj_db[resolved_obj_name].get(record_id) if isinstance(next_obj_db[resolved_obj_name].get(record_id), dict) else {}
+        else:
+            original_obj_db = None
         next_record = dict(existing_record)
         next_record["correlation_id"] = record_id
         next_record["updated_at"] = ts
@@ -562,7 +960,8 @@ class DocumentRepository:
         next_record["db_updates"] = deepcopy(db_updates)
         next_record["handoff_metadata"] = deepcopy(metadata)
         next_record["source_payload"] = deepcopy(source_payload_dict)
-        next_obj_db[resolved_obj_name][record_id] = next_record
+        if mongo_backend is None:
+            next_obj_db[resolved_obj_name][record_id] = next_record
 
         normalized_state = str(
             processing_state
@@ -573,7 +972,16 @@ class DocumentRepository:
         effective_failed_reason = str(failed_reason or db_updates.get("failed_reason") or "").strip() or None
 
         try:
-            self.save_db(resolved_obj_db_path, next_obj_db, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+            if mongo_backend is not None:
+                mongo_backend.upsert_record(
+                    storage_key=resolved_obj_db_path,
+                    record_id=record_id,
+                    record_value=next_record,
+                    db_name=resolved_obj_name,
+                    obj_name=resolved_obj_name,
+                )
+            else:
+                self.save_db(resolved_obj_db_path, next_obj_db, db_name=resolved_obj_name, obj_name=resolved_obj_name)
             dispatcher_result = self.update_dispatcher_status(
                 correlation_id=record_id,
                 processing_state=normalized_state,
@@ -584,12 +992,29 @@ class DocumentRepository:
             )
         except Exception as exc:
             try:
-                self.save_db(
-                    resolved_obj_db_path,
-                    original_obj_db if isinstance(original_obj_db, dict) else {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}},
-                    db_name=resolved_obj_name,
-                    obj_name=resolved_obj_name,
-                )
+                if mongo_backend is not None:
+                    if isinstance(existing_record, dict) and existing_record:
+                        mongo_backend.upsert_record(
+                            storage_key=resolved_obj_db_path,
+                            record_id=record_id,
+                            record_value=existing_record,
+                            db_name=resolved_obj_name,
+                            obj_name=resolved_obj_name,
+                        )
+                    else:
+                        mongo_backend.delete_record(
+                            storage_key=resolved_obj_db_path,
+                            record_id=record_id,
+                            db_name=resolved_obj_name,
+                            obj_name=resolved_obj_name,
+                        )
+                else:
+                    self.save_db(
+                        resolved_obj_db_path,
+                        original_obj_db if isinstance(original_obj_db, dict) else {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}},
+                        db_name=resolved_obj_name,
+                        obj_name=resolved_obj_name,
+                    )
             except Exception:
                 pass
             return {
@@ -646,6 +1071,97 @@ class DocumentRepository:
 
 
 DOCUMENT_REPOSITORY = DocumentRepository()
+
+
+class AgentSystemConfigStorageService:
+    def load_system_slug(self, *, system_name: str, config_bundle: dict[str, Any]) -> str:
+        request_payload = config_bundle.get("request") if isinstance(config_bundle.get("request"), dict) else {}
+        raw_slug = str(request_payload.get("system_slug") or system_name or "").strip().lower()
+        normalized_slug = "".join(character if character.isalnum() or character == "_" else "_" for character in raw_slug).strip("_")
+        return normalized_slug or "agent_system"
+
+    def load_correlation_id(self, *, system_name: str, config_bundle: dict[str, Any]) -> str:
+        return f"agent_system_config:{self.load_system_slug(system_name=system_name, config_bundle=config_bundle)}"
+
+    def load_serialized_bundle(self, config_bundle: dict[str, Any]) -> str:
+        return json.dumps(config_bundle, ensure_ascii=False, indent=2)
+
+    def build_file_payload(self, persisted_module: dict[str, Any]) -> dict[str, Any]:
+        path_candidates = [
+            persisted_module.get("written_path"),
+            persisted_module.get("target_path"),
+            persisted_module.get("relative_path"),
+        ]
+        resolved_path = ""
+        for candidate in path_candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                resolved_path = candidate.strip()
+                break
+        if not resolved_path:
+            return {}
+        return {
+            "path": resolved_path,
+            "source_path": resolved_path,
+            "name": os.path.basename(resolved_path),
+            "mime_type": "text/x-python",
+            "written": bool(persisted_module.get("written")),
+        }
+
+    def persist_object(
+        self,
+        *,
+        system_name: str,
+        config_bundle: dict[str, Any],
+        persisted_module: dict[str, Any],
+    ) -> dict[str, Any]:
+        serialized_bundle = self.load_serialized_bundle(config_bundle)
+        correlation_id = self.load_correlation_id(system_name=system_name, config_bundle=config_bundle)
+        persisted_module_content = str(persisted_module.get("content") or "")
+        file_payload = self.build_file_payload(persisted_module)
+        if file_payload and persisted_module_content:
+            file_payload["content_sha256"] = hashlib.sha256(persisted_module_content.encode("utf-8", "ignore")).hexdigest()
+
+        return DOCUMENT_REPOSITORY.persist_document(
+            correlation_id=correlation_id,
+            obj_name="agent_system_configs",
+            result_payload={
+                "agent": "xworker",
+                "job_name": "agent_system_builder",
+                "file": file_payload,
+                "parse": {
+                    "raw_text": serialized_bundle,
+                    "text": serialized_bundle,
+                    "language": "json",
+                },
+                "agent_system_config": {
+                    "system_name": system_name,
+                    "system_slug": self.load_system_slug(system_name=system_name, config_bundle=config_bundle),
+                    "config_bundle": deepcopy(config_bundle),
+                    "persisted_module": deepcopy(persisted_module),
+                },
+                "db_updates": {
+                    "processing_state": "stored",
+                    "processed": True,
+                },
+            },
+            handoff_metadata={
+                "source_agent": "_xworker",
+                "job_name": "agent_system_builder",
+                "system_name": system_name,
+            },
+            handoff_payload={
+                "agent_label": "_xworker",
+                "job_name": "agent_system_builder",
+                "output": {
+                    "job_name": "agent_system_builder",
+                    "system_name": system_name,
+                    "persisted_module": deepcopy(persisted_module),
+                },
+            },
+        )
+
+
+AGENT_SYSTEM_CONFIG_STORAGE_SERVICE = AgentSystemConfigStorageService()
 
 
 @dataclass(frozen=True)
@@ -959,6 +1475,15 @@ class DocumentObjectService:
             handoff_payload=source_payload if isinstance(source_payload, dict) else None,
             obj_name=resolved_obj_name,
         )
+        knowledge_sync_result = sync_parser_result_to_mongodb_knowledge(
+            object_name=resolved_obj_name,
+            result_payload=parsed_payload,
+            correlation_id=effective_correlation_id,
+            handoff_metadata=metadata,
+            handoff_payload=source_payload if isinstance(source_payload, dict) else None,
+        )
+        if isinstance(knowledge_sync_result, dict):
+            result["knowledge_sync"] = deepcopy(knowledge_sync_result)
         return json.dumps(result, ensure_ascii=False)
 
     def ingest_result(
@@ -1152,26 +1677,6 @@ def upsert_object_record_tool(
 
 
 
-
-
-def store_job_posting_result_tool(
-    job_posting_result: dict[str, Any] | str,
-    correlation_id: str | None = None,
-    db_path: str | None = None,
-    source_agent: str | None = None,
-    source_payload: dict[str, Any] | None = None,
-    obj_name: str | None = None,
-) -> str:
-    return store_object_result_tool(
-        object_result=job_posting_result,
-        correlation_id=correlation_id,
-        db_path=db_path,
-        source_agent=source_agent,
-        source_payload=source_payload,
-        obj_name=_normalize_document_obj_name(obj_name, "job_postings"),
-    )
-
-
 def upsert_dispatcher_job_record_tool(
     job_posting_result: dict[str, Any] | str,
     correlation_id: str | None = None,
@@ -1213,6 +1718,24 @@ def store_profile_result_tool(
         db_path=db_path,
         source_agent=source_agent,
         obj_name=_normalize_document_obj_name(obj_name, "profiles"),
+    )
+
+
+def store_job_posting_result_tool(
+    job_posting_result: dict[str, Any] | str,
+    correlation_id: str | None = None,
+    db_path: str | None = None,
+    source_agent: str | None = None,
+    source_payload: dict[str, Any] | None = None,
+    obj_name: str | None = None,
+) -> str:
+    return store_object_result_tool(
+        object_result=job_posting_result,
+        correlation_id=correlation_id,
+        db_path=db_path,
+        source_agent=source_agent,
+        source_payload=source_payload,
+        obj_name=_normalize_document_obj_name(obj_name, "job_postings"),
     )
 
 
@@ -1956,8 +2479,17 @@ def build_agent_system_configs_tool(
         else:
             persisted_module["written"] = False
 
+    persisted_module.setdefault("written", False)
+    if resolved_persist_path and not persisted_module.get("target_path"):
+        persisted_module["target_path"] = str(resolved_path)
+
     config_bundle = create_agent_system_basic_config(resolved_system_name, request_payload)
     config_bundle["persisted_module"] = persisted_module
+    config_bundle["storage"] = AGENT_SYSTEM_CONFIG_STORAGE_SERVICE.persist_object(
+        system_name=resolved_system_name,
+        config_bundle=config_bundle,
+        persisted_module=persisted_module,
+    )
     return json.dumps(config_bundle, ensure_ascii=False)
 
 
@@ -2045,26 +2577,18 @@ class DocumentDispatchService:
         document_paths.sort()
         return document_paths
 
-    def save_dispatcher_db(self, dispatcher_db: dict[str, Any] | None, *, resolved_db_path: str) -> tuple[bool, str | None]:
-        if dispatcher_db is None:
-            return False, "db_not_loaded"
+    def check_dispatcher_access(self, *, resolved_db_path: str) -> str | None:
         try:
-            DOCUMENT_REPOSITORY.save_db(resolved_db_path, dispatcher_db, db_name="dispatcher_documents")
-            return True, None
+            DOCUMENT_REPOSITORY.get_dispatcher_records(["__dispatch_healthcheck__"], db_path=resolved_db_path)
+            return None
         except Exception as exc:
-            return False, f"{type(exc).__name__}: {exc}"
-
-    def load_dispatcher_db(self, *, resolved_db_path: str) -> tuple[dict[str, Any] | None, str | None]:
-        try:
-            return DOCUMENT_REPOSITORY.load_db(resolved_db_path, db_name="dispatcher_documents"), None
-        except Exception as exc:
-            return None, f"{type(exc).__name__}: {exc}"
+            return f"{type(exc).__name__}: {exc}"
 
     def classify_documents(
         self,
         *,
         pdf_paths: list[str],
-        docs: dict[str, Any],
+        resolved_db_path: str,
         errors: list[dict[str, Any]],
     ) -> dict[str, list[dict[str, Any]]]:
         classified: dict[str, list[dict[str, Any]]] = {
@@ -2102,7 +2626,13 @@ class DocumentDispatchService:
                 continue
             seen_hashes.add(content_sha256)
 
-            record = docs.get(content_sha256) if isinstance(docs, dict) else None
+            try:
+                record = DOCUMENT_REPOSITORY.get_dispatcher_record(content_sha256, db_path=resolved_db_path)
+            except Exception as exc:
+                err = {"path": abs_path, "error": "dispatcher_record_unavailable", "detail": f"{type(exc).__name__}: {exc}"}
+                errors.append(err)
+                classified["error_items"].append(err)
+                continue
             bucket = self.classify_record(record if isinstance(record, dict) else None)
             item = {
                 "path": abs_path,
@@ -2115,6 +2645,7 @@ class DocumentDispatchService:
                     "processed": (record or {}).get("processed") if isinstance(record, dict) else None,
                     "processing_state": (record or {}).get("processing_state") if isinstance(record, dict) else None,
                 },
+                "db_record": deepcopy(record) if isinstance(record, dict) else None,
             }
             classified[bucket].append(item)
 
@@ -2123,20 +2654,14 @@ class DocumentDispatchService:
     def queue_document(
         self,
         *,
-        dispatcher_db: dict[str, Any] | None,
         resolved_db_path: str,
         item: dict[str, Any],
         correlation_id: str,
         timestamp: str,
+        current_record: dict[str, Any] | None = None,
     ) -> tuple[bool, str | None]:
-        if not isinstance(dispatcher_db, dict):
-            return False, "db_not_loaded"
-        if "documents" not in dispatcher_db or not isinstance(dispatcher_db.get("documents"), dict):
-            dispatcher_db["documents"] = {}
-
-        docs = dispatcher_db["documents"]
-        current = docs.get(correlation_id) if isinstance(docs, dict) else None
-        current_state = (current or {}).get("processing_state") if isinstance(current, dict) else None
+        current = current_record if isinstance(current_record, dict) else {}
+        current_state = current.get("processing_state") if isinstance(current, dict) else None
         if (current_state or "").lower().strip() in {"queued", "processing"}:
             return True, None
 
@@ -2149,8 +2674,15 @@ class DocumentDispatchService:
         next_record["last_seen_at"] = timestamp
         next_record["processed"] = False
         next_record["processing_state"] = "queued"
-        docs[correlation_id] = next_record
-        return self.save_dispatcher_db(dispatcher_db, resolved_db_path=resolved_db_path)
+        try:
+            DOCUMENT_REPOSITORY.upsert_dispatcher_record_fields(
+                correlation_id=correlation_id,
+                db_path=resolved_db_path,
+                record_updates=next_record,
+            )
+            return True, None
+        except Exception as exc:
+            return False, f"{type(exc).__name__}: {exc}"
 
     def resolve_object_db_path(
         self,
@@ -2231,11 +2763,11 @@ class DocumentDispatchService:
         if legacy_obj_db_path_field not in handoff_metadata:
             handoff_metadata[legacy_obj_db_path_field] = obj_db_path
         return build_agent_handoff(
-            source_agent_label=str(dispatch_policy.get("source_agent") or "_data_dispatcher"),
+            source_agent_label=str(dispatch_policy.get("source_agent") or "_xworker"),
             target_agent=target_agent,
             protocol=str(dispatch_policy.get("handoff_protocol") or "agent_handoff_v1"),
             agent_response={
-                "agent_label": str(dispatch_policy.get("source_agent") or "_data_dispatcher"),
+                "agent_label": str(dispatch_policy.get("source_agent") or "_xworker"),
                 "handoff_to": target_agent,
                 "output": payload,
             },
@@ -2246,7 +2778,6 @@ class DocumentDispatchService:
         self,
         *,
         items: list[dict[str, Any]],
-        dispatcher_db: dict[str, Any] | None,
         resolved_db_path: str,
         timestamp: str,
         dispatch_policy: dict[str, Any],
@@ -2263,20 +2794,15 @@ class DocumentDispatchService:
 
         for item in items:
             correlation_id = item["content_sha256"]
-            docs = (dispatcher_db or {"documents": {}}).get("documents", {}) if isinstance(dispatcher_db, dict) else {}
-            record = docs.get(correlation_id) if isinstance(docs, dict) else None
-
-            if dispatcher_db is None and not dry_run:
-                errors.append({"path": item["path"], "error": "db_unreachable"})
-                continue
+            record = item.get("db_record") if isinstance(item.get("db_record"), dict) else None
 
             if not dry_run:
                 db_write_ok, db_write_err = self.queue_document(
-                    dispatcher_db=dispatcher_db,
                     resolved_db_path=resolved_db_path,
                     item=item,
                     correlation_id=correlation_id,
                     timestamp=timestamp,
+                    current_record=record if isinstance(record, dict) else None,
                 )
                 if not db_write_ok:
                     errors.append(
@@ -2337,7 +2863,8 @@ class DocumentDispatchService:
         errors: list[dict[str, Any]],
     ) -> dict[str, Any]:
         return {
-            "agent": "data_dispatcher",
+            "agent": "xworker",
+            "job_name": "document_dispatch",
             "scan_dir": scan_dir,
             "timestamp": timestamp,
             "db": {"path": resolved_db_path, "reachable": db_load_error is None, "error": db_load_error},
@@ -2375,7 +2902,8 @@ class DocumentDispatchService:
         recursive: bool = True,
         extensions: list | None = None,
         max_files: int | None = None,
-        agent_name: str = "_job_posting_parser",
+        agent_name: str = "_xworker",
+        parser_agent_name: str | None = None,
         dry_run: bool = False,
     ) -> dict:
         ts = _now_utc_iso()
@@ -2383,7 +2911,9 @@ class DocumentDispatchService:
         scan_dir_original = str(scan_dir or "")
         thread_id = thread_id or "UNKNOWN"
         dispatcher_message_id = dispatcher_message_id or "UNKNOWN"
-        agent_name = str(agent_name or dispatch_policy.get("default_target_agent") or "_job_posting_parser").strip() or "_job_posting_parser"
+        agent_name = str(
+            agent_name or parser_agent_name or dispatch_policy.get("default_target_agent") or "_xworker"
+        ).strip() or "_xworker"
         resolved_obj_name = str(obj_name or obj or dispatch_policy.get("obj_name") or "job_postings").strip() or "job_postings"
         resolved_obj_db_path_field = str(dispatch_policy.get("obj_db_path_field") or f"{resolved_obj_name}_db_path").strip() or f"{resolved_obj_name}_db_path"
 
@@ -2397,11 +2927,12 @@ class DocumentDispatchService:
         warnings: list[dict[str, Any]] = []
         scan_dir = self.resolve_scan_dir(scan_dir_original, resolved_db_path=resolved_db_path, warnings=warnings)
 
-        dispatcher_db, db_load_error = self.load_dispatcher_db(resolved_db_path=resolved_db_path)
+        db_load_error = self.check_dispatcher_access(resolved_db_path=resolved_db_path)
 
         if db_load_error and not dry_run:
             return {
-                "agent": "data_dispatcher",
+                "agent": "xworker",
+                "job_name": "document_dispatch",
                 "scan_dir": scan_dir,
                 "timestamp": ts,
                 "db": {"path": resolved_db_path, "reachable": False, "error": db_load_error},
@@ -2414,7 +2945,8 @@ class DocumentDispatchService:
         errors: list[dict[str, Any]] = []
         if not os.path.isdir(scan_dir):
             return {
-                "agent": "data_dispatcher",
+                "agent": "xworker",
+                "job_name": "document_dispatch",
                 "scan_dir": scan_dir,
                 "timestamp": ts,
                 "db": {"path": resolved_db_path, "reachable": db_load_error is None, "error": db_load_error},
@@ -2429,11 +2961,9 @@ class DocumentDispatchService:
         if max_files is not None:
             pdf_paths = pdf_paths[: max(0, int(max_files))]
 
-        docs = (dispatcher_db or {"documents": {}}).get("documents", {}) if isinstance(dispatcher_db, dict) else {}
-        classified = self.classify_documents(pdf_paths=pdf_paths, docs=docs if isinstance(docs, dict) else {}, errors=errors)
+        classified = self.classify_documents(pdf_paths=pdf_paths, resolved_db_path=resolved_db_path, errors=errors)
         forwarded, handoff_messages = self.forward_documents(
             items=classified["new"] + classified["known_unprocessed"],
-            dispatcher_db=dispatcher_db,
             resolved_db_path=resolved_db_path,
             timestamp=ts,
             dispatch_policy=dispatch_policy,
@@ -2473,7 +3003,8 @@ def dispatch_docs(
     recursive: bool = True,
     extensions: list | None = None,
     max_files: int | None = None,
-    agent_name: str = "_job_posting_parser",
+    agent_name: str = "_xworker",
+    parser_agent_name: str | None = None,
     dry_run: bool = False,
 ) -> dict:
     return DOCUMENT_DISPATCH_SERVICE.dispatch_documents(
@@ -2488,6 +3019,7 @@ def dispatch_docs(
         extensions=extensions,
         max_files=max_files,
         agent_name=agent_name,
+        parser_agent_name=parser_agent_name,
         dry_run=dry_run,
     )
 
@@ -3623,6 +4155,15 @@ def _run_retrieval_with_events(
     }
     outcome_event["reward"] = compute_reward(query_event, outcome_event)
     _emit_outcome_event(outcome_event)
+    try:
+        sync_retrieval_run_to_mongodb_knowledge(
+            tool_name=tool_name,
+            query_event=deepcopy(query_event),
+            outcome_event=deepcopy(outcome_event),
+            retrieval_result=deepcopy(result),
+        )
+    except Exception:
+        pass
     return result
 
 def memorydb(
@@ -3704,33 +4245,134 @@ def vdb_worker(
     )
 # return data from T with type, key or with type, key where types, keys are (SQL/NoSQL) data structure types
 
-def write_document(content: str, path: str | None = None, doc_id: str | None = None, filename: str | None = None) -> str:
-        """Persist the generated cover letter to disk and return the saved file path."""
-        target_dir = os.path.expanduser(path or _DEFAULT_SAVE_DIR)
+def write_document(
+    content: str,
+    path: str | None = None,
+    doc_id: str | None = None,
+    filename: str | None = None,
+    correlation_id: str | None = None,
+) -> dict[str, Any]:
+        """Persist the generated cover letter as a canonical record and export a markdown artifact."""
+        target_dir = os.path.abspath(os.path.expanduser(path or _DEFAULT_SAVE_DIR))
         os.makedirs(target_dir, exist_ok=True)
 
-        prefix_raw = (doc_id or "cover_letter").strip() or "cover_letter"
-        # save prefix generation with safe characters
+        normalized_content = str(content or "").rstrip() + "\n"
+        prefix_raw = (doc_id or correlation_id or "cover_letter").strip() or "cover_letter"
         safe_prefix = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in prefix_raw)
         safe_prefix = safe_prefix[:80] or "cover_letter"
         hash_suffix = hashlib.sha1(prefix_raw.encode("utf-8", "ignore")).hexdigest()[:8]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{safe_prefix}_{hash_suffix}_{timestamp}.md"
-        file_path = os.path.join(target_dir, filename)
+        resolved_filename = str(filename or f"{safe_prefix}_{hash_suffix}_{timestamp}.md").strip() or f"{safe_prefix}_{hash_suffix}_{timestamp}.md"
+        file_path = os.path.join(target_dir, resolved_filename)
+
         with open(file_path, "w", encoding="utf-8") as file:
-            file.write(content.rstrip() + "\n")
-        return f"Document saved to: {file_path}" 
+            file.write(normalized_content)
+
+        file_content_sha256 = hashlib.sha256(normalized_content.encode("utf-8", "ignore")).hexdigest()
+        resolved_correlation_id = str(correlation_id or f"cover_letter:{safe_prefix}:{file_content_sha256[:12]}").strip() or f"cover_letter:{safe_prefix}:{file_content_sha256[:12]}"
+        stored_record = DOCUMENT_REPOSITORY.persist_document(
+            correlation_id=resolved_correlation_id,
+            obj_name="cover_letters",
+            db_path=None,
+            result_payload={
+                "agent": "xworker",
+                "job_name": "cover_letter_writer",
+                "file": {
+                    "path": file_path,
+                    "name": resolved_filename,
+                    "source_path": file_path,
+                    "mime_type": "text/markdown",
+                    "content_sha256": file_content_sha256,
+                    "exported": True,
+                },
+                "parse": {
+                    "raw_text": normalized_content,
+                    "text": normalized_content,
+                    "language": "markdown",
+                },
+                "cover_letter": {
+                    "document_id": str(doc_id or safe_prefix),
+                    "filename": resolved_filename,
+                    "full_text": normalized_content,
+                    "document_path": file_path,
+                },
+                "db_updates": {
+                    "processing_state": "stored",
+                    "processed": True,
+                },
+            },
+            handoff_metadata={
+                "source_agent": "_xworker",
+                "job_name": "cover_letter_writer",
+                "document_kind": "cover_letter",
+            },
+            handoff_payload={
+                "agent_label": "_xworker",
+                "job_name": "cover_letter_writer",
+                "output": {
+                    "document_path": file_path,
+                    "document_text_path": file_path,
+                    "correlation_id": resolved_correlation_id,
+                    "job_name": "cover_letter_writer",
+                },
+            },
+        )
+        return {
+            "ok": True,
+            "path": file_path,
+            "file_path": file_path,
+            "document_path": file_path,
+            "md_path": file_path,
+            "filename": resolved_filename,
+            "correlation_id": resolved_correlation_id,
+            "storage": stored_record,
+        }
 
 def read_document(file_path: str) -> str:
-        """Liest den Inhalt eines Dokuments von der Festplatte."""
+        """Liest den Inhalt eines Dokuments von der Festplatte.
+
+        Textdateien werden direkt gelesen. PDFs werden ueber den vorhandenen
+    Batch-PDF-Extractor geladen, damit Parser-Agenten dieselbe robustere
+    Extraktion wie der Batch-Generator verwenden.
+        """
+        resolved_path = os.path.abspath(os.path.expanduser(str(file_path or "").strip()))
+        if not resolved_path:
+            return "Error: Kein Dateipfad angegeben."
+        if not os.path.exists(resolved_path):
+            return f"Error: Datei '{resolved_path}' nicht gefunden."
+
         try:
-            with open(file_path, "r", encoding="utf-8") as file:
-                content = file.read()
-            return content
+            if resolved_path.lower().endswith(".pdf"):
+                extract_pdf_text = None
+                try:
+                    from .batch_document import _extract_pdf_text as extract_pdf_text  # type: ignore
+                except Exception:
+                    try:
+                        from alde.batch_document import _extract_pdf_text as extract_pdf_text  # type: ignore
+                    except Exception:
+                        extract_pdf_text = None
+
+                if callable(extract_pdf_text):
+                    extracted_text = str(extract_pdf_text(resolved_path) or "").strip()
+                    if extracted_text:
+                        return extracted_text
+
+                docs = iter_documents(resolved_path, doc_types=["pdf"], recursive=False)
+                page_texts = [
+                    str(getattr(doc, "page_content", "") or "").strip()
+                    for doc in docs
+                    if str(getattr(doc, "page_content", "") or "").strip()
+                ]
+                if page_texts:
+                    return "\n\n".join(page_texts)
+                return f"Error beim Lesen der Datei '{resolved_path}': PDF-Extraktion ergab keinen Text."
+
+            with open(resolved_path, "r", encoding="utf-8") as file:
+                return file.read()
         except FileNotFoundError:
-            return f"Error: Datei '{file_path}' nicht gefunden."
+            return f"Error: Datei '{resolved_path}' nicht gefunden."
         except Exception as e:
-            return f"Error beim Lesen der Datei '{file_path}': {e}"
+            return f"Error beim Lesen der Datei '{resolved_path}': {e}"
         
 def update_document(data: list | dict, item:str, updatestr: str) -> str:
         """

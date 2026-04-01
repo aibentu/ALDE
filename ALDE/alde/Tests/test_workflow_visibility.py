@@ -107,15 +107,15 @@ class TestWorkflowVisibility(unittest.TestCase):
             {
                 "message-id": 1,
                 "role": "assistant",
-                "assistant-name": "_data_dispatcher",
+                "assistant-name": "_xworker",
                 "thread-id": 99,
                 "thread-name": "test-thread",
                 "time": "2025-03-01T10:00:00Z",
                 "data": {
                     "workflow": {
-                        "workflow_name": "data_dispatcher_chain",
-                        "agent_label": "_data_dispatcher",
-                        "current_state": "dispatcher_ready",
+                        "workflow_name": "xworker_leaf",
+                        "agent_label": "_xworker",
+                        "current_state": "xworker_active",
                         "phase": "tool_call_start",
                     }
                 },
@@ -123,66 +123,48 @@ class TestWorkflowVisibility(unittest.TestCase):
             {
                 "message-id": 2,
                 "role": "assistant",
-                "assistant-name": "_data_dispatcher",
+                "assistant-name": "_xworker",
                 "thread-id": 99,
                 "thread-name": "test-thread",
                 "time": "2025-03-01T10:00:01Z",
                 "data": {
                     "workflow": {
-                        "workflow_name": "data_dispatcher_chain",
-                        "agent_label": "_data_dispatcher",
-                        "current_state": "dispatcher_complete",
+                        "workflow_name": "xworker_leaf",
+                        "agent_label": "_xworker",
+                        "current_state": "xworker_complete",
                         "phase": "tool_result",
                     }
                 },
             },
         ]
 
-        items = agents_factory.get_workflow_history_entries(agent_label="_data_dispatcher", thread_id=99, limit=10)
-        latest = agents_factory.get_latest_workflow_status(agent_label="_data_dispatcher", thread_id=99)
+        items = agents_factory.get_workflow_history_entries(agent_label="_xworker", thread_id=99, limit=10)
+        latest = agents_factory.get_latest_workflow_status(agent_label="_xworker", thread_id=99)
 
         self.assertIsNotNone(latest)
         self.assertEqual(latest["message_id"], 2)
-        self.assertEqual(latest["workflow"]["current_state"], "dispatcher_complete")
+        self.assertEqual(latest["workflow"]["current_state"], "xworker_complete")
         self.assertEqual(len(items), 2)
         self.assertEqual(items[0]["message_id"], 2)
         self.assertEqual(items[1]["message_id"], 1)
 
-    def test_dispatcher_workflow_visibility_includes_deterministic_action_states(self) -> None:
-        workflow = get_agent_workflow_config("_data_dispatcher")
+    def test_xworker_workflow_visibility_uses_leaf_states(self) -> None:
+        workflow = get_agent_workflow_config("_xworker")
 
-        self.assertEqual(workflow.get("name"), "data_dispatcher_chain")
+        self.assertEqual(workflow.get("name"), "xworker_leaf")
         states = workflow.get("states") or {}
         transitions = workflow.get("transitions") or []
 
-        self.assertEqual(states["action_executed"]["actor"]["name"], "execute_action_request")
-        self.assertEqual(states["job_record_upserted"]["actor"]["name"], "upsert_object_record")
+        self.assertEqual(states["xworker_active"]["actor"]["name"], "_xworker")
+        self.assertEqual(states["xworker_complete"]["actor"]["name"], "workflow_complete")
         self.assertTrue(
             any(
-                transition.get("from") == "dispatcher_ready"
-                and (transition.get("on") or {}).get("name") == "execute_action_request"
-                and transition.get("to") == "action_executed"
+                transition.get("from") == "xworker_active"
+                and (transition.get("on") or {}).get("name") == ["followup_complete", "tool_complete"]
+                and transition.get("to") == "xworker_complete"
                 for transition in transitions
             )
         )
-        self.assertTrue(
-            any(
-                transition.get("from") == "dispatcher_ready"
-                and (transition.get("on") or {}).get("name") == "upsert_object_record"
-                and transition.get("to") == "job_record_upserted"
-                for transition in transitions
-            )
-        )
-        retry_transition = next(
-            transition
-            for transition in transitions
-            if transition.get("to") == "dispatcher_retry_pending"
-        )
-        guarded_tools = (
-            ((retry_transition.get("on") or {}).get("conditions") or {}).get("any") or []
-        )[0]["tool_name"]["in"]
-        self.assertIn("execute_action_request", guarded_tools)
-        self.assertIn("upsert_object_record", guarded_tools)
 
     def test_workflow_status_helpers_preserve_snapshot_metadata(self) -> None:
         history = agents_factory.get_history()
@@ -191,21 +173,21 @@ class TestWorkflowVisibility(unittest.TestCase):
             {
                 "message-id": 11,
                 "role": "tool",
-                "assistant-name": "_data_dispatcher",
+                "assistant-name": "_xworker",
                 "thread-id": 100,
                 "thread-name": "snapshot-thread",
                 "time": "2025-03-01T10:00:02Z",
                 "data": {
                     "workflow": {
-                        "workflow_name": "data_dispatcher_chain",
-                        "agent_label": "_data_dispatcher",
-                        "current_state": "action_executed",
+                        "workflow_name": "xworker_leaf",
+                        "agent_label": "_xworker",
+                        "current_state": "xworker_active",
                         "phase": "tool_result",
                         "snapshot": {
                             "phase": "tool_result",
-                            "workflow_name": "data_dispatcher_chain",
-                            "agent_label": "_data_dispatcher",
-                            "current_state": "action_executed",
+                            "workflow_name": "xworker_leaf",
+                            "agent_label": "_xworker",
+                            "current_state": "xworker_active",
                             "terminal": False,
                             "actor": {"kind": "tool", "name": "execute_action_request"},
                             "event": {
@@ -222,7 +204,7 @@ class TestWorkflowVisibility(unittest.TestCase):
             }
         ]
 
-        latest = agents_factory.get_latest_workflow_status(agent_label="_data_dispatcher", thread_id=100)
+        latest = agents_factory.get_latest_workflow_status(agent_label="_xworker", thread_id=100)
 
         self.assertIsNotNone(latest)
         snapshot = latest["workflow"]["snapshot"]
@@ -245,39 +227,39 @@ class TestWorkflowVisibility(unittest.TestCase):
                 "thread-id": 999,
                 "data": {
                     "workflow": {
-                        "workflow_name": "data_dispatcher_chain",
-                        "agent_label": "_data_dispatcher",
-                        "current_state": "dispatcher_ready",
+                        "workflow_name": "xworker_leaf",
+                        "agent_label": "_xworker",
+                        "current_state": "xworker_active",
                     }
                 },
             },
             {
                 "message-id": 3,
                 "role": "assistant",
-                "assistant-name": "_data_dispatcher",
+                "assistant-name": "_xworker",
                 "thread-id": 101,
                 "thread-name": "query-thread",
                 "time": "2025-03-01T10:00:03Z",
                 "data": {
                     "workflow": {
-                        "workflow_name": "data_dispatcher_chain",
-                        "agent_label": "_data_dispatcher",
-                        "current_state": "dispatcher_complete",
+                        "workflow_name": "xworker_leaf",
+                        "agent_label": "_xworker",
+                        "current_state": "xworker_complete",
                     }
                 },
             },
         ]
 
-        items = agents_factory.get_workflow_history_entries(agent_label="_data_dispatcher", thread_id=101, limit=5)
-        latest = agents_factory.get_latest_workflow_status(agent_label="_data_dispatcher", thread_id=101)
+        items = agents_factory.get_workflow_history_entries(agent_label="_xworker", thread_id=101, limit=5)
+        latest = agents_factory.get_latest_workflow_status(agent_label="_xworker", thread_id=101)
 
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["message_id"], 3)
         self.assertIsNotNone(latest)
-        self.assertEqual(latest["workflow"]["current_state"], "dispatcher_complete")
+        self.assertEqual(latest["workflow"]["current_state"], "xworker_complete")
 
     def test_workflow_history_data_projects_explicit_event_payload(self) -> None:
-        session = agents_factory._create_workflow_session("_data_dispatcher")
+        session = agents_factory._create_workflow_session("_xworker")
 
         self.assertIsNotNone(session)
 
@@ -296,7 +278,7 @@ class TestWorkflowVisibility(unittest.TestCase):
         self.assertEqual(event["payload"], {"action": "ingest_object"})
 
     def test_workflow_history_data_promotes_tool_actor_on_tool_failed_state(self) -> None:
-        session = agents_factory._create_workflow_session("_data_dispatcher")
+        session = agents_factory._create_workflow_session("_xworker")
 
         self.assertIsNotNone(session)
 

@@ -1,0 +1,1227 @@
+{
+  "dataset_metadata": {
+    "dataset_kind": "job_posting_pdf_knowledge_dataset",
+    "example": true,
+    "tenant_id": "tenant_demo",
+    "namespace_id": "ns_jobs_de",
+    "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+    "generated_at": "2026-03-30T00:00:00+00:00"
+  },
+  "source_pdf": {
+    "file_name": "job_offer_examplecorp_it_service_desk_coordinator.pdf",
+    "source_path": "AppData/job_offer_examplecorp_it_service_desk_coordinator.pdf",
+    "source_uri": "file://AppData/job_offer_examplecorp_it_service_desk_coordinator.pdf",
+    "mime_type": "application/pdf",
+    "page_count": 2,
+    "language": "de",
+    "content_sha256": "97cd25733bdee9a854f2cc62daf3cea5871bf411b1f3277b638ff9ec108aa217",
+    "extractor_backend": "demo_pdf_text_extractor",
+    "ocr_used": false,
+    "layout_retained": true,
+    "extracted_at": "2026-03-30T00:00:00+00:00",
+    "metadata": {
+      "producer": "example-demo",
+      "example": true,
+      "document_family": "job_offer_pdf"
+    }
+  },
+  "raw_text": "Jobtitel: IT Service Desk Coordinator (m/w/d)\nArbeitgeber: ExampleCorp\nArbeitsort: Remote (EU)\nAnstellungsart: Vollzeit\nBeginn: ab sofort\nMission: Example job posting used to demonstrate the job posting schema and downstream parsing workflows.\n\nAufgaben\n- Koordination des Servicedesk-Teams zur Sicherstellung der effizienten, zuverlaessigen Bearbeitung der Anfragen interner IT-Anwender\n- Mitarbeit bei und Ueberpruefung von schwierigen bzw. besonderen Tickets\n- Ueberwachung und Betreuung von Eskalationen zur Unterstuetzung schneller, prozesstreuer Loesungen\n- Analyse von Ursachen fuer Loesungsverzoegerungen oder Incidents und Ableitung geeigneter Massnahmen\n- Customizing und Optimierung des Ticket-Systems\n- Etablierung von KPIs zur Steuerung eines erfolgreichen Servicedesks\n- Zustaendigkeit fuer die Endpoint-Verwaltung (Beschaffung, Asset Management)\n\nProfil\n- Abgeschlossene Ausbildung zum Fachinformatiker (m/w/d) oder vergleichbar\n- Erfahrung im IT-Support\n- Erfahrung in der Koordination eines IT-Service-Teams\n- Erfahrung in Administration und Konfiguration von Ticket-Systemen (z. B. TOPdesk), Servicedesk-Prozessen, gaengigen IT-Standards und ITIL-Framework\n- Strukturierte, organisierte, prozessorientierte und eigenstaendige Arbeitsweise\n- Zuverlaessigkeit, Verantwortungs- und Qualitaetsbewusstsein\n- Service- und loesungsorientiertes Arbeiten, analytische und konzeptionelle Staerke, Faehigkeit, Probleme schnell zu erfassen\n- Sichere Kommunikation mit verschiedenen Ansprechpartnern im Unternehmen\n- Sehr gute Deutschkenntnisse in Wort und Schrift; gute Englischkenntnisse von Vorteil\n\nAngebot\n- Krisen- und zukunftssicherer Arbeitsplatz in der wachsenden Pharmabranche\n- Teil eines innovativen und modernen Familienunternehmens\n- Vielseitige Taetigkeiten und Aufgaben in einem spannenden Arbeitsumfeld\n- Ausfuehrliche und fundierte fachliche Einarbeitung\n- Langfristige Perspektiven und interne Weiterentwicklungsmoeglichkeiten\n- Attraktive Verguetung gemaess Chemie-Tarifvertrag\n- Zusammenarbeit mit motivierten und professionellen KollegInnen\n\nBewerbungsart: E-Mail\nE-Mail: jobs@example.com",
+  "db_record": {
+    "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+    "created_at": "2026-03-30T00:00:00+00:00",
+    "updated_at": "2026-03-30T00:00:00+00:00",
+    "source_agent": "job_posting_pdf_parser",
+    "link": {
+      "source_uri": "file://AppData/job_offer_examplecorp_it_service_desk_coordinator.pdf",
+      "url": "https://example.org/jobs/it-service-desk-coordinator",
+      "label": "Originale Stellenanzeige"
+    },
+    "file": {
+      "file_name": "job_offer_examplecorp_it_service_desk_coordinator.pdf",
+      "source_path": "AppData/job_offer_examplecorp_it_service_desk_coordinator.pdf",
+      "source_uri": "file://AppData/job_offer_examplecorp_it_service_desk_coordinator.pdf",
+      "mime_type": "application/pdf",
+      "page_count": 2,
+      "language": "de",
+      "content_sha256": "97cd25733bdee9a854f2cc62daf3cea5871bf411b1f3277b638ff9ec108aa217",
+      "extractor_backend": "demo_pdf_text_extractor",
+      "ocr_used": false,
+      "layout_retained": true,
+      "extracted_at": "2026-03-30T00:00:00+00:00",
+      "metadata": {
+        "producer": "example-demo",
+        "example": true,
+        "document_family": "job_offer_pdf"
+      }
+    },
+    "parse": {
+      "raw_text": "Jobtitel: IT Service Desk Coordinator (m/w/d)\nArbeitgeber: ExampleCorp\nArbeitsort: Remote (EU)\nAnstellungsart: Vollzeit\nBeginn: ab sofort\nMission: Example job posting used to demonstrate the job posting schema and downstream parsing workflows.\n\nAufgaben\n- Koordination des Servicedesk-Teams zur Sicherstellung der effizienten, zuverlaessigen Bearbeitung der Anfragen interner IT-Anwender\n- Mitarbeit bei und Ueberpruefung von schwierigen bzw. besonderen Tickets\n- Ueberwachung und Betreuung von Eskalationen zur Unterstuetzung schneller, prozesstreuer Loesungen\n- Analyse von Ursachen fuer Loesungsverzoegerungen oder Incidents und Ableitung geeigneter Massnahmen\n- Customizing und Optimierung des Ticket-Systems\n- Etablierung von KPIs zur Steuerung eines erfolgreichen Servicedesks\n- Zustaendigkeit fuer die Endpoint-Verwaltung (Beschaffung, Asset Management)\n\nProfil\n- Abgeschlossene Ausbildung zum Fachinformatiker (m/w/d) oder vergleichbar\n- Erfahrung im IT-Support\n- Erfahrung in der Koordination eines IT-Service-Teams\n- Erfahrung in Administration und Konfiguration von Ticket-Systemen (z. B. TOPdesk), Servicedesk-Prozessen, gaengigen IT-Standards und ITIL-Framework\n- Strukturierte, organisierte, prozessorientierte und eigenstaendige Arbeitsweise\n- Zuverlaessigkeit, Verantwortungs- und Qualitaetsbewusstsein\n- Service- und loesungsorientiertes Arbeiten, analytische und konzeptionelle Staerke, Faehigkeit, Probleme schnell zu erfassen\n- Sichere Kommunikation mit verschiedenen Ansprechpartnern im Unternehmen\n- Sehr gute Deutschkenntnisse in Wort und Schrift; gute Englischkenntnisse von Vorteil\n\nAngebot\n- Krisen- und zukunftssicherer Arbeitsplatz in der wachsenden Pharmabranche\n- Teil eines innovativen und modernen Familienunternehmens\n- Vielseitige Taetigkeiten und Aufgaben in einem spannenden Arbeitsumfeld\n- Ausfuehrliche und fundierte fachliche Einarbeitung\n- Langfristige Perspektiven und interne Weiterentwicklungsmoeglichkeiten\n- Attraktive Verguetung gemaess Chemie-Tarifvertrag\n- Zusammenarbeit mit motivierten und professionellen KollegInnen\n\nBewerbungsart: E-Mail\nE-Mail: jobs@example.com",
+      "language": "de",
+      "page_count": 2,
+      "extractor_backend": "demo_pdf_text_extractor",
+      "extractor_method": "layout_aware_pdf_parse",
+      "chunk_strategy": "section_aware",
+      "chunk_count": 4,
+      "is_job_posting": true,
+      "warnings": [],
+      "errors": []
+    },
+    "job_posting": {
+      "$schema_version": "1.0",
+      "jobtitel": "IT Service Desk Coordinator (m/w/d)",
+      "arbeitgeber": "ExampleCorp",
+      "arbeitsort": "Remote (EU)",
+      "anstellungsart": "Vollzeit",
+      "befristung": "unbefristet",
+      "beginn": "ab sofort",
+      "berufsbezeichnung": "IT-Produktkoordinator/in",
+      "mission": "Example job posting used to demonstrate the job posting schema and downstream parsing workflows.",
+      "aufgaben": [
+        "Koordination des Servicedesk-Teams zur Sicherstellung der effizienten, zuverlaessigen Bearbeitung der Anfragen interner IT-Anwender",
+        "Mitarbeit bei und Ueberpruefung von schwierigen bzw. besonderen Tickets",
+        "Ueberwachung und Betreuung von Eskalationen zur Unterstuetzung schneller, prozesstreuer Loesungen",
+        "Analyse von Ursachen fuer Loesungsverzoegerungen oder Incidents und Ableitung geeigneter Massnahmen",
+        "Customizing und Optimierung des Ticket-Systems",
+        "Etablierung von KPIs zur Steuerung eines erfolgreichen Servicedesks",
+        "Zustaendigkeit fuer die Endpoint-Verwaltung (Beschaffung, Asset Management)"
+      ],
+      "profil": [
+        "Abgeschlossene Ausbildung zum Fachinformatiker (m/w/d) oder vergleichbar",
+        "Erfahrung im IT-Support",
+        "Erfahrung in der Koordination eines IT-Service-Teams",
+        "Erfahrung in Administration und Konfiguration von Ticket-Systemen (z. B. TOPdesk), Servicedesk-Prozessen, gaengigen IT-Standards und ITIL-Framework",
+        "Strukturierte, organisierte, prozessorientierte und eigenstaendige Arbeitsweise",
+        "Zuverlaessigkeit, Verantwortungs- und Qualitaetsbewusstsein",
+        "Service- und loesungsorientiertes Arbeiten, analytische und konzeptionelle Staerke, Faehigkeit, Probleme schnell zu erfassen",
+        "Sichere Kommunikation mit verschiedenen Ansprechpartnern im Unternehmen",
+        "Sehr gute Deutschkenntnisse in Wort und Schrift; gute Englischkenntnisse von Vorteil"
+      ],
+      "angebot": [
+        "Krisen- und zukunftssicherer Arbeitsplatz in der wachsenden Pharmabranche",
+        "Teil eines innovativen und modernen Familienunternehmens",
+        "Vielseitige Taetigkeiten und Aufgaben in einem spannenden Arbeitsumfeld",
+        "Ausfuehrliche und fundierte fachliche Einarbeitung",
+        "Langfristige Perspektiven und interne Weiterentwicklungsmoeglichkeiten",
+        "Attraktive Verguetung gemaess Chemie-Tarifvertrag",
+        "Zusammenarbeit mit motivierten und professionellen KollegInnen"
+      ],
+      "gehalt": "",
+      "bewerbungsart": "E-Mail",
+      "anschrift_arbeitgeber": "",
+      "email": "jobs@example.com",
+      "telefon": ""
+    },
+    "db_updates": {
+      "processing_state": "processed",
+      "processed": true,
+      "document_id": "doc:job_posting:job-offer:examplecorp:it-service-desk-coordinator",
+      "entity_count": 9,
+      "relation_count": 8,
+      "embedding_count": 5
+    },
+    "handoff_metadata": {
+      "source_agent": "job_posting_pdf_parser",
+      "tenant_id": "tenant_demo",
+      "knowledge_namespace_id": "ns_jobs_de",
+      "knowledge_namespace_slug": "jobs-de",
+      "knowledge_namespace_name": "Jobs Deutschland"
+    },
+    "source_payload": {
+      "input_kind": "pdf_upload",
+      "file_name": "job_offer_examplecorp_it_service_desk_coordinator.pdf",
+      "source_path": "AppData/job_offer_examplecorp_it_service_desk_coordinator.pdf",
+      "uploaded_by": "demo-user",
+      "example": true
+    }
+  },
+  "mongodb_objects": {
+    "namespace": {
+      "id": "ns_jobs_de",
+      "tenant_id": "tenant_demo",
+      "slug": "jobs-de",
+      "name": "Jobs Deutschland",
+      "default_embedding_model": "demo-text-embedding-8d",
+      "default_embedding_dimension": 8,
+      "description": "Beispielhafter Wissensraum fuer Job-Posting-Extraktion aus PDFs.",
+      "index_backend": "faiss",
+      "metadata": {
+        "locale": "de-DE",
+        "example": true
+      },
+      "created_at": "2026-03-30 00:00:00+00:00",
+      "updated_at": "2026-03-30 00:00:00+00:00"
+    },
+    "document": {
+      "id": "doc:job_posting:job-offer:examplecorp:it-service-desk-coordinator",
+      "tenant_id": "tenant_demo",
+      "namespace_id": "ns_jobs_de",
+      "document_type": "job_posting",
+      "title": "IT Service Desk Coordinator (m/w/d)",
+      "source_uri": "file://AppData/job_offer_examplecorp_it_service_desk_coordinator.pdf",
+      "content_sha256": "97cd25733bdee9a854f2cc62daf3cea5871bf411b1f3277b638ff9ec108aa217",
+      "source_system": "pdf_upload",
+      "mime_type": "application/pdf",
+      "language_code": "de",
+      "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+      "author_entity_id": null,
+      "summary": "Example job posting used to demonstrate the job posting schema and downstream parsing workflows.",
+      "metadata": {
+        "company_name": "ExampleCorp",
+        "location": "Remote (EU)",
+        "employment_type": "Vollzeit",
+        "source_pdf": {
+          "file_name": "job_offer_examplecorp_it_service_desk_coordinator.pdf",
+          "source_path": "AppData/job_offer_examplecorp_it_service_desk_coordinator.pdf",
+          "source_uri": "file://AppData/job_offer_examplecorp_it_service_desk_coordinator.pdf",
+          "mime_type": "application/pdf",
+          "page_count": 2,
+          "language": "de",
+          "content_sha256": "97cd25733bdee9a854f2cc62daf3cea5871bf411b1f3277b638ff9ec108aa217",
+          "extractor_backend": "demo_pdf_text_extractor",
+          "ocr_used": false,
+          "layout_retained": true,
+          "extracted_at": "2026-03-30T00:00:00+00:00",
+          "metadata": {
+            "producer": "example-demo",
+            "example": true,
+            "document_family": "job_offer_pdf"
+          }
+        },
+        "raw_text_sha256": "97cd25733bdee9a854f2cc62daf3cea5871bf411b1f3277b638ff9ec108aa217",
+        "example": true
+      },
+      "blocks": [
+        {
+          "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:1",
+          "block_no": 1,
+          "content": "Jobtitel: IT Service Desk Coordinator (m/w/d)\nArbeitgeber: ExampleCorp\nArbeitsort: Remote (EU)\nAnstellungsart: Vollzeit\nBeginn: ab sofort\nMission: Example job posting used to demonstrate the job posting schema and downstream parsing workflows.",
+          "block_kind": "section",
+          "heading": "Stammdaten",
+          "token_count": 31,
+          "char_start": 0,
+          "char_end": 243,
+          "parent_block_id": null,
+          "metadata": {
+            "section_type": "header",
+            "page_no": 1
+          },
+          "mentions": [
+            {
+              "entity_id": "ent_job_it_service_desk_coordinator",
+              "mention_text": "IT Service Desk Coordinator",
+              "extractor": "layout_rule",
+              "confidence": 0.99,
+              "char_start": 10,
+              "char_end": 37,
+              "metadata": {
+                "example": true,
+                "extractor_version": "demo-v1"
+              },
+              "created_at": "2026-03-30 00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_company_examplecorp",
+              "mention_text": "ExampleCorp",
+              "extractor": "layout_rule",
+              "confidence": 0.99,
+              "char_start": 59,
+              "char_end": 70,
+              "metadata": {
+                "example": true,
+                "extractor_version": "demo-v1"
+              },
+              "created_at": "2026-03-30 00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_location_remote_eu",
+              "mention_text": "Remote (EU)",
+              "extractor": "layout_rule",
+              "confidence": 0.98,
+              "char_start": 83,
+              "char_end": 94,
+              "metadata": {
+                "example": true,
+                "extractor_version": "demo-v1"
+              },
+              "created_at": "2026-03-30 00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_employment_vollzeit",
+              "mention_text": "Vollzeit",
+              "extractor": "layout_rule",
+              "confidence": 0.98,
+              "char_start": 111,
+              "char_end": 119,
+              "metadata": {
+                "example": true,
+                "extractor_version": "demo-v1"
+              },
+              "created_at": "2026-03-30 00:00:00+00:00"
+            }
+          ],
+          "created_at": "2026-03-30 00:00:00+00:00"
+        },
+        {
+          "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:2",
+          "block_no": 2,
+          "content": "Aufgaben\n- Koordination des Servicedesk-Teams zur Sicherstellung der effizienten, zuverlaessigen Bearbeitung der Anfragen interner IT-Anwender\n- Mitarbeit bei und Ueberpruefung von schwierigen bzw. besonderen Tickets\n- Ueberwachung und Betreuung von Eskalationen zur Unterstuetzung schneller, prozesstreuer Loesungen\n- Analyse von Ursachen fuer Loesungsverzoegerungen oder Incidents und Ableitung geeigneter Massnahmen\n- Customizing und Optimierung des Ticket-Systems\n- Etablierung von KPIs zur Steuerung eines erfolgreichen Servicedesks\n- Zustaendigkeit fuer die Endpoint-Verwaltung (Beschaffung, Asset Management)",
+          "block_kind": "chunk",
+          "heading": "Aufgaben",
+          "token_count": 71,
+          "char_start": 245,
+          "char_end": 860,
+          "parent_block_id": null,
+          "metadata": {
+            "section_type": "responsibilities",
+            "page_no": 1
+          },
+          "mentions": [],
+          "created_at": "2026-03-30 00:00:00+00:00"
+        },
+        {
+          "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:3",
+          "block_no": 3,
+          "content": "Profil\n- Abgeschlossene Ausbildung zum Fachinformatiker (m/w/d) oder vergleichbar\n- Erfahrung im IT-Support\n- Erfahrung in der Koordination eines IT-Service-Teams\n- Erfahrung in Administration und Konfiguration von Ticket-Systemen (z. B. TOPdesk), Servicedesk-Prozessen, gaengigen IT-Standards und ITIL-Framework\n- Strukturierte, organisierte, prozessorientierte und eigenstaendige Arbeitsweise\n- Zuverlaessigkeit, Verantwortungs- und Qualitaetsbewusstsein\n- Service- und loesungsorientiertes Arbeiten, analytische und konzeptionelle Staerke, Faehigkeit, Probleme schnell zu erfassen\n- Sichere Kommunikation mit verschiedenen Ansprechpartnern im Unternehmen\n- Sehr gute Deutschkenntnisse in Wort und Schrift; gute Englischkenntnisse von Vorteil",
+          "block_kind": "chunk",
+          "heading": "Profil",
+          "token_count": 82,
+          "char_start": 862,
+          "char_end": 1606,
+          "parent_block_id": null,
+          "metadata": {
+            "section_type": "requirements",
+            "page_no": 2
+          },
+          "mentions": [
+            {
+              "entity_id": "ent_skill_it_support",
+              "mention_text": "IT-Support",
+              "extractor": "ner",
+              "confidence": 0.95,
+              "char_start": 97,
+              "char_end": 107,
+              "metadata": {
+                "example": true,
+                "extractor_version": "demo-v1"
+              },
+              "created_at": "2026-03-30 00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_tool_topdesk",
+              "mention_text": "TOPdesk",
+              "extractor": "ner",
+              "confidence": 0.97,
+              "char_start": 238,
+              "char_end": 245,
+              "metadata": {
+                "example": true,
+                "extractor_version": "demo-v1"
+              },
+              "created_at": "2026-03-30 00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_framework_itil",
+              "mention_text": "ITIL",
+              "extractor": "ner",
+              "confidence": 0.97,
+              "char_start": 298,
+              "char_end": 302,
+              "metadata": {
+                "example": true,
+                "extractor_version": "demo-v1"
+              },
+              "created_at": "2026-03-30 00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_language_deutsch",
+              "mention_text": "Deutschkenntnisse",
+              "extractor": "ner",
+              "confidence": 0.93,
+              "char_start": 670,
+              "char_end": 687,
+              "metadata": {
+                "example": true,
+                "extractor_version": "demo-v1"
+              },
+              "created_at": "2026-03-30 00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_language_englisch",
+              "mention_text": "Englischkenntnisse",
+              "extractor": "ner",
+              "confidence": 0.9,
+              "char_start": 714,
+              "char_end": 732,
+              "metadata": {
+                "example": true,
+                "extractor_version": "demo-v1"
+              },
+              "created_at": "2026-03-30 00:00:00+00:00"
+            }
+          ],
+          "created_at": "2026-03-30 00:00:00+00:00"
+        },
+        {
+          "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:4",
+          "block_no": 4,
+          "content": "Angebot\n- Krisen- und zukunftssicherer Arbeitsplatz in der wachsenden Pharmabranche\n- Teil eines innovativen und modernen Familienunternehmens\n- Vielseitige Taetigkeiten und Aufgaben in einem spannenden Arbeitsumfeld\n- Ausfuehrliche und fundierte fachliche Einarbeitung\n- Langfristige Perspektiven und interne Weiterentwicklungsmoeglichkeiten\n- Attraktive Verguetung gemaess Chemie-Tarifvertrag\n- Zusammenarbeit mit motivierten und professionellen KollegInnen\n\nBewerbungsart: E-Mail\nE-Mail: jobs@example.com",
+          "block_kind": "chunk",
+          "heading": "Angebot und Bewerbung",
+          "token_count": 54,
+          "char_start": 1608,
+          "char_end": 2115,
+          "parent_block_id": null,
+          "metadata": {
+            "section_type": "benefits",
+            "page_no": 2
+          },
+          "mentions": [],
+          "created_at": "2026-03-30 00:00:00+00:00"
+        }
+      ],
+      "created_at": "2026-03-30 00:00:00+00:00",
+      "updated_at": "2026-03-30 00:00:00+00:00"
+    },
+    "chunks": [
+      {
+        "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:1",
+        "block_no": 1,
+        "content": "Jobtitel: IT Service Desk Coordinator (m/w/d)\nArbeitgeber: ExampleCorp\nArbeitsort: Remote (EU)\nAnstellungsart: Vollzeit\nBeginn: ab sofort\nMission: Example job posting used to demonstrate the job posting schema and downstream parsing workflows.",
+        "block_kind": "section",
+        "heading": "Stammdaten",
+        "token_count": 31,
+        "char_start": 0,
+        "char_end": 243,
+        "parent_block_id": null,
+        "metadata": {
+          "section_type": "header",
+          "page_no": 1
+        },
+        "mentions": [
+          {
+            "entity_id": "ent_job_it_service_desk_coordinator",
+            "mention_text": "IT Service Desk Coordinator",
+            "extractor": "layout_rule",
+            "confidence": 0.99,
+            "char_start": 10,
+            "char_end": 37,
+            "metadata": {
+              "example": true,
+              "extractor_version": "demo-v1"
+            },
+            "created_at": "2026-03-30 00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_company_examplecorp",
+            "mention_text": "ExampleCorp",
+            "extractor": "layout_rule",
+            "confidence": 0.99,
+            "char_start": 59,
+            "char_end": 70,
+            "metadata": {
+              "example": true,
+              "extractor_version": "demo-v1"
+            },
+            "created_at": "2026-03-30 00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_location_remote_eu",
+            "mention_text": "Remote (EU)",
+            "extractor": "layout_rule",
+            "confidence": 0.98,
+            "char_start": 83,
+            "char_end": 94,
+            "metadata": {
+              "example": true,
+              "extractor_version": "demo-v1"
+            },
+            "created_at": "2026-03-30 00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_employment_vollzeit",
+            "mention_text": "Vollzeit",
+            "extractor": "layout_rule",
+            "confidence": 0.98,
+            "char_start": 111,
+            "char_end": 119,
+            "metadata": {
+              "example": true,
+              "extractor_version": "demo-v1"
+            },
+            "created_at": "2026-03-30 00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:2",
+        "block_no": 2,
+        "content": "Aufgaben\n- Koordination des Servicedesk-Teams zur Sicherstellung der effizienten, zuverlaessigen Bearbeitung der Anfragen interner IT-Anwender\n- Mitarbeit bei und Ueberpruefung von schwierigen bzw. besonderen Tickets\n- Ueberwachung und Betreuung von Eskalationen zur Unterstuetzung schneller, prozesstreuer Loesungen\n- Analyse von Ursachen fuer Loesungsverzoegerungen oder Incidents und Ableitung geeigneter Massnahmen\n- Customizing und Optimierung des Ticket-Systems\n- Etablierung von KPIs zur Steuerung eines erfolgreichen Servicedesks\n- Zustaendigkeit fuer die Endpoint-Verwaltung (Beschaffung, Asset Management)",
+        "block_kind": "chunk",
+        "heading": "Aufgaben",
+        "token_count": 71,
+        "char_start": 245,
+        "char_end": 860,
+        "parent_block_id": null,
+        "metadata": {
+          "section_type": "responsibilities",
+          "page_no": 1
+        },
+        "mentions": [],
+        "created_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:3",
+        "block_no": 3,
+        "content": "Profil\n- Abgeschlossene Ausbildung zum Fachinformatiker (m/w/d) oder vergleichbar\n- Erfahrung im IT-Support\n- Erfahrung in der Koordination eines IT-Service-Teams\n- Erfahrung in Administration und Konfiguration von Ticket-Systemen (z. B. TOPdesk), Servicedesk-Prozessen, gaengigen IT-Standards und ITIL-Framework\n- Strukturierte, organisierte, prozessorientierte und eigenstaendige Arbeitsweise\n- Zuverlaessigkeit, Verantwortungs- und Qualitaetsbewusstsein\n- Service- und loesungsorientiertes Arbeiten, analytische und konzeptionelle Staerke, Faehigkeit, Probleme schnell zu erfassen\n- Sichere Kommunikation mit verschiedenen Ansprechpartnern im Unternehmen\n- Sehr gute Deutschkenntnisse in Wort und Schrift; gute Englischkenntnisse von Vorteil",
+        "block_kind": "chunk",
+        "heading": "Profil",
+        "token_count": 82,
+        "char_start": 862,
+        "char_end": 1606,
+        "parent_block_id": null,
+        "metadata": {
+          "section_type": "requirements",
+          "page_no": 2
+        },
+        "mentions": [
+          {
+            "entity_id": "ent_skill_it_support",
+            "mention_text": "IT-Support",
+            "extractor": "ner",
+            "confidence": 0.95,
+            "char_start": 97,
+            "char_end": 107,
+            "metadata": {
+              "example": true,
+              "extractor_version": "demo-v1"
+            },
+            "created_at": "2026-03-30 00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_tool_topdesk",
+            "mention_text": "TOPdesk",
+            "extractor": "ner",
+            "confidence": 0.97,
+            "char_start": 238,
+            "char_end": 245,
+            "metadata": {
+              "example": true,
+              "extractor_version": "demo-v1"
+            },
+            "created_at": "2026-03-30 00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_framework_itil",
+            "mention_text": "ITIL",
+            "extractor": "ner",
+            "confidence": 0.97,
+            "char_start": 298,
+            "char_end": 302,
+            "metadata": {
+              "example": true,
+              "extractor_version": "demo-v1"
+            },
+            "created_at": "2026-03-30 00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_language_deutsch",
+            "mention_text": "Deutschkenntnisse",
+            "extractor": "ner",
+            "confidence": 0.93,
+            "char_start": 670,
+            "char_end": 687,
+            "metadata": {
+              "example": true,
+              "extractor_version": "demo-v1"
+            },
+            "created_at": "2026-03-30 00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_language_englisch",
+            "mention_text": "Englischkenntnisse",
+            "extractor": "ner",
+            "confidence": 0.9,
+            "char_start": 714,
+            "char_end": 732,
+            "metadata": {
+              "example": true,
+              "extractor_version": "demo-v1"
+            },
+            "created_at": "2026-03-30 00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:4",
+        "block_no": 4,
+        "content": "Angebot\n- Krisen- und zukunftssicherer Arbeitsplatz in der wachsenden Pharmabranche\n- Teil eines innovativen und modernen Familienunternehmens\n- Vielseitige Taetigkeiten und Aufgaben in einem spannenden Arbeitsumfeld\n- Ausfuehrliche und fundierte fachliche Einarbeitung\n- Langfristige Perspektiven und interne Weiterentwicklungsmoeglichkeiten\n- Attraktive Verguetung gemaess Chemie-Tarifvertrag\n- Zusammenarbeit mit motivierten und professionellen KollegInnen\n\nBewerbungsart: E-Mail\nE-Mail: jobs@example.com",
+        "block_kind": "chunk",
+        "heading": "Angebot und Bewerbung",
+        "token_count": 54,
+        "char_start": 1608,
+        "char_end": 2115,
+        "parent_block_id": null,
+        "metadata": {
+          "section_type": "benefits",
+          "page_no": 2
+        },
+        "mentions": [],
+        "created_at": "2026-03-30 00:00:00+00:00"
+      }
+    ],
+    "entities": [
+      {
+        "id": "ent_job_it_service_desk_coordinator",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "entity_type": "job_posting",
+        "canonical_name": "IT Service Desk Coordinator (m/w/d)",
+        "external_key": "job:examplecorp:it-service-desk-coordinator",
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "status": "active",
+        "summary": "Stellenprofil fuer die Koordination eines IT-Service-Desk-Teams.",
+        "attributes": {
+          "employment_type": "Vollzeit",
+          "work_mode": "Remote (EU)",
+          "start_date": "ab sofort"
+        },
+        "aliases": [
+          {
+            "alias": "IT-Produktkoordinator/in",
+            "alias_type": "synonym",
+            "locale": "de",
+            "confidence": 0.96,
+            "source_document_id": "doc:job_posting:job-offer:examplecorp:it-service-desk-coordinator",
+            "created_at": "2026-03-30 00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "ent_company_examplecorp",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "entity_type": "organization",
+        "canonical_name": "ExampleCorp",
+        "external_key": "org:examplecorp",
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "status": "active",
+        "summary": "Arbeitgeber der Beispiel-Stellenanzeige.",
+        "attributes": {
+          "industry": "pharma",
+          "organization_kind": "familienunternehmen"
+        },
+        "aliases": [],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "ent_location_remote_eu",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "entity_type": "location",
+        "canonical_name": "Remote (EU)",
+        "external_key": "location:remote-eu",
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "status": "active",
+        "summary": "Arbeitsort der Stelle innerhalb der EU im Remote-Modell.",
+        "attributes": {
+          "mode": "remote",
+          "region": "EU"
+        },
+        "aliases": [],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "ent_employment_vollzeit",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "entity_type": "employment_type",
+        "canonical_name": "Vollzeit",
+        "external_key": "employment:full-time",
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "status": "active",
+        "summary": "Anstellungsart der Stelle.",
+        "attributes": {},
+        "aliases": [],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "ent_skill_it_support",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "entity_type": "skill",
+        "canonical_name": "IT-Support",
+        "external_key": "skill:it-support",
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "status": "active",
+        "summary": "Praxis in der Unterstuetzung interner IT-Anwender.",
+        "attributes": {},
+        "aliases": [],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "ent_tool_topdesk",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "entity_type": "tool",
+        "canonical_name": "TOPdesk",
+        "external_key": "tool:topdesk",
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "status": "active",
+        "summary": "Beispiel fuer ein Ticket-System im Stellenprofil.",
+        "attributes": {},
+        "aliases": [],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "ent_framework_itil",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "entity_type": "framework",
+        "canonical_name": "ITIL",
+        "external_key": "framework:itil",
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "status": "active",
+        "summary": "IT-Service-Management-Framework im Anforderungsprofil.",
+        "attributes": {},
+        "aliases": [],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "ent_language_deutsch",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "entity_type": "language",
+        "canonical_name": "Deutsch",
+        "external_key": "language:de",
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "status": "active",
+        "summary": "Erforderliche Sprachkompetenz fuer die Stelle.",
+        "attributes": {},
+        "aliases": [],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "ent_language_englisch",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "entity_type": "language",
+        "canonical_name": "Englisch",
+        "external_key": "language:en",
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "status": "active",
+        "summary": "Wuenschenswerte Sprachkompetenz fuer die Stelle.",
+        "attributes": {},
+        "aliases": [],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      }
+    ],
+    "relations": [
+      {
+        "id": "rel_job_company_examplecorp",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_company_examplecorp",
+        "relation_type": "offered_by",
+        "direction": "directed",
+        "weight": 1.0,
+        "confidence": 0.99,
+        "valid_from": null,
+        "valid_to": null,
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "metadata": {
+          "source": "header_section",
+          "example": true
+        },
+        "evidence": [
+          {
+            "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:1",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30 00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_location_remote_eu",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_location_remote_eu",
+        "relation_type": "located_in",
+        "direction": "directed",
+        "weight": 0.92,
+        "confidence": 0.98,
+        "valid_from": null,
+        "valid_to": null,
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "metadata": {
+          "source": "header_section",
+          "example": true
+        },
+        "evidence": [
+          {
+            "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:1",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30 00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_employment_vollzeit",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_employment_vollzeit",
+        "relation_type": "employment_type",
+        "direction": "directed",
+        "weight": 0.88,
+        "confidence": 0.98,
+        "valid_from": null,
+        "valid_to": null,
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "metadata": {
+          "source": "header_section",
+          "example": true
+        },
+        "evidence": [
+          {
+            "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:1",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30 00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_skill_it_support",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_skill_it_support",
+        "relation_type": "requires_skill",
+        "direction": "directed",
+        "weight": 0.95,
+        "confidence": 0.95,
+        "valid_from": null,
+        "valid_to": null,
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "metadata": {
+          "source": "requirements_section",
+          "example": true
+        },
+        "evidence": [
+          {
+            "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30 00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_tool_topdesk",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_tool_topdesk",
+        "relation_type": "uses_tool",
+        "direction": "directed",
+        "weight": 0.81,
+        "confidence": 0.97,
+        "valid_from": null,
+        "valid_to": null,
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "metadata": {
+          "source": "requirements_section",
+          "example": true
+        },
+        "evidence": [
+          {
+            "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30 00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_framework_itil",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_framework_itil",
+        "relation_type": "requires_framework_knowledge",
+        "direction": "directed",
+        "weight": 0.84,
+        "confidence": 0.97,
+        "valid_from": null,
+        "valid_to": null,
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "metadata": {
+          "source": "requirements_section",
+          "example": true
+        },
+        "evidence": [
+          {
+            "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30 00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_language_deutsch",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_language_deutsch",
+        "relation_type": "requires_language",
+        "direction": "directed",
+        "weight": 0.9,
+        "confidence": 0.93,
+        "valid_from": null,
+        "valid_to": null,
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "metadata": {
+          "source": "requirements_section",
+          "example": true
+        },
+        "evidence": [
+          {
+            "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30 00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_language_englisch",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_language_englisch",
+        "relation_type": "prefers_language",
+        "direction": "directed",
+        "weight": 0.45,
+        "confidence": 0.9,
+        "valid_from": null,
+        "valid_to": null,
+        "correlation_id": "job-offer:examplecorp:it-service-desk-coordinator",
+        "metadata": {
+          "source": "requirements_section",
+          "example": true
+        },
+        "evidence": [
+          {
+            "block_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30 00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      }
+    ],
+    "embeddings": [
+      {
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "model_id": "demo-text-embedding-8d",
+        "owner_type": "document",
+        "owner_id": "doc:job_posting:job-offer:examplecorp:it-service-desk-coordinator",
+        "content_sha256": "97cd25733bdee9a854f2cc62daf3cea5871bf411b1f3277b638ff9ec108aa217",
+        "dimension": 8,
+        "index_namespace": "ns_jobs_de",
+        "index_item_key": "doc:job_posting:job-offer:examplecorp:it-service-desk-coordinator",
+        "chunk_hash": null,
+        "embedding": [
+          -0.411765,
+          -0.819608,
+          -0.513725,
+          -0.615686,
+          0.709804,
+          0.098039,
+          -0.247059,
+          0.968627
+        ],
+        "index_backend": "faiss",
+        "metadata": {
+          "source_stage": "document_embedding",
+          "example": true
+        },
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "model_id": "demo-text-embedding-8d",
+        "owner_type": "block",
+        "owner_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:1",
+        "content_sha256": "e5453a7f1b3207f5075b58f35d5af4e8e57c18266132e36d316e46bc9df94837",
+        "dimension": 8,
+        "index_namespace": "ns_jobs_de",
+        "index_item_key": "blk:job-offer:examplecorp:it-service-desk-coordinator:1",
+        "chunk_hash": "09778006314363d92d5972112b4e4243227a164be57c7695133d14cd65f0c4f8",
+        "embedding": [
+          -0.270588,
+          0.286275,
+          -0.019608,
+          -0.615686,
+          0.309804,
+          0.435294,
+          0.380392,
+          0.356863
+        ],
+        "index_backend": "faiss",
+        "metadata": {
+          "source_stage": "chunk_embedding",
+          "heading": "Stammdaten",
+          "block_no": 1,
+          "example": true
+        },
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "model_id": "demo-text-embedding-8d",
+        "owner_type": "block",
+        "owner_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:2",
+        "content_sha256": "32e9ee1b1cd576a602d9a78012d8be2f6771e77999d54108a96e28362412e0c8",
+        "dimension": 8,
+        "index_namespace": "ns_jobs_de",
+        "index_item_key": "blk:job-offer:examplecorp:it-service-desk-coordinator:2",
+        "chunk_hash": "c32190e9649692ab28a317f1fe13b9f23e9e8f18d0273bb0080b66ef80c7af08",
+        "embedding": [
+          0.294118,
+          -0.160784,
+          0.043137,
+          0.07451,
+          0.796078,
+          0.192157,
+          -0.184314,
+          -0.301961
+        ],
+        "index_backend": "faiss",
+        "metadata": {
+          "source_stage": "chunk_embedding",
+          "heading": "Aufgaben",
+          "block_no": 2,
+          "example": true
+        },
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "model_id": "demo-text-embedding-8d",
+        "owner_type": "block",
+        "owner_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:3",
+        "content_sha256": "99e87f539cfa41de40c70705edff1ff210400e79421948b6b1de6a4042528dd8",
+        "dimension": 8,
+        "index_namespace": "ns_jobs_de",
+        "index_item_key": "blk:job-offer:examplecorp:it-service-desk-coordinator:3",
+        "chunk_hash": "87533da867c895a706725a179050808b073efac284ece7e291aacafc16c2f025",
+        "embedding": [
+          -0.905882,
+          0.05098,
+          -0.976471,
+          -0.34902,
+          0.654902,
+          0.309804,
+          0.647059,
+          -0.764706
+        ],
+        "index_backend": "faiss",
+        "metadata": {
+          "source_stage": "chunk_embedding",
+          "heading": "Profil",
+          "block_no": 3,
+          "example": true
+        },
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      },
+      {
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_jobs_de",
+        "model_id": "demo-text-embedding-8d",
+        "owner_type": "block",
+        "owner_id": "blk:job-offer:examplecorp:it-service-desk-coordinator:4",
+        "content_sha256": "d7bdd244e32d8ff8f5be50fd751968ebfec1b012129f633535b6fe338382ec87",
+        "dimension": 8,
+        "index_namespace": "ns_jobs_de",
+        "index_item_key": "blk:job-offer:examplecorp:it-service-desk-coordinator:4",
+        "chunk_hash": "387cc9f639c697fd36758ec265be9e74d6af217bdc0067a357589b367cd4e1b8",
+        "embedding": [
+          -0.317647,
+          -0.960784,
+          0.07451,
+          -0.764706,
+          -0.929412,
+          -0.796078,
+          -0.717647,
+          -0.403922
+        ],
+        "index_backend": "faiss",
+        "metadata": {
+          "source_stage": "chunk_embedding",
+          "heading": "Angebot und Bewerbung",
+          "block_no": 4,
+          "example": true
+        },
+        "created_at": "2026-03-30 00:00:00+00:00",
+        "updated_at": "2026-03-30 00:00:00+00:00"
+      }
+    ]
+  },
+  "entity_relation_graph": {
+    "nodes": [
+      {
+        "entity_id": "ent_job_it_service_desk_coordinator",
+        "entity_type": "job_posting",
+        "canonical_name": "IT Service Desk Coordinator (m/w/d)"
+      },
+      {
+        "entity_id": "ent_company_examplecorp",
+        "entity_type": "organization",
+        "canonical_name": "ExampleCorp"
+      },
+      {
+        "entity_id": "ent_location_remote_eu",
+        "entity_type": "location",
+        "canonical_name": "Remote (EU)"
+      },
+      {
+        "entity_id": "ent_employment_vollzeit",
+        "entity_type": "employment_type",
+        "canonical_name": "Vollzeit"
+      },
+      {
+        "entity_id": "ent_skill_it_support",
+        "entity_type": "skill",
+        "canonical_name": "IT-Support"
+      },
+      {
+        "entity_id": "ent_tool_topdesk",
+        "entity_type": "tool",
+        "canonical_name": "TOPdesk"
+      },
+      {
+        "entity_id": "ent_framework_itil",
+        "entity_type": "framework",
+        "canonical_name": "ITIL"
+      },
+      {
+        "entity_id": "ent_language_deutsch",
+        "entity_type": "language",
+        "canonical_name": "Deutsch"
+      },
+      {
+        "entity_id": "ent_language_englisch",
+        "entity_type": "language",
+        "canonical_name": "Englisch"
+      }
+    ],
+    "edges": [
+      {
+        "relation_id": "rel_job_company_examplecorp",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_company_examplecorp",
+        "relation_type": "offered_by",
+        "direction": "directed",
+        "weight": 1.0,
+        "confidence": 0.99
+      },
+      {
+        "relation_id": "rel_job_location_remote_eu",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_location_remote_eu",
+        "relation_type": "located_in",
+        "direction": "directed",
+        "weight": 0.92,
+        "confidence": 0.98
+      },
+      {
+        "relation_id": "rel_job_employment_vollzeit",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_employment_vollzeit",
+        "relation_type": "employment_type",
+        "direction": "directed",
+        "weight": 0.88,
+        "confidence": 0.98
+      },
+      {
+        "relation_id": "rel_job_skill_it_support",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_skill_it_support",
+        "relation_type": "requires_skill",
+        "direction": "directed",
+        "weight": 0.95,
+        "confidence": 0.95
+      },
+      {
+        "relation_id": "rel_job_tool_topdesk",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_tool_topdesk",
+        "relation_type": "uses_tool",
+        "direction": "directed",
+        "weight": 0.81,
+        "confidence": 0.97
+      },
+      {
+        "relation_id": "rel_job_framework_itil",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_framework_itil",
+        "relation_type": "requires_framework_knowledge",
+        "direction": "directed",
+        "weight": 0.84,
+        "confidence": 0.97
+      },
+      {
+        "relation_id": "rel_job_language_deutsch",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_language_deutsch",
+        "relation_type": "requires_language",
+        "direction": "directed",
+        "weight": 0.9,
+        "confidence": 0.93
+      },
+      {
+        "relation_id": "rel_job_language_englisch",
+        "source_entity_id": "ent_job_it_service_desk_coordinator",
+        "target_entity_id": "ent_language_englisch",
+        "relation_type": "prefers_language",
+        "direction": "directed",
+        "weight": 0.45,
+        "confidence": 0.9
+      }
+    ]
+  }
+}

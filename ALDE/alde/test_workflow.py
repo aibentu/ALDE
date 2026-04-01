@@ -57,6 +57,93 @@ class _DeterministicDispatcherChatComE:
         return SimpleNamespace(choices=[SimpleNamespace(message=message)])
 
 
+class _InMemoryMongoDocumentBackend:
+    def __init__(self) -> None:
+        self._collections: dict[tuple[str, str], dict[str, dict[str, object]]] = {}
+
+    def _collection_name(self, *, db_name: str | None = None, obj_name: str | None = None) -> str:
+        normalized_db_name = str(db_name or "").strip().lower()
+        if normalized_db_name:
+            return normalized_db_name
+        return str(obj_name or "documents").strip() or "documents"
+
+    def _bucket(self, *, collection_name: str, storage_key: str) -> dict[str, dict[str, object]]:
+        return self._collections.setdefault((collection_name, storage_key), {})
+
+    def load_db(
+        self,
+        *,
+        storage_key: str,
+        empty_db: dict[str, object],
+        db_name: str | None = None,
+        obj_name: str | None = None,
+        root_key: str,
+    ) -> dict[str, object]:
+        collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        bucket = self._bucket(collection_name=collection_name, storage_key=storage_key)
+        loaded = json.loads(json.dumps(empty_db))
+        loaded[root_key] = json.loads(json.dumps(bucket))
+        return loaded
+
+    def save_db(
+        self,
+        *,
+        storage_key: str,
+        db: dict[str, object],
+        db_name: str | None = None,
+        obj_name: str | None = None,
+        root_key: str,
+    ) -> None:
+        collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        bucket = self._bucket(collection_name=collection_name, storage_key=storage_key)
+        bucket.clear()
+        root_payload = db.get(root_key) if isinstance(db, dict) else None
+        if isinstance(root_payload, dict):
+            for record_id, record_value in root_payload.items():
+                if isinstance(record_value, dict):
+                    bucket[str(record_id)] = json.loads(json.dumps(record_value))
+
+    def load_record(
+        self,
+        *,
+        storage_key: str,
+        record_id: str,
+        db_name: str | None = None,
+        obj_name: str | None = None,
+    ) -> dict[str, object] | None:
+        collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        bucket = self._bucket(collection_name=collection_name, storage_key=storage_key)
+        record = bucket.get(record_id)
+        if not isinstance(record, dict):
+            return None
+        return json.loads(json.dumps(record))
+
+    def upsert_record(
+        self,
+        *,
+        storage_key: str,
+        record_id: str,
+        record_value: dict[str, object],
+        db_name: str | None = None,
+        obj_name: str | None = None,
+    ) -> None:
+        collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        bucket = self._bucket(collection_name=collection_name, storage_key=storage_key)
+        bucket[record_id] = json.loads(json.dumps(record_value))
+
+    def delete_record(
+        self,
+        *,
+        storage_key: str,
+        record_id: str,
+        db_name: str | None = None,
+        obj_name: str | None = None,
+    ) -> None:
+        collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        bucket = self._bucket(collection_name=collection_name, storage_key=storage_key)
+        bucket.pop(record_id, None)
+
+
 class TestWorkflowIntegration(unittest.TestCase):
     def setUp(self) -> None:
         chat_mod.ChatHistory._history_ = []
@@ -70,8 +157,9 @@ class TestWorkflowIntegration(unittest.TestCase):
                 _name="test_workflow",
             )
 
-        self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+        self.assertEqual(chat._forced_route["target_agent"], "_xworker")
         self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
+        self.assertEqual(chat._forced_route["agent_response"]["job_name"], "cover_letter_writer")
         resolved_payload = chat._forced_route["agent_response"]["output"]
         self.assertEqual(resolved_payload["profile_result"]["profile"]["profile_id"], "profile:test")
         self.assertEqual(resolved_payload["profile_result"]["parse"]["language"], "de")
@@ -115,7 +203,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                 _name="test_workflow",
             )
 
-        self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+        self.assertEqual(chat._forced_route["target_agent"], "_xworker")
         self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
         resolved_payload = chat._forced_route["agent_response"]["output"]
         self.assertEqual(resolved_payload["job_posting_result"]["correlation_id"], "sha-stored-1")
@@ -148,7 +236,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                 _name="test_workflow",
             )
 
-        self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+        self.assertEqual(chat._forced_route["target_agent"], "_xworker")
         self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
         resolved_payload = chat._forced_route["agent_response"]["output"]
         self.assertEqual(resolved_payload["job_posting_result"]["correlation_id"], "sha-ready-1")
@@ -182,7 +270,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                     _name="test_workflow",
                 )
 
-            self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+            self.assertEqual(chat._forced_route["target_agent"], "_xworker")
             self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
             resolved_payload = chat._forced_route["agent_response"]["output"]
             self.assertEqual(resolved_payload["profile_result"]["profile"]["profile_id"], "profile:file")
@@ -220,7 +308,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                     _name="test_workflow",
                 )
 
-            self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+            self.assertEqual(chat._forced_route["target_agent"], "_xworker")
             self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
             resolved_payload = chat._forced_route["agent_response"]["output"]
             self.assertEqual(resolved_payload["profile_result"]["profile"]["profile_id"], "profile:file-ready")
@@ -271,7 +359,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                     _name="test_workflow",
                 )
 
-            self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+            self.assertEqual(chat._forced_route["target_agent"], "_xworker")
             self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
             resolved_payload = chat._forced_route["agent_response"]["output"]
             self.assertEqual(resolved_payload["profile_result"]["correlation_id"], "profile:stored")
@@ -310,7 +398,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                     _name="test_workflow",
                 )
 
-            self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+            self.assertEqual(chat._forced_route["target_agent"], "_xworker")
             self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
             resolved_payload = chat._forced_route["agent_response"]["output"]
             self.assertEqual(resolved_payload["job_posting_result"]["file"]["path"], posting_path)
@@ -364,7 +452,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                     _name="test_workflow",
                 )
 
-            self.assertEqual(chat._forced_route["target_agent"], "_cover_letter_agent")
+            self.assertEqual(chat._forced_route["target_agent"], "_xworker")
             self.assertEqual(chat._forced_route["handoff_protocol"], "agent_handoff_v1")
             resolved_payload = chat._forced_route["agent_response"]["output"]
             self.assertEqual(resolved_payload["profile_result"]["correlation_id"], "profile:stored-ready")
@@ -396,10 +484,12 @@ class TestWorkflowIntegration(unittest.TestCase):
         )
 
         forced_route = dict(chat._forced_route)
-        self.assertEqual(forced_route["target_agent"], "_cover_letter_agent")
+        self.assertEqual(forced_route["target_agent"], "_xworker")
         self.assertEqual(forced_route["handoff_protocol"], "agent_handoff_v1")
-        self.assertEqual(forced_route["agent_response"]["handoff_to"], "_cover_letter_agent")
-        self.assertEqual(forced_route["agent_response"]["agent_label"], "_primary_assistant")
+        self.assertEqual(forced_route["handoff_schema"], "xplaner_to_xworker_cover_letter_writer")
+        self.assertEqual(forced_route["agent_response"]["handoff_to"], "_xworker")
+        self.assertEqual(forced_route["agent_response"]["agent_label"], "_xplaner_xrouter")
+        self.assertEqual(forced_route["agent_response"]["job_name"], "cover_letter_writer")
         self.assertEqual(forced_route["agent_response"]["output"]["job_posting_result"]["correlation_id"], "sha-ready-2")
 
     def test_store_job_posting_result_tool_supports_non_pdf_sources(self) -> None:
@@ -435,6 +525,226 @@ class TestWorkflowIntegration(unittest.TestCase):
             self.assertEqual(stored["parse"]["is_job_posting"], True)
         finally:
             os.unlink(job_postings_db_path)
+
+    def test_store_job_posting_result_tool_includes_knowledge_sync_result(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            job_postings_db_path = tmp.name
+
+        try:
+            with patch.object(
+                tools_mod,
+                "sync_parser_result_to_mongodb_knowledge",
+                return_value={
+                    "ok": True,
+                    "stored": True,
+                    "object_name": "job_posting",
+                    "entity_count": 4,
+                    "relation_count": 3,
+                },
+            ) as sync_mock:
+                result = json.loads(
+                    tools_mod.store_job_posting_result_tool(
+                        job_posting_result={
+                            "agent": "job_platform_ingest",
+                            "correlation_id": "platform:job-44",
+                            "parse": {"is_job_posting": True},
+                            "job_posting": {
+                                "job_title": "Knowledge Graph Engineer",
+                                "company_name": "Platform Co",
+                                "requirements": {
+                                    "technical_skills": ["Python", "Neo4j"],
+                                    "languages": ["Deutsch"],
+                                },
+                            },
+                        },
+                        db_path=job_postings_db_path,
+                        source_agent="job_platform_ingest",
+                        source_payload={"platform": "example_jobs", "record_id": "job-44"},
+                    )
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["knowledge_sync"]["stored"])
+            self.assertEqual(result["knowledge_sync"]["entity_count"], 4)
+            self.assertEqual(sync_mock.call_args.kwargs["object_name"], "job_postings")
+            self.assertEqual(sync_mock.call_args.kwargs["correlation_id"], "platform:job-44")
+        finally:
+            os.unlink(job_postings_db_path)
+
+    def test_store_job_posting_result_tool_uses_mongo_backend_as_primary_store(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            job_postings_db_path = tmp.name
+
+        try:
+            mongo_backend = _InMemoryMongoDocumentBackend()
+            with patch.object(tools_mod.DOCUMENT_REPOSITORY, "_load_mongo_backend", return_value=mongo_backend):
+                result = json.loads(
+                    tools_mod.store_job_posting_result_tool(
+                        job_posting_result={
+                            "agent": "job_platform_ingest",
+                            "correlation_id": "platform:job-43",
+                            "parse": {"is_job_posting": True},
+                            "job_posting": {
+                                "job_title": "Knowledge Pipeline Engineer",
+                                "company_name": "Platform Co",
+                            },
+                        },
+                        db_path=job_postings_db_path,
+                        source_agent="job_platform_ingest",
+                        source_payload={"platform": "example_jobs", "record_id": "job-43"},
+                    )
+                )
+                stored = tools_mod.DOCUMENT_REPOSITORY.get_document(
+                    "platform:job-43",
+                    db_path=job_postings_db_path,
+                    obj_name="job_postings",
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(result["db_path"], job_postings_db_path)
+            self.assertEqual(stored["job_posting"]["job_title"], "Knowledge Pipeline Engineer")
+            mongo_record = mongo_backend.load_record(
+                storage_key=job_postings_db_path,
+                record_id="platform:job-43",
+                db_name="job_postings",
+                obj_name="job_postings",
+            )
+            self.assertEqual(mongo_record["job_posting"]["job_title"], "Knowledge Pipeline Engineer")
+        finally:
+            os.unlink(job_postings_db_path)
+
+    def test_update_dispatcher_status_uses_mongo_backend_as_primary_store(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            dispatcher_db_path = tmp.name
+
+        try:
+            mongo_backend = _InMemoryMongoDocumentBackend()
+            with patch.object(tools_mod.DOCUMENT_REPOSITORY, "_load_mongo_backend", return_value=mongo_backend):
+                result = tools_mod.DOCUMENT_REPOSITORY.update_dispatcher_status(
+                    correlation_id="dispatch:job-44",
+                    processing_state="processed",
+                    db_path=dispatcher_db_path,
+                    processed=True,
+                    extra_updates={"source_agent": "job_dispatcher", "tenant_id": "tenant_demo"},
+                )
+                dispatcher_db = tools_mod.DOCUMENT_REPOSITORY.load_db(dispatcher_db_path, db_name="dispatcher_documents")
+
+            self.assertTrue(result["ok"])
+            self.assertEqual(dispatcher_db["documents"]["dispatch:job-44"]["processing_state"], "processed")
+            self.assertEqual(dispatcher_db["documents"]["dispatch:job-44"]["source_agent"], "job_dispatcher")
+        finally:
+            os.unlink(dispatcher_db_path)
+
+    def test_write_document_returns_structured_payload_and_persists_cover_letter(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            mongo_backend = _InMemoryMongoDocumentBackend()
+            with patch.object(tools_mod.DOCUMENT_REPOSITORY, "_load_mongo_backend", return_value=mongo_backend):
+                result = tools_mod.write_document(
+                    content="Sehr geehrtes Team,\n\nmit Interesse bewerbe ich mich.\n",
+                    path=tmpdir,
+                    doc_id="bewerbung_test",
+                    correlation_id="cover-letter:test-1",
+                )
+                stored = tools_mod.DOCUMENT_REPOSITORY.get_document("cover-letter:test-1", obj_name="cover_letters")
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(os.path.exists(result["path"]))
+            self.assertEqual(result["correlation_id"], "cover-letter:test-1")
+            self.assertEqual(stored["cover_letter"]["document_id"], "bewerbung_test")
+            self.assertIn("mit Interesse bewerbe ich mich", stored["cover_letter"]["full_text"])
+            self.assertEqual(stored["file"]["path"], result["path"])
+
+    def test_dispatch_documents_reads_existing_dispatcher_state_via_mongo_backend(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_path = os.path.join(tmpdir, "posting.pdf")
+            with open(pdf_path, "wb") as handle:
+                handle.write(b"fake-pdf-content")
+
+            correlation_id = tools_mod._sha256_file(pdf_path)
+            mongo_backend = _InMemoryMongoDocumentBackend()
+            mongo_backend.upsert_record(
+                storage_key=os.path.join(tools_mod.GetPath()._parent(parg=f"{tools_mod.__file__}"), "AppData", "dispatcher_doc_db.json"),
+                record_id=correlation_id,
+                record_value={
+                    "id": correlation_id,
+                    "content_sha256": correlation_id,
+                    "processing_state": "processed",
+                    "processed": True,
+                },
+                db_name="dispatcher_documents",
+                obj_name="documents",
+            )
+
+            with patch.object(tools_mod.DOCUMENT_REPOSITORY, "_load_mongo_backend", return_value=mongo_backend):
+                report = tools_mod.dispatch_docs(scan_dir=tmpdir, dry_run=True)
+
+            self.assertTrue(report["db"]["reachable"])
+            self.assertEqual(len(report["classified"]["known_processed"]), 1)
+            self.assertEqual(report["classified"]["known_processed"][0]["content_sha256"], correlation_id)
+
+    def test_dispatch_documents_tool_spec_accepts_current_and_legacy_agent_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            pdf_path = os.path.join(tmpdir, "posting.pdf")
+            with open(pdf_path, "wb") as handle:
+                handle.write(b"fake-pdf-content")
+
+            tool_spec = tools_mod.get_tool_spec("dispatch_documents")
+
+            self.assertIsNotNone(tool_spec)
+            self.assertIn("agent_name", [param.name for param in tool_spec.parameters])
+            self.assertNotIn("parser_agent_name", [param.name for param in tool_spec.parameters])
+
+            tool_result = tool_spec.execute({"scan_dir": tmpdir, "dry_run": True})
+            legacy_result = tools_mod.dispatch_docs(
+                scan_dir=tmpdir,
+                dry_run=True,
+                parser_agent_name="_job_posting_parser",
+            )
+
+            self.assertIsInstance(tool_result, dict)
+            self.assertEqual(tool_result["agent"], "xworker")
+            self.assertEqual(tool_result["job_name"], "document_dispatch")
+            self.assertEqual(legacy_result["agent"], "xworker")
+            self.assertEqual(legacy_result["job_name"], "document_dispatch")
+
+    def test_read_document_uses_batch_pdf_extractor_for_pdf_files(self) -> None:
+        with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as tmp:
+            pdf_path = tmp.name
+            tmp.write(b"fake-pdf-content")
+
+        try:
+            with patch("alde.batch_document._extract_pdf_text", return_value="Seite 1: Python\n\nSeite 2: MongoDB") as extract_mock:
+                result = tools_mod.read_document(pdf_path)
+
+            self.assertEqual(result, "Seite 1: Python\n\nSeite 2: MongoDB")
+            extract_mock.assert_called_once_with(pdf_path)
+        finally:
+            os.unlink(pdf_path)
+
+    def test_run_retrieval_with_events_triggers_optional_mongodb_sync(self) -> None:
+        retrieval_result = [
+            {
+                "document_id": "doc_job_0001",
+                "title": "Senior Python Engineer",
+                "score": 0.93,
+                "source": "https://example.org/jobs/0001",
+            },
+        ]
+
+        with patch("alde.tools._emit_query_event") as emit_query_event:
+            with patch("alde.tools._emit_outcome_event") as emit_outcome_event:
+                with patch("alde.tools._run_vectordb_subprocess", return_value=retrieval_result):
+                    with patch("alde.tools.sync_retrieval_run_to_mongodb_knowledge", return_value={"ok": True, "stored": True}) as mongo_sync:
+                        result = tools_mod._run_retrieval_with_events("vectordb", "Python RAG", 3)
+
+        self.assertEqual(result, retrieval_result)
+        emit_query_event.assert_called_once()
+        emit_outcome_event.assert_called_once()
+        mongo_sync.assert_called_once()
+        self.assertEqual(mongo_sync.call_args.kwargs["tool_name"], "vectordb")
+        self.assertEqual(mongo_sync.call_args.kwargs["query_event"]["query_text"], "Python RAG")
+        self.assertEqual(mongo_sync.call_args.kwargs["outcome_event"]["result_count"], 1)
+        self.assertEqual(mongo_sync.call_args.kwargs["retrieval_result"][0]["document_id"], "doc_job_0001")
 
     def test_store_profile_result_tool_supports_direct_profile_storage(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
@@ -529,6 +839,49 @@ class TestWorkflowIntegration(unittest.TestCase):
             self.assertEqual(stored["job_posting"]["job_title"], "Senior Data Engineer")
             self.assertEqual(stored["parse"]["is_job_posting"], True)
             get_client.assert_not_called()
+        finally:
+            os.unlink(job_postings_db_path)
+
+    def test_ingest_job_posting_tool_includes_knowledge_sync_after_persist(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            job_postings_db_path = tmp.name
+
+        try:
+            with patch.object(
+                tools_mod,
+                "sync_parser_result_to_mongodb_knowledge",
+                return_value={
+                    "ok": True,
+                    "stored": True,
+                    "object_name": "job_posting",
+                    "document_id": "doc:job_posting:platform:ingest-knowledge-1",
+                    "entity_count": 5,
+                    "relation_count": 4,
+                },
+            ) as sync_mock:
+                result = json.loads(
+                    tools_mod.ingest_job_posting_tool(
+                        job_posting={
+                            "job_title": "Platform Knowledge Engineer",
+                            "company_name": "Platform Co",
+                            "requirements": {
+                                "technical_skills": ["Python", "MongoDB"],
+                                "soft_skills": ["Kommunikation"],
+                                "languages": ["Deutsch", "Englisch"],
+                            },
+                        },
+                        correlation_id="platform:ingest-knowledge-1",
+                        db_path=job_postings_db_path,
+                        source_agent="job_platform_ingest",
+                        source_payload={"platform": "example_jobs", "record_id": "ingest-knowledge-1"},
+                    )
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["knowledge_sync"]["stored"])
+            self.assertEqual(result["knowledge_sync"]["relation_count"], 4)
+            self.assertEqual(sync_mock.call_args.kwargs["object_name"], "job_postings")
+            self.assertEqual(sync_mock.call_args.kwargs["correlation_id"], "platform:ingest-knowledge-1")
         finally:
             os.unlink(job_postings_db_path)
 
@@ -635,6 +988,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                     "payload": {
                         "correlation_id": "platform:dispatcher-21",
                         "obj_db_path": job_postings_db_path,
+                        "obj_name": "job_postings",
                         "source_agent": "job_platform_ingest",
                         "job_posting": {
                             "job_title": "Automation Engineer",
@@ -646,7 +1000,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                         },
                     },
                 },
-                source_agent_label="_data_dispatcher",
+                source_agent_label="_xworker",
             )
 
             result = json.loads(result_text)
@@ -655,6 +1009,75 @@ class TestWorkflowIntegration(unittest.TestCase):
             self.assertTrue(result["ok"])
             self.assertEqual(stored["job_posting"]["job_title"], "Automation Engineer")
             self.assertEqual(stored["parse"]["is_job_posting"], True)
+        finally:
+            os.unlink(job_postings_db_path)
+
+    def test_primary_route_parser_result_is_persisted_to_job_postings_store(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            job_postings_db_path = tmp.name
+
+        try:
+            routing_request = {
+                "agent_label": "_xworker",
+                "handoff": {
+                    "handoff_payload": {
+                        "output": {
+                            "type": "job_posting_pdf",
+                            "file": {
+                                "path": "/tmp/example-job.pdf",
+                                "content_sha256": "sha-direct-store-1",
+                            },
+                            "requested_actions": ["parse", "store_object_result"],
+                            "job_name": "job_posting_parser",
+                        }
+                    },
+                    "metadata": {
+                        "correlation_id": "sha-direct-store-1",
+                        "obj_name": "job_postings",
+                        "obj_db_path": job_postings_db_path,
+                    },
+                },
+                "handoff_context": {
+                    "contract": {
+                        "schema": {
+                            "result_postprocess": {
+                                "tool": "store_object_result",
+                                "source_agent": "target_agent",
+                            }
+                        }
+                    }
+                },
+            }
+
+            postprocess_result = agents_factory.ROUTING_RESULT_POSTPROCESS_SERVICE.apply_object_result(
+                routing_request,
+                result_text=json.dumps(
+                    {
+                        "agent": "xworker",
+                        "job_name": "job_posting_parser",
+                        "correlation_id": "sha-direct-store-1",
+                        "parse": {"is_job_posting": True},
+                        "job_posting": {
+                            "job_title": "Runtime Persisted Engineer",
+                            "company_name": "Route Storage Co",
+                        },
+                    },
+                    ensure_ascii=False,
+                ),
+                succeeded=True,
+            )
+
+            stored = tools_mod.DOCUMENT_REPOSITORY.get_document(
+                "sha-direct-store-1",
+                db_path=job_postings_db_path,
+                obj_name="job_postings",
+            )
+
+            self.assertIsInstance(postprocess_result, dict)
+            self.assertTrue(postprocess_result["ok"])
+            self.assertEqual(postprocess_result["obj_name"], "job_postings")
+            self.assertEqual(stored["job_posting"]["job_title"], "Runtime Persisted Engineer")
+            self.assertEqual(stored["agent"], "_xworker")
         finally:
             os.unlink(job_postings_db_path)
 
@@ -763,6 +1186,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                         "correlation_id": "platform:atomic-2",
                         "dispatcher_db_path": dispatcher_db_path,
                         "obj_db_path": job_postings_db_path,
+                        "obj_name": "job_postings",
                         "source_agent": "job_platform_ingest",
                         "processing_state": "processed",
                         "job_posting_result": {
@@ -775,7 +1199,7 @@ class TestWorkflowIntegration(unittest.TestCase):
                         },
                     },
                 },
-                source_agent_label="_data_dispatcher",
+                source_agent_label="_xworker",
             )
 
             result = json.loads(result_text)
@@ -859,7 +1283,7 @@ class TestWorkflowIntegration(unittest.TestCase):
             captured_execute_tool_calls.append((name, dict(args)))
             if name == "route_to_agent":
                 return (
-                    "Routing to _cover_letter_agent",
+                    "Routing to _xworker",
                     {
                         "messages": [
                             {"role": "system", "content": "writer system"},
@@ -888,17 +1312,17 @@ class TestWorkflowIntegration(unittest.TestCase):
                                 ),
                             },
                         ],
-                        "agent_label": "_cover_letter_agent",
+                        "agent_label": "_xworker",
                         "tools": [],
                         "model": "gpt-4o",
                         "include_history": False,
                         "handoff": {
                             "protocol": "agent_handoff_v1",
-                            "source_agent": "_primary_assistant",
-                            "target_agent": "_cover_letter_agent",
+                            "source_agent": "_xplaner_xrouter",
+                            "target_agent": "_xworker",
                             "handoff_payload": {
-                                "agent_label": "_primary_assistant",
-                                "handoff_to": "_cover_letter_agent",
+                                "agent_label": "_xplaner_xrouter",
+                                "handoff_to": "_xworker",
                                 "output": {
                                     **SAMPLE_WORKFLOW_REQUEST,
                                     "job_posting_result": {
@@ -962,9 +1386,11 @@ class TestWorkflowIntegration(unittest.TestCase):
         self.assertEqual(len(captured_execute_tool_calls), 1)
         self.assertEqual(captured_execute_tool_calls[0][0], "route_to_agent")
         routed = captured_execute_tool_calls[0][1]
-        self.assertEqual(routed["target_agent"], "_cover_letter_agent")
+        self.assertEqual(routed["target_agent"], "_xworker")
         self.assertEqual(routed["handoff_protocol"], "agent_handoff_v1")
-        self.assertEqual(routed["agent_response"]["handoff_to"], "_cover_letter_agent")
+        self.assertEqual(routed["handoff_schema"], "xplaner_to_xworker_cover_letter_writer")
+        self.assertEqual(routed["agent_response"]["handoff_to"], "_xworker")
+        self.assertEqual(routed["agent_response"]["job_name"], "cover_letter_writer")
         self.assertEqual(routed["agent_response"]["output"]["profile_result"]["profile"]["profile_id"], "profile:test")
 
     def test_ready_forced_route_executes_via_structured_handoff_path(self) -> None:
@@ -974,7 +1400,7 @@ class TestWorkflowIntegration(unittest.TestCase):
             captured_execute_tool_calls.append((name, dict(args)))
             if name == "route_to_agent":
                 return (
-                    "Routing to _cover_letter_agent",
+                    "Routing to _xworker",
                     {
                         "messages": [
                             {"role": "system", "content": "writer system"},
@@ -1001,17 +1427,17 @@ class TestWorkflowIntegration(unittest.TestCase):
                                 ),
                             },
                         ],
-                        "agent_label": "_cover_letter_agent",
+                        "agent_label": "_xworker",
                         "tools": [],
                         "model": "gpt-4o",
                         "include_history": False,
                         "handoff": {
                             "protocol": "agent_handoff_v1",
-                            "source_agent": "_primary_assistant",
-                            "target_agent": "_cover_letter_agent",
+                            "source_agent": "_xplaner_xrouter",
+                            "target_agent": "_xworker",
                             "handoff_payload": {
-                                "agent_label": "_primary_assistant",
-                                "handoff_to": "_cover_letter_agent",
+                                "agent_label": "_xplaner_xrouter",
+                                "handoff_to": "_xworker",
                                 "output": {
                                     "action": "generate_cover_letter",
                                     "job_posting_result": {
@@ -1086,9 +1512,11 @@ class TestWorkflowIntegration(unittest.TestCase):
         self.assertEqual(payload["document_path"], "/tmp/cover_letter_ready.pdf")
         self.assertEqual(len(captured_execute_tool_calls), 1)
         routed = captured_execute_tool_calls[0][1]
-        self.assertEqual(routed["target_agent"], "_cover_letter_agent")
+        self.assertEqual(routed["target_agent"], "_xworker")
         self.assertEqual(routed["handoff_protocol"], "agent_handoff_v1")
-        self.assertEqual(routed["agent_response"]["handoff_to"], "_cover_letter_agent")
+        self.assertEqual(routed["handoff_schema"], "xplaner_to_xworker_cover_letter_writer")
+        self.assertEqual(routed["agent_response"]["handoff_to"], "_xworker")
+        self.assertEqual(routed["agent_response"]["job_name"], "cover_letter_writer")
         self.assertEqual(routed["agent_response"]["output"]["job_posting_result"]["correlation_id"], "sha-direct-1")
 
 

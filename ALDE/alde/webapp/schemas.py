@@ -80,7 +80,7 @@ class LogoutRequest(BaseModel):
 
 
 class AgentRunRequest(BaseModel):
-    target_agent: str = Field(default="_primary_assistant", description="Target runtime agent label. Defaults to the planner/router entrypoint.")
+    target_agent: str = Field(default="_xplaner_xrouter", description="Target runtime agent label. Defaults to the planner/router entrypoint.")
     prompt: str = Field(min_length=1, description="User request or task payload forwarded into the selected runtime agent.")
     metadata: dict[str, Any] = Field(default_factory=dict, description="Tenant-side execution metadata used for RBAC, tracing, or pipeline context.")
 

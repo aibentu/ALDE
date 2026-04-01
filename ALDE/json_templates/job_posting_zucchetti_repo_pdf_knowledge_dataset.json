@@ -1,0 +1,2340 @@
+{
+  "dataset_metadata": {
+    "dataset_kind": "repo_pdf_job_posting_knowledge_dataset",
+    "example": false,
+    "tenant_id": "tenant_demo",
+    "namespace_id": "ns_repo_job_offers_de",
+    "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+    "generated_at": "2026-03-30T00:00:00+00:00",
+    "source_record": "HISTORY.history[2]"
+  },
+  "source_pdf": {
+    "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+    "source_path": "/home/ben/Vs_Code_Projects/Projects/ALDE_Projekt/ALDE/AppData/VSM_4_Data/__single_live_run_zucchetti/Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+    "source_uri": "file:///home/ben/Vs_Code_Projects/Projects/ALDE_Projekt/ALDE/AppData/VSM_4_Data/__single_live_run_zucchetti/Software%20Support%20Specialist%20euroSUITE%20%28m_w_d%29%20bei%20Zucchetti%20Germany%20GmbH.pdf",
+    "mime_type": "application/pdf",
+    "page_count": 6,
+    "file_size_bytes": 136894,
+    "mtime_epoch": 1773168907,
+    "language": "de",
+    "content_sha256": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+    "text_sha256": "450295237dd99e8e2b0b19c0c447dcf7ff92966c04ab3d1b24902e7546cdd487",
+    "extractor_backend": "pypdf.PdfReader",
+    "ocr_used": false,
+    "layout_retained": false,
+    "extracted_at": "2026-03-30T00:00:00+00:00",
+    "metadata": {
+      "repo_relative_path": "AppData/VSM_4_Data/__single_live_run_zucchetti/Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+      "recorded_file_hash": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+      "binary_hash_matches_record": true
+    }
+  },
+  "raw_text": "Arbeit\nSoftware Support Specialist eu-\nroSUITE (m/w/d)\nZucchetti Germany GmbH\n38.000 € – 48.000 €\nArbeitsort\nSaarbrücken\nAnstellungsart\nVollzeit\nBefristung\nunbefristet\nBeginn\nab sofort\nBerufsbezeichnung\nSysteminformatiker/in\nVor 11 Tagen veröffentlicht\nFirmenbeschreibung\nZucchetti ist mit mehr als 9.000 Mitarbeitenden eines der größten\nIT-Unternehmen Europas. Zucchetti bietet Software, Hardware\nund IT-Dienstleistungen für Unternehmen, die sich einen erhebli-\nchen Wettbewerbsvorteil sichern und sich für alle IT-Fragen auf ei-\nnen einzigen Ansprechpartner verlassen wollen.\nZurzeit verlassen sich weltweit bereits mehr als 700.000 Kunden\nauf unsere Services. In der Region D-A-CH bietet Zucchetti seinen\nKunden ein Portfolio aus Hard- und Software für die Bereiche\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 1/6\n\nPOS, ERP, HR-Management und Zutrittskontrolle übergreifend für\nverschiedene Branchen.\nStellenbeschreibungDu liebst die tägliche Arbeit mit Menschen,\nbist ein echter Problemlöser*in und suchst eine neue Herausfor-\nderung bei einem ambitionierten Unternehmen?\nDann bist du bei uns genau richtig!\nAls Software Support Specialist euroSUITE (m/w/d) bei der Zuc-\nchetti Germany GmbH verstärkst du unser Support Team. Für un-\nsere POS-Softwarelösung euroSUITE bist du die zentrale Anlauf-\nstelle für unsere renommierten Geschäftskunden. Du nimmst\nnicht nur Soft- und Hardwareprobleme auf, sondern führst nach\nder Fehleranalyse eine Lösung herbei. Mit deinem Einsatz und\ndeiner Hilfsbereitschaft repräsentierst du unser Unternehmen\nnach außen.\nDu wirst in unserem Office in Saarbrücken in Vollzeit (40h)\narbeiten.\nDeine Aufgaben:\nBetreuung unserer Kunden bei technischen Anfragen rund\num unsere Softwarelösungen, inklusive der Bereitstellung ei-\nnes Workarounds oder einer Lösung – (keine Call-Center\nTätigkeit!)\nAnforderungsgerechte Analyse und Bearbeitung sowie Priori-\nsierung, Klassifizierung, Dokumentation und Überwachung\nvon Incidents hinsichtlich fristgerechter SLA-Erfüllung auf\nBasis von ITIL-Prozessen\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 2/6\n\nDurchführung von Fehler-Ursachen-Analysen auf internen\nTestsystemen, auch in Zusammenarbeit mit der Abteilung\nQuality Assurance\nTicketmanagement zur Steuerung von Tickets in JIRA\nUnterstützung der Abteilung Quality Assurance bei Tests\nneuer Software\nAktualisierung & Pflege der Systeme\nAnforderungsprofilWas du mitbringen solltest:\nIdentifikation mit unseren CoreValues: #LeadbyExample,\n#Teamwork, #PersonalAccountability, #Passion&Fun,\n#Simplicity, #CustomerCentricity\nAbgeschlossene Ausbildung mit IT-Background: z.B. Informa-\ntikkaufmann (m/w/d), IT-Systemkaufmann (m/w/d), Fachin-\nformatiker (m/w/d) oder ähnlich\nBerufserfahrung im IT-Support und erste Kenntnisse in der\nLog- und Fehleranalyse von Vorteil\nPraktische Erfahrungen im Umgang mit Linux- und Windows-\nBetriebssystemen\nNice to have: Erste Erfahrungen mit Datenbanken (Post-\ngreSQL, Oracle) und Netzwerkprotokollen (z.B. TCP/IP,\nhttp(S), RDP)\nBereitschaft zur Teilnahme an Schicht- und Wochenend-\ndiensten nach einem festgelegten, rotierenden System mit\nattraktiven Schichtzulagen\nSehr gute Deutschkenntnisse (mind. C1-Niveau), gute\nEnglischkenntnisse\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 3/6\n\nZuverlässigkeit, Teamfähigkeit, ein serviceorientiertes Auftre-\nten sowie Analysevermögen\nSonstige InformationenWir bieten:\nDie Möglichkeit im internationalen Arbeitsumfeld zu arbeiten\nEin kollegiales Arbeitsklima in einem freundlichen und aufge-\nschlossenen Team\nEinen sicheren Arbeitsplatz mit einem unbefristeten Arbeits-\nvertrag und einer marktgerechten Vergütung inkl. einer ar-\nbeitgeberfinanzierten BAV und VWL\nSpielraum für eigene Ideen, Kreativität und Konzepte\nHochinteressante Projekte namhafter Kunden in einer zu-\nkunftsorientierten Branche\nEinen modernen Arbeitsplatz\nEine sehr gute Hardware-Ausstattung\nCorporate Benefits, Mitarbeiterangebote, JobRad, kostenfreie\nGetränke\nWir haben unsere Belegschaft dazu befragt, was das Arbeiten\nbei uns auszeichnet:\n\"Man kann auch mit den Chefs ungezwungen reden.\"\n\"Große Hilfsbereitschaft, jeder versucht jeden zu unterstützen.\"\n\"Angenehmes Arbeitsklima aufgrund angenehmer Charaktere im\nUnternehmen. #GroßeFamilie\"\n\"Mir gefällt die Offenheit und Wertschätzung der Kollegen\nuntereinander.\"\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 4/6\n\nWir freuen uns darauf, dich kennenzulernen. Join our amazing\nteam!\nArbeitsorte\n66115 Saarbrücken\nZucchetti Germany GmbH\n Gründung:1978\nMit mehr als 8.000 Mitarbeitern, einem Vertriebsnetz von über\n2.000 Partnern und mehr als 700.000 Kunden, ist Zucchetti welt-\nweit eines der wichtigsten Unternehmen der IT-Branche.\nIn Deutschland arbeiten derzeit knapp 200 Mitarbeitende und trei-\nben unsere Softwarelösungen und Services in den Bereichen POS\n(Kassensoftware), ERP und HR-Management voran.\nUnser deutscher Hauptstandort befindet sich ab dem 1. Januar\n2024 in Saarbrücken im Saarland.\nVorteile für Mitarbeitende\n\nMentorenprogramm/Coaching\n Flexible Arbeitszeiten\n Homeoffice / Mobiles\nArbeiten\n Vermögenswirksame\nLeistungen\n Firmenevents\n Rabatte für Mitarbeitende\n Weiterbildungen\n Betriebliche Altersvorsorge\n ÖPNV-Ticket / Job-Ticket\n Dienstwagen\n Mitgestaltungsmöglichkei-\nten\n Parkmöglichkeiten\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 5/6\n\n Gute Verkehrsanbindung  Moderne technische\nAusstattung\nDie abgebildeten Vorteile für Mitarbeitende können je nach Abteilung und Position variieren.\nHomepage\nInformationen zur Bewerbung\nZucchetti DACH\nFrau Marie-Louise Blatt\nBewerben Sie sich:\nKontaktaufnahme\n\nÜber Internetseite des\nArbeitgebers\nNachricht schreiben\nBitte bewerben Sie sich unter Angabe unserer internen Stellennummer: 18737-1570-86838-S\nStelle betreut durch die BA\nReferenz-Nr.: 18737-1570-86838-S\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 6/6",
+  "db_record": {
+    "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+    "created_at": "2026-03-30T00:00:00+00:00",
+    "updated_at": "2026-03-30T00:00:00+00:00",
+    "source_agent": "job_posting_parser",
+    "link": {
+      "thread_id": "live-thread-fix",
+      "message_id": "disp-live-fix",
+      "application_link": "https://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV"
+    },
+    "file": {
+      "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+      "source_path": "/home/ben/Vs_Code_Projects/Projects/ALDE_Projekt/ALDE/AppData/VSM_4_Data/__single_live_run_zucchetti/Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+      "source_uri": "file:///home/ben/Vs_Code_Projects/Projects/ALDE_Projekt/ALDE/AppData/VSM_4_Data/__single_live_run_zucchetti/Software%20Support%20Specialist%20euroSUITE%20%28m_w_d%29%20bei%20Zucchetti%20Germany%20GmbH.pdf",
+      "mime_type": "application/pdf",
+      "page_count": 6,
+      "file_size_bytes": 136894,
+      "mtime_epoch": 1773168907,
+      "language": "de",
+      "content_sha256": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+      "text_sha256": "450295237dd99e8e2b0b19c0c447dcf7ff92966c04ab3d1b24902e7546cdd487",
+      "extractor_backend": "pypdf.PdfReader",
+      "ocr_used": false,
+      "layout_retained": false,
+      "extracted_at": "2026-03-30T00:00:00+00:00",
+      "metadata": {
+        "repo_relative_path": "AppData/VSM_4_Data/__single_live_run_zucchetti/Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+        "recorded_file_hash": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "binary_hash_matches_record": true
+      }
+    },
+    "parse": {
+      "raw_text": "Arbeit\nSoftware Support Specialist eu-\nroSUITE (m/w/d)\nZucchetti Germany GmbH\n38.000 € – 48.000 €\nArbeitsort\nSaarbrücken\nAnstellungsart\nVollzeit\nBefristung\nunbefristet\nBeginn\nab sofort\nBerufsbezeichnung\nSysteminformatiker/in\nVor 11 Tagen veröffentlicht\nFirmenbeschreibung\nZucchetti ist mit mehr als 9.000 Mitarbeitenden eines der größten\nIT-Unternehmen Europas. Zucchetti bietet Software, Hardware\nund IT-Dienstleistungen für Unternehmen, die sich einen erhebli-\nchen Wettbewerbsvorteil sichern und sich für alle IT-Fragen auf ei-\nnen einzigen Ansprechpartner verlassen wollen.\nZurzeit verlassen sich weltweit bereits mehr als 700.000 Kunden\nauf unsere Services. In der Region D-A-CH bietet Zucchetti seinen\nKunden ein Portfolio aus Hard- und Software für die Bereiche\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 1/6\n\nPOS, ERP, HR-Management und Zutrittskontrolle übergreifend für\nverschiedene Branchen.\nStellenbeschreibungDu liebst die tägliche Arbeit mit Menschen,\nbist ein echter Problemlöser*in und suchst eine neue Herausfor-\nderung bei einem ambitionierten Unternehmen?\nDann bist du bei uns genau richtig!\nAls Software Support Specialist euroSUITE (m/w/d) bei der Zuc-\nchetti Germany GmbH verstärkst du unser Support Team. Für un-\nsere POS-Softwarelösung euroSUITE bist du die zentrale Anlauf-\nstelle für unsere renommierten Geschäftskunden. Du nimmst\nnicht nur Soft- und Hardwareprobleme auf, sondern führst nach\nder Fehleranalyse eine Lösung herbei. Mit deinem Einsatz und\ndeiner Hilfsbereitschaft repräsentierst du unser Unternehmen\nnach außen.\nDu wirst in unserem Office in Saarbrücken in Vollzeit (40h)\narbeiten.\nDeine Aufgaben:\nBetreuung unserer Kunden bei technischen Anfragen rund\num unsere Softwarelösungen, inklusive der Bereitstellung ei-\nnes Workarounds oder einer Lösung – (keine Call-Center\nTätigkeit!)\nAnforderungsgerechte Analyse und Bearbeitung sowie Priori-\nsierung, Klassifizierung, Dokumentation und Überwachung\nvon Incidents hinsichtlich fristgerechter SLA-Erfüllung auf\nBasis von ITIL-Prozessen\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 2/6\n\nDurchführung von Fehler-Ursachen-Analysen auf internen\nTestsystemen, auch in Zusammenarbeit mit der Abteilung\nQuality Assurance\nTicketmanagement zur Steuerung von Tickets in JIRA\nUnterstützung der Abteilung Quality Assurance bei Tests\nneuer Software\nAktualisierung & Pflege der Systeme\nAnforderungsprofilWas du mitbringen solltest:\nIdentifikation mit unseren CoreValues: #LeadbyExample,\n#Teamwork, #PersonalAccountability, #Passion&Fun,\n#Simplicity, #CustomerCentricity\nAbgeschlossene Ausbildung mit IT-Background: z.B. Informa-\ntikkaufmann (m/w/d), IT-Systemkaufmann (m/w/d), Fachin-\nformatiker (m/w/d) oder ähnlich\nBerufserfahrung im IT-Support und erste Kenntnisse in der\nLog- und Fehleranalyse von Vorteil\nPraktische Erfahrungen im Umgang mit Linux- und Windows-\nBetriebssystemen\nNice to have: Erste Erfahrungen mit Datenbanken (Post-\ngreSQL, Oracle) und Netzwerkprotokollen (z.B. TCP/IP,\nhttp(S), RDP)\nBereitschaft zur Teilnahme an Schicht- und Wochenend-\ndiensten nach einem festgelegten, rotierenden System mit\nattraktiven Schichtzulagen\nSehr gute Deutschkenntnisse (mind. C1-Niveau), gute\nEnglischkenntnisse\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 3/6\n\nZuverlässigkeit, Teamfähigkeit, ein serviceorientiertes Auftre-\nten sowie Analysevermögen\nSonstige InformationenWir bieten:\nDie Möglichkeit im internationalen Arbeitsumfeld zu arbeiten\nEin kollegiales Arbeitsklima in einem freundlichen und aufge-\nschlossenen Team\nEinen sicheren Arbeitsplatz mit einem unbefristeten Arbeits-\nvertrag und einer marktgerechten Vergütung inkl. einer ar-\nbeitgeberfinanzierten BAV und VWL\nSpielraum für eigene Ideen, Kreativität und Konzepte\nHochinteressante Projekte namhafter Kunden in einer zu-\nkunftsorientierten Branche\nEinen modernen Arbeitsplatz\nEine sehr gute Hardware-Ausstattung\nCorporate Benefits, Mitarbeiterangebote, JobRad, kostenfreie\nGetränke\nWir haben unsere Belegschaft dazu befragt, was das Arbeiten\nbei uns auszeichnet:\n\"Man kann auch mit den Chefs ungezwungen reden.\"\n\"Große Hilfsbereitschaft, jeder versucht jeden zu unterstützen.\"\n\"Angenehmes Arbeitsklima aufgrund angenehmer Charaktere im\nUnternehmen. #GroßeFamilie\"\n\"Mir gefällt die Offenheit und Wertschätzung der Kollegen\nuntereinander.\"\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 4/6\n\nWir freuen uns darauf, dich kennenzulernen. Join our amazing\nteam!\nArbeitsorte\n66115 Saarbrücken\nZucchetti Germany GmbH\n Gründung:1978\nMit mehr als 8.000 Mitarbeitern, einem Vertriebsnetz von über\n2.000 Partnern und mehr als 700.000 Kunden, ist Zucchetti welt-\nweit eines der wichtigsten Unternehmen der IT-Branche.\nIn Deutschland arbeiten derzeit knapp 200 Mitarbeitende und trei-\nben unsere Softwarelösungen und Services in den Bereichen POS\n(Kassensoftware), ERP und HR-Management voran.\nUnser deutscher Hauptstandort befindet sich ab dem 1. Januar\n2024 in Saarbrücken im Saarland.\nVorteile für Mitarbeitende\n\nMentorenprogramm/Coaching\n Flexible Arbeitszeiten\n Homeoffice / Mobiles\nArbeiten\n Vermögenswirksame\nLeistungen\n Firmenevents\n Rabatte für Mitarbeitende\n Weiterbildungen\n Betriebliche Altersvorsorge\n ÖPNV-Ticket / Job-Ticket\n Dienstwagen\n Mitgestaltungsmöglichkei-\nten\n Parkmöglichkeiten\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 5/6\n\n Gute Verkehrsanbindung  Moderne technische\nAusstattung\nDie abgebildeten Vorteile für Mitarbeitende können je nach Abteilung und Position variieren.\nHomepage\nInformationen zur Bewerbung\nZucchetti DACH\nFrau Marie-Louise Blatt\nBewerben Sie sich:\nKontaktaufnahme\n\nÜber Internetseite des\nArbeitgebers\nNachricht schreiben\nBitte bewerben Sie sich unter Angabe unserer internen Stellennummer: 18737-1570-86838-S\nStelle betreut durch die BA\nReferenz-Nr.: 18737-1570-86838-S\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 6/6",
+      "language": "de",
+      "page_count": 6,
+      "extractor_backend": "pypdf.PdfReader",
+      "extractor_method": "repo_pdf_page_extraction",
+      "chunk_strategy": "page_based",
+      "chunk_count": 6,
+      "is_job_posting": true,
+      "extraction_quality": "high",
+      "warnings": [],
+      "errors": []
+    },
+    "job_posting": {
+      "job_title": "Software Support Specialist euroSUITE (m/w/d)",
+      "company_name": "Zucchetti Germany GmbH",
+      "company_info": {
+        "industry": "IT",
+        "size": "8000+",
+        "location": "Saarbrücken, Germany",
+        "website": null
+      },
+      "position": {
+        "type": "full-time",
+        "level": null,
+        "department": null,
+        "reports_to": null
+      },
+      "location_details": {
+        "office": "Saarbrücken",
+        "remote": null,
+        "travel_required": null
+      },
+      "compensation": {
+        "salary_min": 38000,
+        "salary_max": 48000,
+        "salary_period": null,
+        "currency": "€",
+        "benefits": [
+          "Mentorenprogramm/Coaching",
+          "Flexible Arbeitszeiten",
+          "Homeoffice / Mobiles Arbeiten",
+          "Vermögenswirksame Leistungen",
+          "Firmenevents",
+          "Rabatte für Mitarbeitende",
+          "Weiterbildungen",
+          "Betriebliche Altersvorsorge",
+          "ÖPNV-Ticket / Job-Ticket",
+          "Dienstwagen",
+          "Mitgestaltungsmöglichkeiten",
+          "Parkmöglichkeiten"
+        ]
+      },
+      "requirements": {
+        "education": "Abgeschlossene Ausbildung mit IT-Background",
+        "experience_years": null,
+        "experience_description": "Berufserfahrung im IT-Support und erste Kenntnisse in der Log- und Fehleranalyse von Vorteil",
+        "technical_skills": [
+          "Praktische Erfahrungen im Umgang mit Linux- und Windows-Betriebssystemen",
+          "Erste Erfahrungen mit Datenbanken (PostgreSQL, Oracle)",
+          "Kenntnisse in Netzwerkprotokollen (z.B. TCP/IP, http(S), RDP)"
+        ],
+        "soft_skills": [
+          "Zuverlässigkeit",
+          "Teamfähigkeit",
+          "serviceorientiertes Auftreten",
+          "Analysevermögen"
+        ],
+        "languages": [
+          "Deutsch (mind. C1-Niveau)",
+          "Englisch (gute Kenntnisse)"
+        ]
+      },
+      "responsibilities": [
+        "Betreuung unserer Kunden bei technischen Anfragen",
+        "Anforderungsgerechte Analyse und Bearbeitung von Incidents",
+        "Durchführung von Fehler-Ursachen-Analysen auf internen Testsystemen",
+        "Ticketmanagement zur Steuerung von Tickets in JIRA",
+        "Unterstützung der Abteilung Quality Assurance bei Tests neuer Software",
+        "Aktualisierung & Pflege der Systeme"
+      ],
+      "what_we_offer": [
+        "Die Möglichkeit im internationalen Arbeitsumfeld zu arbeiten",
+        "Ein kollegiales Arbeitsklima in einem freundlichen und aufgeschlossenen Team",
+        "Einen sicheren Arbeitsplatz mit einem unbefristeten Arbeitsvertrag und marktgerechter Vergütung"
+      ],
+      "application": {
+        "deadline": null,
+        "application_link": "https://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV",
+        "contact_email": null,
+        "contact_person": "Frau Marie-Louise Blatt"
+      },
+      "metadata": {
+        "posting_date": "2026-03-10",
+        "job_id": "18737-1570-86838-S",
+        "source": null,
+        "language": "de"
+      },
+      "raw_text": "Arbeit\nSoftware Support Specialist eu-\nroSUITE (m/w/d)\nZucchetti Germany GmbH\n38.000 € – 48.000 €\nArbeitsort\nSaarbrücken\nAnstellungsart\nVollzeit\nBefristung\nunbefristet\nBeginn\nab sofort\n..."
+    },
+    "db_updates": {
+      "existing_record_id": null,
+      "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+      "content_sha256": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+      "processing_state": "processed",
+      "processed": true,
+      "failed_reason": null,
+      "document_id": "doc:job_posting:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+      "entity_count": 17,
+      "relation_count": 16,
+      "embedding_count": 7
+    },
+    "handoff_metadata": {
+      "source_agent": "job_posting_parser",
+      "tenant_id": "tenant_demo",
+      "knowledge_namespace_id": "ns_repo_job_offers_de",
+      "knowledge_namespace_slug": "repo-job-offers-de",
+      "knowledge_namespace_name": "Repo Job Offers Deutschland"
+    },
+    "source_payload": {
+      "input_kind": "repo_pdf",
+      "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+      "source_path": "/home/ben/Vs_Code_Projects/Projects/ALDE_Projekt/ALDE/AppData/VSM_4_Data/__single_live_run_zucchetti/Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+      "record_origin": "tree_data.json:HISTORY.history[2]",
+      "original_job_posting_result": {
+        "agent": "job_posting_parser",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "link": {
+          "thread_id": "live-thread-fix",
+          "message_id": "disp-live-fix"
+        },
+        "file": {
+          "path": "/home/ben/Vs_Code_Projects/Projects/ALDE_Projekt/ALDE/AppData/VSM_4_Data/__single_live_run_zucchetti/Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+          "name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+          "content_sha256": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55"
+        },
+        "parse": {
+          "is_job_posting": true,
+          "language": "de",
+          "extraction_quality": "high",
+          "errors": [],
+          "warnings": []
+        },
+        "job_posting": {
+          "job_title": "Software Support Specialist euroSUITE (m/w/d)",
+          "company_name": "Zucchetti Germany GmbH",
+          "company_info": {
+            "industry": "IT",
+            "size": "8000+",
+            "location": "Saarbrücken, Germany",
+            "website": null
+          },
+          "position": {
+            "type": "full-time",
+            "level": null,
+            "department": null,
+            "reports_to": null
+          },
+          "location_details": {
+            "office": "Saarbrücken",
+            "remote": null,
+            "travel_required": null
+          },
+          "compensation": {
+            "salary_min": 38000,
+            "salary_max": 48000,
+            "salary_period": null,
+            "currency": "€",
+            "benefits": [
+              "Mentorenprogramm/Coaching",
+              "Flexible Arbeitszeiten",
+              "Homeoffice / Mobiles Arbeiten",
+              "Vermögenswirksame Leistungen",
+              "Firmenevents",
+              "Rabatte für Mitarbeitende",
+              "Weiterbildungen",
+              "Betriebliche Altersvorsorge",
+              "ÖPNV-Ticket / Job-Ticket",
+              "Dienstwagen",
+              "Mitgestaltungsmöglichkeiten",
+              "Parkmöglichkeiten"
+            ]
+          },
+          "requirements": {
+            "education": "Abgeschlossene Ausbildung mit IT-Background",
+            "experience_years": null,
+            "experience_description": "Berufserfahrung im IT-Support und erste Kenntnisse in der Log- und Fehleranalyse von Vorteil",
+            "technical_skills": [
+              "Praktische Erfahrungen im Umgang mit Linux- und Windows-Betriebssystemen",
+              "Erste Erfahrungen mit Datenbanken (PostgreSQL, Oracle)",
+              "Kenntnisse in Netzwerkprotokollen (z.B. TCP/IP, http(S), RDP)"
+            ],
+            "soft_skills": [
+              "Zuverlässigkeit",
+              "Teamfähigkeit",
+              "serviceorientiertes Auftreten",
+              "Analysevermögen"
+            ],
+            "languages": [
+              "Deutsch (mind. C1-Niveau)",
+              "Englisch (gute Kenntnisse)"
+            ]
+          },
+          "responsibilities": [
+            "Betreuung unserer Kunden bei technischen Anfragen",
+            "Anforderungsgerechte Analyse und Bearbeitung von Incidents",
+            "Durchführung von Fehler-Ursachen-Analysen auf internen Testsystemen",
+            "Ticketmanagement zur Steuerung von Tickets in JIRA",
+            "Unterstützung der Abteilung Quality Assurance bei Tests neuer Software",
+            "Aktualisierung & Pflege der Systeme"
+          ],
+          "what_we_offer": [
+            "Die Möglichkeit im internationalen Arbeitsumfeld zu arbeiten",
+            "Ein kollegiales Arbeitsklima in einem freundlichen und aufgeschlossenen Team",
+            "Einen sicheren Arbeitsplatz mit einem unbefristeten Arbeitsvertrag und marktgerechter Vergütung"
+          ],
+          "application": {
+            "deadline": null,
+            "application_link": "https://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV",
+            "contact_email": null,
+            "contact_person": "Frau Marie-Louise Blatt"
+          },
+          "metadata": {
+            "posting_date": "2026-03-10",
+            "job_id": "18737-1570-86838-S",
+            "source": null,
+            "language": "de"
+          },
+          "raw_text": "Arbeit\nSoftware Support Specialist eu-\nroSUITE (m/w/d)\nZucchetti Germany GmbH\n38.000 € – 48.000 €\nArbeitsort\nSaarbrücken\nAnstellungsart\nVollzeit\nBefristung\nunbefristet\nBeginn\nab sofort\n..."
+        },
+        "db_updates": {
+          "existing_record_id": null,
+          "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+          "content_sha256": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+          "processing_state": "processed",
+          "processed": true,
+          "failed_reason": null
+        }
+      }
+    }
+  },
+  "mongodb_objects": {
+    "namespace": {
+      "id": "ns_repo_job_offers_de",
+      "tenant_id": "tenant_demo",
+      "slug": "repo-job-offers-de",
+      "name": "Repo Job Offers Deutschland",
+      "default_embedding_model": "hash-text-embedding-16d",
+      "default_embedding_dimension": 16,
+      "description": "Aus realer Repo-PDF abgeleiteter Wissensdatensatz.",
+      "index_backend": "deterministic_hash_demo",
+      "metadata": {
+        "source": "repo_pdf",
+        "job_id": "18737-1570-86838-S"
+      },
+      "created_at": "2026-03-30T00:00:00+00:00",
+      "updated_at": "2026-03-30T00:00:00+00:00"
+    },
+    "document": {
+      "id": "doc:job_posting:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+      "tenant_id": "tenant_demo",
+      "namespace_id": "ns_repo_job_offers_de",
+      "document_type": "job_posting",
+      "title": "Software Support Specialist euroSUITE (m/w/d)",
+      "source_uri": "file:///home/ben/Vs_Code_Projects/Projects/ALDE_Projekt/ALDE/AppData/VSM_4_Data/__single_live_run_zucchetti/Software%20Support%20Specialist%20euroSUITE%20%28m_w_d%29%20bei%20Zucchetti%20Germany%20GmbH.pdf",
+      "content_sha256": "450295237dd99e8e2b0b19c0c447dcf7ff92966c04ab3d1b24902e7546cdd487",
+      "source_system": "repo_pdf_file",
+      "mime_type": "application/pdf",
+      "language_code": "de",
+      "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+      "author_entity_id": null,
+      "summary": "Arbeit\nSoftware Support Specialist eu-\nroSUITE (m/w/d)\nZucchetti Germany GmbH\n38.000 € – 48.000 €\nArbeitsort\nSaarbrücken\nAnstellungsart\nVollzeit\nBefristung\nunbefristet\nBeginn\nab sofort\n...",
+      "metadata": {
+        "company_name": "Zucchetti Germany GmbH",
+        "company_info": {
+          "industry": "IT",
+          "size": "8000+",
+          "location": "Saarbrücken, Germany",
+          "website": null
+        },
+        "position": {
+          "type": "full-time",
+          "level": null,
+          "department": null,
+          "reports_to": null
+        },
+        "location_details": {
+          "office": "Saarbrücken",
+          "remote": null,
+          "travel_required": null
+        },
+        "compensation": {
+          "salary_min": 38000,
+          "salary_max": 48000,
+          "salary_period": null,
+          "currency": "€",
+          "benefits": [
+            "Mentorenprogramm/Coaching",
+            "Flexible Arbeitszeiten",
+            "Homeoffice / Mobiles Arbeiten",
+            "Vermögenswirksame Leistungen",
+            "Firmenevents",
+            "Rabatte für Mitarbeitende",
+            "Weiterbildungen",
+            "Betriebliche Altersvorsorge",
+            "ÖPNV-Ticket / Job-Ticket",
+            "Dienstwagen",
+            "Mitgestaltungsmöglichkeiten",
+            "Parkmöglichkeiten"
+          ]
+        },
+        "application": {
+          "deadline": null,
+          "application_link": "https://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV",
+          "contact_email": null,
+          "contact_person": "Frau Marie-Louise Blatt"
+        },
+        "posting_metadata": {
+          "posting_date": "2026-03-10",
+          "job_id": "18737-1570-86838-S",
+          "source": null,
+          "language": "de"
+        },
+        "source_pdf": {
+          "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+          "source_path": "/home/ben/Vs_Code_Projects/Projects/ALDE_Projekt/ALDE/AppData/VSM_4_Data/__single_live_run_zucchetti/Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+          "source_uri": "file:///home/ben/Vs_Code_Projects/Projects/ALDE_Projekt/ALDE/AppData/VSM_4_Data/__single_live_run_zucchetti/Software%20Support%20Specialist%20euroSUITE%20%28m_w_d%29%20bei%20Zucchetti%20Germany%20GmbH.pdf",
+          "mime_type": "application/pdf",
+          "page_count": 6,
+          "file_size_bytes": 136894,
+          "mtime_epoch": 1773168907,
+          "language": "de",
+          "content_sha256": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+          "text_sha256": "450295237dd99e8e2b0b19c0c447dcf7ff92966c04ab3d1b24902e7546cdd487",
+          "extractor_backend": "pypdf.PdfReader",
+          "ocr_used": false,
+          "layout_retained": false,
+          "extracted_at": "2026-03-30T00:00:00+00:00",
+          "metadata": {
+            "repo_relative_path": "AppData/VSM_4_Data/__single_live_run_zucchetti/Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+            "recorded_file_hash": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+            "binary_hash_matches_record": true
+          }
+        },
+        "original_record_file": {
+          "path": "/home/ben/Vs_Code_Projects/Projects/ALDE_Projekt/ALDE/AppData/VSM_4_Data/__single_live_run_zucchetti/Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+          "name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf",
+          "content_sha256": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55"
+        },
+        "real_pdf": true
+      },
+      "blocks": [
+        {
+          "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:1",
+          "block_no": 1,
+          "content": "Arbeit\nSoftware Support Specialist eu-\nroSUITE (m/w/d)\nZucchetti Germany GmbH\n38.000 € – 48.000 €\nArbeitsort\nSaarbrücken\nAnstellungsart\nVollzeit\nBefristung\nunbefristet\nBeginn\nab sofort\nBerufsbezeichnung\nSysteminformatiker/in\nVor 11 Tagen veröffentlicht\nFirmenbeschreibung\nZucchetti ist mit mehr als 9.000 Mitarbeitenden eines der größten\nIT-Unternehmen Europas. Zucchetti bietet Software, Hardware\nund IT-Dienstleistungen für Unternehmen, die sich einen erhebli-\nchen Wettbewerbsvorteil sichern und sich für alle IT-Fragen auf ei-\nnen einzigen Ansprechpartner verlassen wollen.\nZurzeit verlassen sich weltweit bereits mehr als 700.000 Kunden\nauf unsere Services. In der Region D-A-CH bietet Zucchetti seinen\nKunden ein Portfolio aus Hard- und Software für die Bereiche\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 1/6",
+          "block_kind": "page",
+          "heading": "Titel und Eckdaten",
+          "token_count": 112,
+          "char_start": 0,
+          "char_end": 967,
+          "parent_block_id": null,
+          "metadata": {
+            "page_no": 1,
+            "source_type": "pdf_page",
+            "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+          },
+          "mentions": [
+            {
+              "entity_id": "ent_job_zucchetti_support_specialist",
+              "mention_text": "Software Support Specialist eu-\nroSUITE (m/w/d)",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.99,
+              "char_start": 8,
+              "char_end": 55,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_company_zucchetti_germany",
+              "mention_text": "Zucchetti Germany GmbH",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.99,
+              "char_start": 56,
+              "char_end": 78,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_product_eurosuite",
+              "mention_text": "eu-\nroSUITE",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.99,
+              "char_start": 36,
+              "char_end": 47,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_location_saarbruecken",
+              "mention_text": "Saarbrücken",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.99,
+              "char_start": 111,
+              "char_end": 122,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_employment_full_time",
+              "mention_text": "Vollzeit",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.99,
+              "char_start": 138,
+              "char_end": 146,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            }
+          ],
+          "created_at": "2026-03-30T00:00:00+00:00"
+        },
+        {
+          "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:2",
+          "block_no": 2,
+          "content": "POS, ERP, HR-Management und Zutrittskontrolle übergreifend für\nverschiedene Branchen.\nStellenbeschreibungDu liebst die tägliche Arbeit mit Menschen,\nbist ein echter Problemlöser*in und suchst eine neue Herausfor-\nderung bei einem ambitionierten Unternehmen?\nDann bist du bei uns genau richtig!\nAls Software Support Specialist euroSUITE (m/w/d) bei der Zuc-\nchetti Germany GmbH verstärkst du unser Support Team. Für un-\nsere POS-Softwarelösung euroSUITE bist du die zentrale Anlauf-\nstelle für unsere renommierten Geschäftskunden. Du nimmst\nnicht nur Soft- und Hardwareprobleme auf, sondern führst nach\nder Fehleranalyse eine Lösung herbei. Mit deinem Einsatz und\ndeiner Hilfsbereitschaft repräsentierst du unser Unternehmen\nnach außen.\nDu wirst in unserem Office in Saarbrücken in Vollzeit (40h)\narbeiten.\nDeine Aufgaben:\nBetreuung unserer Kunden bei technischen Anfragen rund\num unsere Softwarelösungen, inklusive der Bereitstellung ei-\nnes Workarounds oder einer Lösung – (keine Call-Center\nTätigkeit!)\nAnforderungsgerechte Analyse und Bearbeitung sowie Priori-\nsierung, Klassifizierung, Dokumentation und Überwachung\nvon Incidents hinsichtlich fristgerechter SLA-Erfüllung auf\nBasis von ITIL-Prozessen\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 2/6",
+          "block_kind": "page",
+          "heading": "Stellenbeschreibung",
+          "token_count": 166,
+          "char_start": 969,
+          "char_end": 2368,
+          "parent_block_id": null,
+          "metadata": {
+            "page_no": 2,
+            "source_type": "pdf_page",
+            "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+          },
+          "mentions": [],
+          "created_at": "2026-03-30T00:00:00+00:00"
+        },
+        {
+          "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+          "block_no": 3,
+          "content": "Durchführung von Fehler-Ursachen-Analysen auf internen\nTestsystemen, auch in Zusammenarbeit mit der Abteilung\nQuality Assurance\nTicketmanagement zur Steuerung von Tickets in JIRA\nUnterstützung der Abteilung Quality Assurance bei Tests\nneuer Software\nAktualisierung & Pflege der Systeme\nAnforderungsprofilWas du mitbringen solltest:\nIdentifikation mit unseren CoreValues: #LeadbyExample,\n#Teamwork, #PersonalAccountability, #Passion&Fun,\n#Simplicity, #CustomerCentricity\nAbgeschlossene Ausbildung mit IT-Background: z.B. Informa-\ntikkaufmann (m/w/d), IT-Systemkaufmann (m/w/d), Fachin-\nformatiker (m/w/d) oder ähnlich\nBerufserfahrung im IT-Support und erste Kenntnisse in der\nLog- und Fehleranalyse von Vorteil\nPraktische Erfahrungen im Umgang mit Linux- und Windows-\nBetriebssystemen\nNice to have: Erste Erfahrungen mit Datenbanken (Post-\ngreSQL, Oracle) und Netzwerkprotokollen (z.B. TCP/IP,\nhttp(S), RDP)\nBereitschaft zur Teilnahme an Schicht- und Wochenend-\ndiensten nach einem festgelegten, rotierenden System mit\nattraktiven Schichtzulagen\nSehr gute Deutschkenntnisse (mind. C1-Niveau), gute\nEnglischkenntnisse\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 3/6",
+          "block_kind": "page",
+          "heading": "Aufgaben und Anforderungen",
+          "token_count": 138,
+          "char_start": 2370,
+          "char_end": 3680,
+          "parent_block_id": null,
+          "metadata": {
+            "page_no": 3,
+            "source_type": "pdf_page",
+            "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+          },
+          "mentions": [
+            {
+              "entity_id": "ent_tool_jira",
+              "mention_text": "JIRA",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.96,
+              "char_start": 174,
+              "char_end": 178,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_team_quality_assurance",
+              "mention_text": "Quality Assurance",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.96,
+              "char_start": 110,
+              "char_end": 127,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_skill_linux",
+              "mention_text": "Linux",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.96,
+              "char_start": 747,
+              "char_end": 752,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_skill_windows",
+              "mention_text": "Windows",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.96,
+              "char_start": 758,
+              "char_end": 765,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_database_postgresql",
+              "mention_text": "Post-\ngreSQL",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.96,
+              "char_start": 833,
+              "char_end": 845,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_database_oracle",
+              "mention_text": "Oracle",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.96,
+              "char_start": 847,
+              "char_end": 853,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_protocol_tcp_ip",
+              "mention_text": "TCP/IP",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.96,
+              "char_start": 885,
+              "char_end": 891,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_protocol_http_s",
+              "mention_text": "http(S)",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.96,
+              "char_start": 893,
+              "char_end": 900,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_protocol_rdp",
+              "mention_text": "RDP",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.96,
+              "char_start": 902,
+              "char_end": 905,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_language_deutsch",
+              "mention_text": "Deutschkenntnisse",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.96,
+              "char_start": 1055,
+              "char_end": 1072,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            },
+            {
+              "entity_id": "ent_language_englisch",
+              "mention_text": "Englischkenntnisse",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.96,
+              "char_start": 1097,
+              "char_end": 1115,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            }
+          ],
+          "created_at": "2026-03-30T00:00:00+00:00"
+        },
+        {
+          "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:4",
+          "block_no": 4,
+          "content": "Zuverlässigkeit, Teamfähigkeit, ein serviceorientiertes Auftre-\nten sowie Analysevermögen\nSonstige InformationenWir bieten:\nDie Möglichkeit im internationalen Arbeitsumfeld zu arbeiten\nEin kollegiales Arbeitsklima in einem freundlichen und aufge-\nschlossenen Team\nEinen sicheren Arbeitsplatz mit einem unbefristeten Arbeits-\nvertrag und einer marktgerechten Vergütung inkl. einer ar-\nbeitgeberfinanzierten BAV und VWL\nSpielraum für eigene Ideen, Kreativität und Konzepte\nHochinteressante Projekte namhafter Kunden in einer zu-\nkunftsorientierten Branche\nEinen modernen Arbeitsplatz\nEine sehr gute Hardware-Ausstattung\nCorporate Benefits, Mitarbeiterangebote, JobRad, kostenfreie\nGetränke\nWir haben unsere Belegschaft dazu befragt, was das Arbeiten\nbei uns auszeichnet:\n\"Man kann auch mit den Chefs ungezwungen reden.\"\n\"Große Hilfsbereitschaft, jeder versucht jeden zu unterstützen.\"\n\"Angenehmes Arbeitsklima aufgrund angenehmer Charaktere im\nUnternehmen. #GroßeFamilie\"\n\"Mir gefällt die Offenheit und Wertschätzung der Kollegen\nuntereinander.\"\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 4/6",
+          "block_kind": "page",
+          "heading": "Arbeitsumfeld und Benefits",
+          "token_count": 133,
+          "char_start": 3682,
+          "char_end": 4920,
+          "parent_block_id": null,
+          "metadata": {
+            "page_no": 4,
+            "source_type": "pdf_page",
+            "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+          },
+          "mentions": [],
+          "created_at": "2026-03-30T00:00:00+00:00"
+        },
+        {
+          "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:5",
+          "block_no": 5,
+          "content": "Wir freuen uns darauf, dich kennenzulernen. Join our amazing\nteam!\nArbeitsorte\n66115 Saarbrücken\nZucchetti Germany GmbH\n Gründung:1978\nMit mehr als 8.000 Mitarbeitern, einem Vertriebsnetz von über\n2.000 Partnern und mehr als 700.000 Kunden, ist Zucchetti welt-\nweit eines der wichtigsten Unternehmen der IT-Branche.\nIn Deutschland arbeiten derzeit knapp 200 Mitarbeitende und trei-\nben unsere Softwarelösungen und Services in den Bereichen POS\n(Kassensoftware), ERP und HR-Management voran.\nUnser deutscher Hauptstandort befindet sich ab dem 1. Januar\n2024 in Saarbrücken im Saarland.\nVorteile für Mitarbeitende\n\nMentorenprogramm/Coaching\n Flexible Arbeitszeiten\n Homeoffice / Mobiles\nArbeiten\n Vermögenswirksame\nLeistungen\n Firmenevents\n Rabatte für Mitarbeitende\n Weiterbildungen\n Betriebliche Altersvorsorge\n ÖPNV-Ticket / Job-Ticket\n Dienstwagen\n Mitgestaltungsmöglichkei-\nten\n Parkmöglichkeiten\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 5/6",
+          "block_kind": "page",
+          "heading": "Unternehmensprofil",
+          "token_count": 132,
+          "char_start": 4922,
+          "char_end": 6030,
+          "parent_block_id": null,
+          "metadata": {
+            "page_no": 5,
+            "source_type": "pdf_page",
+            "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+          },
+          "mentions": [],
+          "created_at": "2026-03-30T00:00:00+00:00"
+        },
+        {
+          "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:6",
+          "block_no": 6,
+          "content": " Gute Verkehrsanbindung  Moderne technische\nAusstattung\nDie abgebildeten Vorteile für Mitarbeitende können je nach Abteilung und Position variieren.\nHomepage\nInformationen zur Bewerbung\nZucchetti DACH\nFrau Marie-Louise Blatt\nBewerben Sie sich:\nKontaktaufnahme\n\nÜber Internetseite des\nArbeitgebers\nNachricht schreiben\nBitte bewerben Sie sich unter Angabe unserer internen Stellennummer: 18737-1570-86838-S\nStelle betreut durch die BA\nReferenz-Nr.: 18737-1570-86838-S\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 6/6",
+          "block_kind": "page",
+          "heading": "Bewerbung",
+          "token_count": 69,
+          "char_start": 6032,
+          "char_end": 6698,
+          "parent_block_id": null,
+          "metadata": {
+            "page_no": 6,
+            "source_type": "pdf_page",
+            "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+          },
+          "mentions": [
+            {
+              "entity_id": "ent_contact_marie_louise_blatt",
+              "mention_text": "Marie-Louise Blatt",
+              "extractor": "repo_pdf_projection",
+              "confidence": 0.96,
+              "char_start": 209,
+              "char_end": 227,
+              "metadata": {
+                "source": "repo_pdf",
+                "example": false
+              },
+              "created_at": "2026-03-30T00:00:00+00:00"
+            }
+          ],
+          "created_at": "2026-03-30T00:00:00+00:00"
+        }
+      ],
+      "created_at": "2026-03-30T00:00:00+00:00",
+      "updated_at": "2026-03-30T00:00:00+00:00"
+    },
+    "chunks": [
+      {
+        "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:1",
+        "block_no": 1,
+        "content": "Arbeit\nSoftware Support Specialist eu-\nroSUITE (m/w/d)\nZucchetti Germany GmbH\n38.000 € – 48.000 €\nArbeitsort\nSaarbrücken\nAnstellungsart\nVollzeit\nBefristung\nunbefristet\nBeginn\nab sofort\nBerufsbezeichnung\nSysteminformatiker/in\nVor 11 Tagen veröffentlicht\nFirmenbeschreibung\nZucchetti ist mit mehr als 9.000 Mitarbeitenden eines der größten\nIT-Unternehmen Europas. Zucchetti bietet Software, Hardware\nund IT-Dienstleistungen für Unternehmen, die sich einen erhebli-\nchen Wettbewerbsvorteil sichern und sich für alle IT-Fragen auf ei-\nnen einzigen Ansprechpartner verlassen wollen.\nZurzeit verlassen sich weltweit bereits mehr als 700.000 Kunden\nauf unsere Services. In der Region D-A-CH bietet Zucchetti seinen\nKunden ein Portfolio aus Hard- und Software für die Bereiche\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 1/6",
+        "block_kind": "page",
+        "heading": "Titel und Eckdaten",
+        "token_count": 112,
+        "char_start": 0,
+        "char_end": 967,
+        "parent_block_id": null,
+        "metadata": {
+          "page_no": 1,
+          "source_type": "pdf_page",
+          "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "mentions": [
+          {
+            "entity_id": "ent_job_zucchetti_support_specialist",
+            "mention_text": "Software Support Specialist eu-\nroSUITE (m/w/d)",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.99,
+            "char_start": 8,
+            "char_end": 55,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_company_zucchetti_germany",
+            "mention_text": "Zucchetti Germany GmbH",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.99,
+            "char_start": 56,
+            "char_end": 78,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_product_eurosuite",
+            "mention_text": "eu-\nroSUITE",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.99,
+            "char_start": 36,
+            "char_end": 47,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_location_saarbruecken",
+            "mention_text": "Saarbrücken",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.99,
+            "char_start": 111,
+            "char_end": 122,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_employment_full_time",
+            "mention_text": "Vollzeit",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.99,
+            "char_start": 138,
+            "char_end": 146,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:2",
+        "block_no": 2,
+        "content": "POS, ERP, HR-Management und Zutrittskontrolle übergreifend für\nverschiedene Branchen.\nStellenbeschreibungDu liebst die tägliche Arbeit mit Menschen,\nbist ein echter Problemlöser*in und suchst eine neue Herausfor-\nderung bei einem ambitionierten Unternehmen?\nDann bist du bei uns genau richtig!\nAls Software Support Specialist euroSUITE (m/w/d) bei der Zuc-\nchetti Germany GmbH verstärkst du unser Support Team. Für un-\nsere POS-Softwarelösung euroSUITE bist du die zentrale Anlauf-\nstelle für unsere renommierten Geschäftskunden. Du nimmst\nnicht nur Soft- und Hardwareprobleme auf, sondern führst nach\nder Fehleranalyse eine Lösung herbei. Mit deinem Einsatz und\ndeiner Hilfsbereitschaft repräsentierst du unser Unternehmen\nnach außen.\nDu wirst in unserem Office in Saarbrücken in Vollzeit (40h)\narbeiten.\nDeine Aufgaben:\nBetreuung unserer Kunden bei technischen Anfragen rund\num unsere Softwarelösungen, inklusive der Bereitstellung ei-\nnes Workarounds oder einer Lösung – (keine Call-Center\nTätigkeit!)\nAnforderungsgerechte Analyse und Bearbeitung sowie Priori-\nsierung, Klassifizierung, Dokumentation und Überwachung\nvon Incidents hinsichtlich fristgerechter SLA-Erfüllung auf\nBasis von ITIL-Prozessen\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 2/6",
+        "block_kind": "page",
+        "heading": "Stellenbeschreibung",
+        "token_count": 166,
+        "char_start": 969,
+        "char_end": 2368,
+        "parent_block_id": null,
+        "metadata": {
+          "page_no": 2,
+          "source_type": "pdf_page",
+          "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "mentions": [],
+        "created_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+        "block_no": 3,
+        "content": "Durchführung von Fehler-Ursachen-Analysen auf internen\nTestsystemen, auch in Zusammenarbeit mit der Abteilung\nQuality Assurance\nTicketmanagement zur Steuerung von Tickets in JIRA\nUnterstützung der Abteilung Quality Assurance bei Tests\nneuer Software\nAktualisierung & Pflege der Systeme\nAnforderungsprofilWas du mitbringen solltest:\nIdentifikation mit unseren CoreValues: #LeadbyExample,\n#Teamwork, #PersonalAccountability, #Passion&Fun,\n#Simplicity, #CustomerCentricity\nAbgeschlossene Ausbildung mit IT-Background: z.B. Informa-\ntikkaufmann (m/w/d), IT-Systemkaufmann (m/w/d), Fachin-\nformatiker (m/w/d) oder ähnlich\nBerufserfahrung im IT-Support und erste Kenntnisse in der\nLog- und Fehleranalyse von Vorteil\nPraktische Erfahrungen im Umgang mit Linux- und Windows-\nBetriebssystemen\nNice to have: Erste Erfahrungen mit Datenbanken (Post-\ngreSQL, Oracle) und Netzwerkprotokollen (z.B. TCP/IP,\nhttp(S), RDP)\nBereitschaft zur Teilnahme an Schicht- und Wochenend-\ndiensten nach einem festgelegten, rotierenden System mit\nattraktiven Schichtzulagen\nSehr gute Deutschkenntnisse (mind. C1-Niveau), gute\nEnglischkenntnisse\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 3/6",
+        "block_kind": "page",
+        "heading": "Aufgaben und Anforderungen",
+        "token_count": 138,
+        "char_start": 2370,
+        "char_end": 3680,
+        "parent_block_id": null,
+        "metadata": {
+          "page_no": 3,
+          "source_type": "pdf_page",
+          "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "mentions": [
+          {
+            "entity_id": "ent_tool_jira",
+            "mention_text": "JIRA",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.96,
+            "char_start": 174,
+            "char_end": 178,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_team_quality_assurance",
+            "mention_text": "Quality Assurance",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.96,
+            "char_start": 110,
+            "char_end": 127,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_skill_linux",
+            "mention_text": "Linux",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.96,
+            "char_start": 747,
+            "char_end": 752,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_skill_windows",
+            "mention_text": "Windows",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.96,
+            "char_start": 758,
+            "char_end": 765,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_database_postgresql",
+            "mention_text": "Post-\ngreSQL",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.96,
+            "char_start": 833,
+            "char_end": 845,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_database_oracle",
+            "mention_text": "Oracle",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.96,
+            "char_start": 847,
+            "char_end": 853,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_protocol_tcp_ip",
+            "mention_text": "TCP/IP",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.96,
+            "char_start": 885,
+            "char_end": 891,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_protocol_http_s",
+            "mention_text": "http(S)",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.96,
+            "char_start": 893,
+            "char_end": 900,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_protocol_rdp",
+            "mention_text": "RDP",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.96,
+            "char_start": 902,
+            "char_end": 905,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_language_deutsch",
+            "mention_text": "Deutschkenntnisse",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.96,
+            "char_start": 1055,
+            "char_end": 1072,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          },
+          {
+            "entity_id": "ent_language_englisch",
+            "mention_text": "Englischkenntnisse",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.96,
+            "char_start": 1097,
+            "char_end": 1115,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:4",
+        "block_no": 4,
+        "content": "Zuverlässigkeit, Teamfähigkeit, ein serviceorientiertes Auftre-\nten sowie Analysevermögen\nSonstige InformationenWir bieten:\nDie Möglichkeit im internationalen Arbeitsumfeld zu arbeiten\nEin kollegiales Arbeitsklima in einem freundlichen und aufge-\nschlossenen Team\nEinen sicheren Arbeitsplatz mit einem unbefristeten Arbeits-\nvertrag und einer marktgerechten Vergütung inkl. einer ar-\nbeitgeberfinanzierten BAV und VWL\nSpielraum für eigene Ideen, Kreativität und Konzepte\nHochinteressante Projekte namhafter Kunden in einer zu-\nkunftsorientierten Branche\nEinen modernen Arbeitsplatz\nEine sehr gute Hardware-Ausstattung\nCorporate Benefits, Mitarbeiterangebote, JobRad, kostenfreie\nGetränke\nWir haben unsere Belegschaft dazu befragt, was das Arbeiten\nbei uns auszeichnet:\n\"Man kann auch mit den Chefs ungezwungen reden.\"\n\"Große Hilfsbereitschaft, jeder versucht jeden zu unterstützen.\"\n\"Angenehmes Arbeitsklima aufgrund angenehmer Charaktere im\nUnternehmen. #GroßeFamilie\"\n\"Mir gefällt die Offenheit und Wertschätzung der Kollegen\nuntereinander.\"\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 4/6",
+        "block_kind": "page",
+        "heading": "Arbeitsumfeld und Benefits",
+        "token_count": 133,
+        "char_start": 3682,
+        "char_end": 4920,
+        "parent_block_id": null,
+        "metadata": {
+          "page_no": 4,
+          "source_type": "pdf_page",
+          "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "mentions": [],
+        "created_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:5",
+        "block_no": 5,
+        "content": "Wir freuen uns darauf, dich kennenzulernen. Join our amazing\nteam!\nArbeitsorte\n66115 Saarbrücken\nZucchetti Germany GmbH\n Gründung:1978\nMit mehr als 8.000 Mitarbeitern, einem Vertriebsnetz von über\n2.000 Partnern und mehr als 700.000 Kunden, ist Zucchetti welt-\nweit eines der wichtigsten Unternehmen der IT-Branche.\nIn Deutschland arbeiten derzeit knapp 200 Mitarbeitende und trei-\nben unsere Softwarelösungen und Services in den Bereichen POS\n(Kassensoftware), ERP und HR-Management voran.\nUnser deutscher Hauptstandort befindet sich ab dem 1. Januar\n2024 in Saarbrücken im Saarland.\nVorteile für Mitarbeitende\n\nMentorenprogramm/Coaching\n Flexible Arbeitszeiten\n Homeoffice / Mobiles\nArbeiten\n Vermögenswirksame\nLeistungen\n Firmenevents\n Rabatte für Mitarbeitende\n Weiterbildungen\n Betriebliche Altersvorsorge\n ÖPNV-Ticket / Job-Ticket\n Dienstwagen\n Mitgestaltungsmöglichkei-\nten\n Parkmöglichkeiten\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 5/6",
+        "block_kind": "page",
+        "heading": "Unternehmensprofil",
+        "token_count": 132,
+        "char_start": 4922,
+        "char_end": 6030,
+        "parent_block_id": null,
+        "metadata": {
+          "page_no": 5,
+          "source_type": "pdf_page",
+          "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "mentions": [],
+        "created_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:6",
+        "block_no": 6,
+        "content": " Gute Verkehrsanbindung  Moderne technische\nAusstattung\nDie abgebildeten Vorteile für Mitarbeitende können je nach Abteilung und Position variieren.\nHomepage\nInformationen zur Bewerbung\nZucchetti DACH\nFrau Marie-Louise Blatt\nBewerben Sie sich:\nKontaktaufnahme\n\nÜber Internetseite des\nArbeitgebers\nNachricht schreiben\nBitte bewerben Sie sich unter Angabe unserer internen Stellennummer: 18737-1570-86838-S\nStelle betreut durch die BA\nReferenz-Nr.: 18737-1570-86838-S\n10.03.26, 19:55 Software Support Specialist euroSUITE (m/w/d) bei Zucchetti Germany GmbH\nhttps://web.arbeitsagentur.de/jobboerse/vv-ui/pd/vermittlungsvorschlaege/detail/10000-100249344151-VV 6/6",
+        "block_kind": "page",
+        "heading": "Bewerbung",
+        "token_count": 69,
+        "char_start": 6032,
+        "char_end": 6698,
+        "parent_block_id": null,
+        "metadata": {
+          "page_no": 6,
+          "source_type": "pdf_page",
+          "file_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "mentions": [
+          {
+            "entity_id": "ent_contact_marie_louise_blatt",
+            "mention_text": "Marie-Louise Blatt",
+            "extractor": "repo_pdf_projection",
+            "confidence": 0.96,
+            "char_start": 209,
+            "char_end": 227,
+            "metadata": {
+              "source": "repo_pdf",
+              "example": false
+            },
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00"
+      }
+    ],
+    "entities": [
+      {
+        "id": "ent_job_zucchetti_support_specialist",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "job_posting",
+        "canonical_name": "Software Support Specialist euroSUITE (m/w/d)",
+        "external_key": "job:zucchetti:support:specialist",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Support-Rolle fuer die Produktfamilie euroSUITE.",
+        "attributes": {
+          "posting_date": "2026-03-10",
+          "job_id": "18737-1570-86838-S"
+        },
+        "aliases": [],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_company_zucchetti_germany",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "organization",
+        "canonical_name": "Zucchetti Germany GmbH",
+        "external_key": "company:zucchetti:germany",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Arbeitgeber der Stellenanzeige.",
+        "attributes": {
+          "industry": "IT",
+          "size": "8000+",
+          "location": "Saarbrücken, Germany",
+          "website": null
+        },
+        "aliases": [],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_product_eurosuite",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "product",
+        "canonical_name": "euroSUITE",
+        "external_key": "product:eurosuite",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Produktlinie, auf die sich die Support-Rolle bezieht.",
+        "attributes": {},
+        "aliases": [
+          {
+            "alias": "euroSUITE",
+            "alias_type": "product_name",
+            "locale": "de",
+            "confidence": 0.99,
+            "source_document_id": "doc:job_posting:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_location_saarbruecken",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "location",
+        "canonical_name": "Saarbrücken",
+        "external_key": "location:saarbruecken",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Standort der ausgeschriebenen Stelle.",
+        "attributes": {
+          "office": "Saarbrücken",
+          "remote": null,
+          "travel_required": null
+        },
+        "aliases": [],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_employment_full_time",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "employment_type",
+        "canonical_name": "Vollzeit",
+        "external_key": "employment:full-time",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Anstellungsart laut PDF.",
+        "attributes": {
+          "type": "full-time",
+          "level": null,
+          "department": null,
+          "reports_to": null
+        },
+        "aliases": [
+          {
+            "alias": "full-time",
+            "alias_type": "normalized",
+            "locale": "en",
+            "confidence": 0.98,
+            "source_document_id": "doc:job_posting:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_tool_jira",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "tool",
+        "canonical_name": "JIRA",
+        "external_key": "tool:jira",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Ticketmanagement-System im Aufgabenprofil.",
+        "attributes": {},
+        "aliases": [],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_team_quality_assurance",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "team",
+        "canonical_name": "Quality Assurance",
+        "external_key": "team:quality:assurance",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Abteilung, die bei Softwaretests unterstuetzt wird.",
+        "attributes": {},
+        "aliases": [
+          {
+            "alias": "QA",
+            "alias_type": "abbreviation",
+            "locale": null,
+            "confidence": 0.95,
+            "source_document_id": "doc:job_posting:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_skill_linux",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "skill",
+        "canonical_name": "Linux",
+        "external_key": "skill:linux",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Kenntnisse in Linux-Betriebssystemen.",
+        "attributes": {},
+        "aliases": [],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_skill_windows",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "skill",
+        "canonical_name": "Windows",
+        "external_key": "skill:windows",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Kenntnisse in Windows-Betriebssystemen.",
+        "attributes": {},
+        "aliases": [],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_database_postgresql",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "database",
+        "canonical_name": "PostgreSQL",
+        "external_key": "database:postgresql",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Datenbankkenntnisse laut Anforderungsprofil.",
+        "attributes": {},
+        "aliases": [],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_database_oracle",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "database",
+        "canonical_name": "Oracle",
+        "external_key": "database:oracle",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Datenbankkenntnisse laut Anforderungsprofil.",
+        "attributes": {},
+        "aliases": [],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_protocol_tcp_ip",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "protocol",
+        "canonical_name": "TCP/IP",
+        "external_key": "protocol:tcp:ip",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Netzwerkprotokoll aus dem Anforderungsprofil.",
+        "attributes": {},
+        "aliases": [],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_protocol_http_s",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "protocol",
+        "canonical_name": "HTTP(S)",
+        "external_key": "protocol:http:s",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Netzwerkprotokoll aus dem Anforderungsprofil.",
+        "attributes": {},
+        "aliases": [],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_protocol_rdp",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "protocol",
+        "canonical_name": "RDP",
+        "external_key": "protocol:rdp",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Netzwerkprotokoll aus dem Anforderungsprofil.",
+        "attributes": {},
+        "aliases": [],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_language_deutsch",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "language",
+        "canonical_name": "Deutsch",
+        "external_key": "language:deutsch",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Erforderliche Sprache mit C1-Niveau.",
+        "attributes": {
+          "level": "C1"
+        },
+        "aliases": [],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_language_englisch",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "language",
+        "canonical_name": "Englisch",
+        "external_key": "language:englisch",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Gute Englischkenntnisse als Anforderung.",
+        "attributes": {
+          "level": "good"
+        },
+        "aliases": [],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "ent_contact_marie_louise_blatt",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "entity_type": "person",
+        "canonical_name": "Marie-Louise Blatt",
+        "external_key": "contact:marie:louise:blatt",
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "status": "active",
+        "summary": "Kontaktperson fuer die Bewerbung.",
+        "attributes": {
+          "role": "contact_person"
+        },
+        "aliases": [
+          {
+            "alias": "Frau Marie-Louise Blatt",
+            "alias_type": "formal_name",
+            "locale": "de",
+            "confidence": 0.99,
+            "source_document_id": "doc:job_posting:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      }
+    ],
+    "relations": [
+      {
+        "id": "rel_job_company",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_company_zucchetti_germany",
+        "relation_type": "offered_by",
+        "direction": "directed",
+        "weight": 1.0,
+        "confidence": 0.99,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:1",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_product",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_product_eurosuite",
+        "relation_type": "supports_product",
+        "direction": "directed",
+        "weight": 0.97,
+        "confidence": 0.97,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:1",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_location",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_location_saarbruecken",
+        "relation_type": "located_in",
+        "direction": "directed",
+        "weight": 0.94,
+        "confidence": 0.99,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:1",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_employment",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_employment_full_time",
+        "relation_type": "employment_type",
+        "direction": "directed",
+        "weight": 0.9,
+        "confidence": 0.99,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:1",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_tool_jira",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_tool_jira",
+        "relation_type": "uses_tool",
+        "direction": "directed",
+        "weight": 0.82,
+        "confidence": 0.97,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_team_qa",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_team_quality_assurance",
+        "relation_type": "collaborates_with_team",
+        "direction": "directed",
+        "weight": 0.78,
+        "confidence": 0.96,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_skill_linux",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_skill_linux",
+        "relation_type": "requires_skill",
+        "direction": "directed",
+        "weight": 0.9,
+        "confidence": 0.95,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_skill_windows",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_skill_windows",
+        "relation_type": "requires_skill",
+        "direction": "directed",
+        "weight": 0.9,
+        "confidence": 0.95,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_db_postgresql",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_database_postgresql",
+        "relation_type": "requires_database_knowledge",
+        "direction": "directed",
+        "weight": 0.84,
+        "confidence": 0.95,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_db_oracle",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_database_oracle",
+        "relation_type": "requires_database_knowledge",
+        "direction": "directed",
+        "weight": 0.8,
+        "confidence": 0.95,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_protocol_tcp_ip",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_protocol_tcp_ip",
+        "relation_type": "requires_protocol_knowledge",
+        "direction": "directed",
+        "weight": 0.82,
+        "confidence": 0.94,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_protocol_http_s",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_protocol_http_s",
+        "relation_type": "requires_protocol_knowledge",
+        "direction": "directed",
+        "weight": 0.77,
+        "confidence": 0.93,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_protocol_rdp",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_protocol_rdp",
+        "relation_type": "requires_protocol_knowledge",
+        "direction": "directed",
+        "weight": 0.77,
+        "confidence": 0.93,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_language_de",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_language_deutsch",
+        "relation_type": "requires_language",
+        "direction": "directed",
+        "weight": 0.9,
+        "confidence": 0.95,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_language_en",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_language_englisch",
+        "relation_type": "requires_language",
+        "direction": "directed",
+        "weight": 0.68,
+        "confidence": 0.92,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "id": "rel_job_contact",
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_contact_marie_louise_blatt",
+        "relation_type": "application_contact",
+        "direction": "directed",
+        "weight": 0.65,
+        "confidence": 0.99,
+        "valid_from": "2026-03-10",
+        "valid_to": null,
+        "correlation_id": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "metadata": {
+          "source": "tree_data_job_posting_result",
+          "pdf_name": "Software Support Specialist euroSUITE (m_w_d) bei Zucchetti Germany GmbH.pdf"
+        },
+        "evidence": [
+          {
+            "block_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:6",
+            "evidence_role": "supporting",
+            "created_at": "2026-03-30T00:00:00+00:00"
+          }
+        ],
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      }
+    ],
+    "embeddings": [
+      {
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "model_id": "hash-text-embedding-16d",
+        "owner_type": "document",
+        "owner_id": "doc:job_posting:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "content_sha256": "450295237dd99e8e2b0b19c0c447dcf7ff92966c04ab3d1b24902e7546cdd487",
+        "dimension": 16,
+        "index_namespace": "ns_repo_job_offers_de",
+        "index_item_key": "doc:job_posting:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "chunk_hash": null,
+        "embedding": [
+          0.396078,
+          0.356863,
+          -0.082353,
+          0.615686,
+          0.45098,
+          0.921569,
+          0.058824,
+          0.505882,
+          -0.490196,
+          0.231373,
+          0.796078,
+          0.6,
+          0.011765,
+          -0.709804,
+          -0.811765,
+          0.231373
+        ],
+        "index_backend": "deterministic_hash_demo",
+        "metadata": {
+          "source_stage": "repo_pdf_snapshot",
+          "real_pdf": true,
+          "page_based": false
+        },
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "model_id": "hash-text-embedding-16d",
+        "owner_type": "block",
+        "owner_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:1",
+        "content_sha256": "8f52d0d63d770c98f5cd504f0ff78a783c6d572ca40bf7535dd338d71cd3c516",
+        "dimension": 16,
+        "index_namespace": "ns_repo_job_offers_de",
+        "index_item_key": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:1",
+        "chunk_hash": "37bec82f302567cd707c3c6987a53a4f13ad448d7cc61ab4ec78c8aa5376f2cc",
+        "embedding": [
+          -0.32549,
+          -0.498039,
+          -0.105882,
+          -0.192157,
+          0.113725,
+          -0.380392,
+          -0.333333,
+          0.670588,
+          -0.811765,
+          0.796078,
+          0.356863,
+          -0.32549,
+          0.968627,
+          -0.819608,
+          0.87451,
+          -0.482353
+        ],
+        "index_backend": "deterministic_hash_demo",
+        "metadata": {
+          "source_stage": "repo_pdf_snapshot",
+          "real_pdf": true,
+          "page_based": true
+        },
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "model_id": "hash-text-embedding-16d",
+        "owner_type": "block",
+        "owner_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:2",
+        "content_sha256": "9b670eef0f9a57f7e07af5b9d691f21c15edaf81c4461bc5efe8752f05180f4f",
+        "dimension": 16,
+        "index_namespace": "ns_repo_job_offers_de",
+        "index_item_key": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:2",
+        "chunk_hash": "451964d7aa0b4cfbfd8d1d1bf0f4f56f0b9b1e11083f4be19159f0fec89c5c14",
+        "embedding": [
+          -0.74902,
+          0.505882,
+          -0.819608,
+          0.082353,
+          -0.498039,
+          -0.262745,
+          0.905882,
+          0.72549,
+          1.0,
+          0.035294,
+          0.356863,
+          -0.309804,
+          -0.247059,
+          -0.913725,
+          0.262745,
+          0.356863
+        ],
+        "index_backend": "deterministic_hash_demo",
+        "metadata": {
+          "source_stage": "repo_pdf_snapshot",
+          "real_pdf": true,
+          "page_based": true
+        },
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "model_id": "hash-text-embedding-16d",
+        "owner_type": "block",
+        "owner_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+        "content_sha256": "daeee89b6e13146a4382ba64f670e67561dc0f7fc915e02f4c9dbaded0d29450",
+        "dimension": 16,
+        "index_namespace": "ns_repo_job_offers_de",
+        "index_item_key": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:3",
+        "chunk_hash": "8e67f98e128c9383c98aeeb44c7357910e74ee9900f35b014c59607de804fc51",
+        "embedding": [
+          -0.066667,
+          -0.694118,
+          -0.843137,
+          0.05098,
+          0.419608,
+          0.019608,
+          0.45098,
+          0.772549,
+          0.552941,
+          -0.913725,
+          -0.505882,
+          0.113725,
+          -0.443137,
+          0.090196,
+          -0.145098,
+          -0.890196
+        ],
+        "index_backend": "deterministic_hash_demo",
+        "metadata": {
+          "source_stage": "repo_pdf_snapshot",
+          "real_pdf": true,
+          "page_based": true
+        },
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "model_id": "hash-text-embedding-16d",
+        "owner_type": "block",
+        "owner_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:4",
+        "content_sha256": "7a59eb17797f3c53a009eb3be81823bb0b3ec91757312283b813c9744ea4fd63",
+        "dimension": 16,
+        "index_namespace": "ns_repo_job_offers_de",
+        "index_item_key": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:4",
+        "chunk_hash": "7f032b50b48b3cae03304b7eaf8604329808651b345b086fa1924d6429444adc",
+        "embedding": [
+          0.545098,
+          -0.129412,
+          0.937255,
+          -0.827451,
+          0.45098,
+          -0.811765,
+          0.984314,
+          -0.333333,
+          0.309804,
+          0.552941,
+          -0.270588,
+          0.647059,
+          -0.898039,
+          -0.631373,
+          0.003922,
+          0.309804
+        ],
+        "index_backend": "deterministic_hash_demo",
+        "metadata": {
+          "source_stage": "repo_pdf_snapshot",
+          "real_pdf": true,
+          "page_based": true
+        },
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "model_id": "hash-text-embedding-16d",
+        "owner_type": "block",
+        "owner_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:5",
+        "content_sha256": "912bacf5daba18bce8c3118a8145c5aa0b81e247a28f1ace0fe21c5e8df922c7",
+        "dimension": 16,
+        "index_namespace": "ns_repo_job_offers_de",
+        "index_item_key": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:5",
+        "chunk_hash": "4b21c29c5d480dd70b90e9e8f4062b1772a38f17cb4c032dbc3698c185ebaf96",
+        "embedding": [
+          0.780392,
+          -0.505882,
+          0.615686,
+          -0.960784,
+          -0.2,
+          -0.521569,
+          -0.270588,
+          0.796078,
+          -0.890196,
+          0.898039,
+          0.07451,
+          -0.717647,
+          -0.882353,
+          -0.419608,
+          0.647059,
+          -0.372549
+        ],
+        "index_backend": "deterministic_hash_demo",
+        "metadata": {
+          "source_stage": "repo_pdf_snapshot",
+          "real_pdf": true,
+          "page_based": true
+        },
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      },
+      {
+        "tenant_id": "tenant_demo",
+        "namespace_id": "ns_repo_job_offers_de",
+        "model_id": "hash-text-embedding-16d",
+        "owner_type": "block",
+        "owner_id": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:6",
+        "content_sha256": "57c86b7b052c91afa6ea60626b47d8d50dc6108137349f4917c02e66d17f7424",
+        "dimension": 16,
+        "index_namespace": "ns_repo_job_offers_de",
+        "index_item_key": "blk:6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55:6",
+        "chunk_hash": "f5f40784138dad81c419f889179ad2fb29049a6ae13dd765299d2a3a0cee8b4c",
+        "embedding": [
+          0.333333,
+          -0.498039,
+          -0.411765,
+          -0.647059,
+          0.521569,
+          0.239216,
+          -0.160784,
+          -0.47451,
+          0.129412,
+          -0.035294,
+          0.113725,
+          0.403922,
+          0.592157,
+          0.160784,
+          0.74902,
+          0.882353
+        ],
+        "index_backend": "deterministic_hash_demo",
+        "metadata": {
+          "source_stage": "repo_pdf_snapshot",
+          "real_pdf": true,
+          "page_based": true
+        },
+        "created_at": "2026-03-30T00:00:00+00:00",
+        "updated_at": "2026-03-30T00:00:00+00:00"
+      }
+    ]
+  },
+  "entity_relation_graph": {
+    "nodes": [
+      {
+        "entity_id": "ent_job_zucchetti_support_specialist",
+        "entity_type": "job_posting",
+        "canonical_name": "Software Support Specialist euroSUITE (m/w/d)"
+      },
+      {
+        "entity_id": "ent_company_zucchetti_germany",
+        "entity_type": "organization",
+        "canonical_name": "Zucchetti Germany GmbH"
+      },
+      {
+        "entity_id": "ent_product_eurosuite",
+        "entity_type": "product",
+        "canonical_name": "euroSUITE"
+      },
+      {
+        "entity_id": "ent_location_saarbruecken",
+        "entity_type": "location",
+        "canonical_name": "Saarbrücken"
+      },
+      {
+        "entity_id": "ent_employment_full_time",
+        "entity_type": "employment_type",
+        "canonical_name": "Vollzeit"
+      },
+      {
+        "entity_id": "ent_tool_jira",
+        "entity_type": "tool",
+        "canonical_name": "JIRA"
+      },
+      {
+        "entity_id": "ent_team_quality_assurance",
+        "entity_type": "team",
+        "canonical_name": "Quality Assurance"
+      },
+      {
+        "entity_id": "ent_skill_linux",
+        "entity_type": "skill",
+        "canonical_name": "Linux"
+      },
+      {
+        "entity_id": "ent_skill_windows",
+        "entity_type": "skill",
+        "canonical_name": "Windows"
+      },
+      {
+        "entity_id": "ent_database_postgresql",
+        "entity_type": "database",
+        "canonical_name": "PostgreSQL"
+      },
+      {
+        "entity_id": "ent_database_oracle",
+        "entity_type": "database",
+        "canonical_name": "Oracle"
+      },
+      {
+        "entity_id": "ent_protocol_tcp_ip",
+        "entity_type": "protocol",
+        "canonical_name": "TCP/IP"
+      },
+      {
+        "entity_id": "ent_protocol_http_s",
+        "entity_type": "protocol",
+        "canonical_name": "HTTP(S)"
+      },
+      {
+        "entity_id": "ent_protocol_rdp",
+        "entity_type": "protocol",
+        "canonical_name": "RDP"
+      },
+      {
+        "entity_id": "ent_language_deutsch",
+        "entity_type": "language",
+        "canonical_name": "Deutsch"
+      },
+      {
+        "entity_id": "ent_language_englisch",
+        "entity_type": "language",
+        "canonical_name": "Englisch"
+      },
+      {
+        "entity_id": "ent_contact_marie_louise_blatt",
+        "entity_type": "person",
+        "canonical_name": "Marie-Louise Blatt"
+      }
+    ],
+    "edges": [
+      {
+        "relation_id": "rel_job_company",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_company_zucchetti_germany",
+        "relation_type": "offered_by",
+        "direction": "directed",
+        "weight": 1.0,
+        "confidence": 0.99
+      },
+      {
+        "relation_id": "rel_job_product",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_product_eurosuite",
+        "relation_type": "supports_product",
+        "direction": "directed",
+        "weight": 0.97,
+        "confidence": 0.97
+      },
+      {
+        "relation_id": "rel_job_location",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_location_saarbruecken",
+        "relation_type": "located_in",
+        "direction": "directed",
+        "weight": 0.94,
+        "confidence": 0.99
+      },
+      {
+        "relation_id": "rel_job_employment",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_employment_full_time",
+        "relation_type": "employment_type",
+        "direction": "directed",
+        "weight": 0.9,
+        "confidence": 0.99
+      },
+      {
+        "relation_id": "rel_job_tool_jira",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_tool_jira",
+        "relation_type": "uses_tool",
+        "direction": "directed",
+        "weight": 0.82,
+        "confidence": 0.97
+      },
+      {
+        "relation_id": "rel_job_team_qa",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_team_quality_assurance",
+        "relation_type": "collaborates_with_team",
+        "direction": "directed",
+        "weight": 0.78,
+        "confidence": 0.96
+      },
+      {
+        "relation_id": "rel_job_skill_linux",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_skill_linux",
+        "relation_type": "requires_skill",
+        "direction": "directed",
+        "weight": 0.9,
+        "confidence": 0.95
+      },
+      {
+        "relation_id": "rel_job_skill_windows",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_skill_windows",
+        "relation_type": "requires_skill",
+        "direction": "directed",
+        "weight": 0.9,
+        "confidence": 0.95
+      },
+      {
+        "relation_id": "rel_job_db_postgresql",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_database_postgresql",
+        "relation_type": "requires_database_knowledge",
+        "direction": "directed",
+        "weight": 0.84,
+        "confidence": 0.95
+      },
+      {
+        "relation_id": "rel_job_db_oracle",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_database_oracle",
+        "relation_type": "requires_database_knowledge",
+        "direction": "directed",
+        "weight": 0.8,
+        "confidence": 0.95
+      },
+      {
+        "relation_id": "rel_job_protocol_tcp_ip",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_protocol_tcp_ip",
+        "relation_type": "requires_protocol_knowledge",
+        "direction": "directed",
+        "weight": 0.82,
+        "confidence": 0.94
+      },
+      {
+        "relation_id": "rel_job_protocol_http_s",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_protocol_http_s",
+        "relation_type": "requires_protocol_knowledge",
+        "direction": "directed",
+        "weight": 0.77,
+        "confidence": 0.93
+      },
+      {
+        "relation_id": "rel_job_protocol_rdp",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_protocol_rdp",
+        "relation_type": "requires_protocol_knowledge",
+        "direction": "directed",
+        "weight": 0.77,
+        "confidence": 0.93
+      },
+      {
+        "relation_id": "rel_job_language_de",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_language_deutsch",
+        "relation_type": "requires_language",
+        "direction": "directed",
+        "weight": 0.9,
+        "confidence": 0.95
+      },
+      {
+        "relation_id": "rel_job_language_en",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_language_englisch",
+        "relation_type": "requires_language",
+        "direction": "directed",
+        "weight": 0.68,
+        "confidence": 0.92
+      },
+      {
+        "relation_id": "rel_job_contact",
+        "source_entity_id": "ent_job_zucchetti_support_specialist",
+        "target_entity_id": "ent_contact_marie_louise_blatt",
+        "relation_type": "application_contact",
+        "direction": "directed",
+        "weight": 0.65,
+        "confidence": 0.99
+      }
+    ]
+  }
+}

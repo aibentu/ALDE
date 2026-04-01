@@ -330,7 +330,7 @@ def _build_profile_result(profile: dict[str, Any], workflow_config: dict[str, An
     correlation_id = _payload_value(profile, correlation_id_path)
     language = _payload_value(profile, language_path) or profile_config.get("default_language") or "de"
     return {
-        "agent": str(profile_config.get("agent") or "profile_parser"),
+        "agent": str(profile_config.get("agent") or "xworker"),
         "correlation_id": correlation_id,
         "parse": {"language": language, "errors": [], "warnings": []},
         "profile": profile,
@@ -519,8 +519,6 @@ class BatchDocumentGenerationService:
         skip_output_dir_inputs: bool,
         rerun_processed: bool,
         dry_run: bool,
-        docs: dict[str, Any],
-        db: dict[str, Any],
         dispatcher_db_path: str,
     ) -> tuple[str, str] | None:
         pdf_path = item.get("path")
@@ -539,18 +537,24 @@ class BatchDocumentGenerationService:
         if not correlation_id or not isinstance(correlation_id, str):
             raise ValueError("missing_sha")
 
-        record = docs.get(correlation_id) if isinstance(docs, dict) else None
-        if isinstance(record, dict) and (record.get("processed") is True or str(record.get("processing_state")).lower() == "processed"):
+        record = item.get("db") if isinstance(item.get("db"), dict) else {}
+        if record.get("processed") is True or str(record.get("processing_state") or "").lower() == "processed":
             if not rerun_processed:
                 return None
-            if not dry_run and isinstance(docs, dict):
+            if not dry_run:
                 try:
-                    next_record = dict(record)
-                    next_record["processed"] = False
-                    next_record["processing_state"] = "queued"
-                    next_record["last_error"] = None
-                    docs[correlation_id] = next_record
-                    DOCUMENT_REPOSITORY.save_db(dispatcher_db_path, db, db_name="dispatcher_documents")
+                    DOCUMENT_REPOSITORY.update_dispatcher_status(
+                        correlation_id=correlation_id,
+                        processing_state="queued",
+                        db_path=dispatcher_db_path,
+                        processed=False,
+                        failed_reason=None,
+                        extra_updates={
+                            "last_error": None,
+                            "last_error_at": None,
+                            "failed_reason": None,
+                        },
+                    )
                 except Exception:
                     pass
 
@@ -598,6 +602,7 @@ class BatchDocumentGenerationService:
             "profile": deepcopy(profile),
             "profile_result": deepcopy(profile_result),
             "job_payload": deepcopy(job_payload),
+            "correlation_id": str(item.get("content_sha256") or "").strip() or None,
             "current_date": datetime.now().strftime("%Y-%m-%d"),
             "out_dir": out_dir,
             "write_pdf": write_pdf,
@@ -634,7 +639,18 @@ class BatchDocumentGenerationService:
         text_writer = _resolve_batch_tool(str(document_output.get("text_writer_tool") or "write_document"))
         text_writer_input = _resolve_batch_template(document_output.get("text_writer_input") or {}, context)
         saved = text_writer(**text_writer_input)
-        saved_text_path = str(saved).split(": ", 1)[-1].strip()
+        if isinstance(saved, dict):
+            saved_text_path = str(
+                saved.get("path")
+                or saved.get("file_path")
+                or saved.get("document_path")
+                or saved.get("md_path")
+                or ""
+            ).strip()
+        else:
+            saved_text_path = str(saved).split(": ", 1)[-1].strip()
+        if not saved_text_path:
+            raise ValueError("write_document_missing_path")
         context["saved_text_path"] = saved_text_path
 
         saved_pdf_path: str | None = None
@@ -657,18 +673,20 @@ class BatchDocumentGenerationService:
     def persist_dispatcher_record(
         self,
         *,
-        docs: dict[str, Any],
-        db: dict[str, Any],
         dispatcher_db_path: str,
         correlation_id: str | None,
         updates: dict[str, Any],
         context: dict[str, Any],
     ) -> None:
-        if not correlation_id or not isinstance(docs, dict):
+        if not correlation_id:
             return
-        record = docs.get(correlation_id) if isinstance(docs.get(correlation_id), dict) else {}
-        docs[correlation_id] = _apply_record_updates(record, updates, context)
-        DOCUMENT_REPOSITORY.save_db(dispatcher_db_path, db, db_name="dispatcher_documents")
+        record = DOCUMENT_REPOSITORY.get_dispatcher_record(correlation_id, db_path=dispatcher_db_path) or {}
+        updated_record = _apply_record_updates(record, updates, context)
+        DOCUMENT_REPOSITORY.upsert_dispatcher_record_fields(
+            correlation_id=correlation_id,
+            db_path=dispatcher_db_path,
+            record_updates=updated_record,
+        )
 
     def generate_documents(
         self,
@@ -721,8 +739,6 @@ class BatchDocumentGenerationService:
             rerun_processed=rerun_processed,
         )
 
-        db = DOCUMENT_REPOSITORY.load_db(dispatcher_db_path, db_name="dispatcher_documents")
-        docs = db.setdefault("documents", {}) if isinstance(db, dict) else {}
         results: list[dict[str, Any]] = []
         skip_basenames = {str(name) for name in (filter_config.get("skip_basenames") or []) if str(name).strip()}
         skip_output_dir_inputs = bool(filter_config.get("skip_output_dir_inputs", True))
@@ -738,8 +754,6 @@ class BatchDocumentGenerationService:
                     skip_output_dir_inputs=skip_output_dir_inputs,
                     rerun_processed=rerun_processed,
                     dry_run=dry_run,
-                    docs=docs if isinstance(docs, dict) else {},
-                    db=db,
                     dispatcher_db_path=dispatcher_db_path,
                 )
                 if prepared_item is None:
@@ -772,8 +786,6 @@ class BatchDocumentGenerationService:
                 self.run_stage_sequence(client=client, model=model, stages=stages, context=context)
                 saved_text_path, saved_pdf_path = self.write_output_documents(context=context, document_output=document_output)
                 self.persist_dispatcher_record(
-                    docs=docs if isinstance(docs, dict) else {},
-                    db=db,
                     dispatcher_db_path=dispatcher_db_path,
                     correlation_id=correlation_id,
                     updates=dict(dispatcher_record.get("success_updates") or {}),
@@ -792,8 +804,6 @@ class BatchDocumentGenerationService:
             except Exception as exc:
                 error_context = {"error_message": f"{type(exc).__name__}: {exc}", "utc_now": _utc_now_iso_z()}
                 self.persist_dispatcher_record(
-                    docs=docs if isinstance(docs, dict) else {},
-                    db=db,
                     dispatcher_db_path=dispatcher_db_path,
                     correlation_id=correlation_id or (item.get("content_sha256") if isinstance(item, dict) else None),
                     updates=dict(dispatcher_record.get("failure_updates") or {}),

@@ -9,41 +9,74 @@ def _text(value: str) -> str:
 
 
 SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
-    "primary_assistant": {
+    "xplaner_xrouter": {
         "prompt": _text(
             """
-            === Agent: primary_assistant ===
-            Description: Primary assistant that owns user interaction and routes specialized tasks.
-            Goal: Deliver clear, correct, concise answers and delegate only when specialization is needed.
+            === Agent: xplaner_xrouter ===
+            Description: Primary planning and routing agent.
+            Goal: Clarify the user goal, select the correct job, and route work to xworker when execution is required.
 
             Rules:
-            - Handle straightforward requests directly.
-            - Route specialized work via route_to_agent.
-            - If the user message starts with @_agent_name, route to that agent.
-            - Use memorydb and vectordb when file, code, or prior-project context matters.
-            - If context is missing or uncertain, state that clearly and propose the next step.
+            - Own user interaction, planning, and routing.
+            - Use direct tools only when the work is trivial and deterministic.
+            - Route execution, parsing, writing, dispatching, and builder work to xworker.
+            - Select the worker job and job-specific skill profile explicitly.
             - Never invent file contents, paths, tool results, or code behavior.
             """
         ),
-        "task": {},
+        "task": {
+            "mode": "xplaner_xrouter",
+            "job_skill_profile_policy": {
+                "selection_mode": "job_name",
+                "fallback_skill_profile": "xplaner_xrouter_core",
+            },
+        },
         "output_schema": {},
     },
-    "agent_system_planner": {
+    "xworker": {
         "prompt": _text(
             """
-            === Agent: agent_system_planner ===
-            Description: Interactive planner for building agentic systems.
-            Goal: Clarify the requested agent system, structure the plan, and hand off config generation to the builder worker.
+            === Agent: xworker ===
+            Description: Generic sub agent for all execution jobs.
+            Goal: Execute the routed job with the selected job-specific skill profile and return deterministic, source-grounded output.
 
             Rules:
-            - Ask targeted follow-up questions until the system requirements are specific enough to build.
+            - Execute only the job handed off by xplaner_xrouter or by an internal xworker handoff.
+            - Load the job-specific skill profile before acting.
+            - Keep outputs stable, explicit, and task-bounded.
+            - Do not invent unsupported claims or runtime results.
+            - Route further only when the workflow explicitly requires an internal xworker handoff.
+            """
+        ),
+        "task": {
+            "mode": "xworker",
+            "job_skill_profile_policy": {
+                "selection_mode": "job_name",
+                "fallback_skill_profile": "xworker_core",
+            },
+        },
+        "output_schema": {},
+    },
+}
+
+
+JOB_PROMPT_CONFIGS: dict[str, dict[str, Any]] = {
+    "agent_system_planning": {
+        "prompt": _text(
+            """
+            === Job: agent_system_planning ===
+            Description: Interactive planning job for building agent systems within the two-role model.
+            Goal: Clarify the requested system, structure the plan, and hand off concrete implementation work to xworker.
+
+            Rules:
+            - Ask targeted follow-up questions until the requirements are specific enough to execute.
             - Keep the plan aligned with the declared planning schema.
-            - Route concrete config generation only to _agent_system_worker.
+            - Route concrete config generation only to xworker with job_name agent_system_builder.
             - When the request is already specific, hand off immediately with a structured brief.
             """
         ),
         "task": {
-            "mode": "agent_system_planner",
+            "mode": "agent_system_planning",
             "route_prefix": "/create agents",
             "planning_schema": {
                 "required_steps": [
@@ -53,31 +86,12 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
                     "confirm_tools",
                     "handoff_builder",
                 ],
-                "required_sections": [
-                    "agent_specs",
-                    "workflow_specs",
-                    "integration_targets",
-                ],
-                "required_agent_fields": [
-                    "name",
-                    "agent_name",
-                    "role",
-                    "responsibility",
-                    "tools",
-                ],
-                "required_workflow_fields": [
-                    "name",
-                    "kind",
-                    "entry_state",
-                    "owner_agent",
-                ],
-                "required_integration_fields": [
-                    "assistant_agent_name",
-                    "route_prefix",
-                    "persisted_config_target",
-                ],
+                "required_sections": ["agent_specs", "workflow_specs", "integration_targets"],
+                "required_agent_fields": ["name", "agent_name", "role", "responsibility", "tools"],
+                "required_workflow_fields": ["name", "kind", "entry_state", "owner_agent"],
+                "required_integration_fields": ["assistant_agent_name", "route_prefix", "persisted_config_target"],
                 "interactive": True,
-                "worker_agent": "_agent_system_worker",
+                "worker_agent": "_xworker",
             },
         },
         "output_schema": {
@@ -89,131 +103,28 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
                     "confirm_tools",
                     "handoff_builder",
                 ],
-                "required_sections": [
-                    "agent_specs",
-                    "workflow_specs",
-                    "integration_targets",
-                ],
-                "required_agent_fields": [
-                    "name",
-                    "agent_name",
-                    "role",
-                    "responsibility",
-                    "tools",
-                ],
-                "required_workflow_fields": [
-                    "name",
-                    "kind",
-                    "entry_state",
-                    "owner_agent",
-                ],
-                "required_integration_fields": [
-                    "assistant_agent_name",
-                    "route_prefix",
-                    "persisted_config_target",
-                ],
-                "worker_agent": "_agent_system_worker",
+                "required_sections": ["agent_specs", "workflow_specs", "integration_targets"],
+                "required_agent_fields": ["name", "agent_name", "role", "responsibility", "tools"],
+                "required_workflow_fields": ["name", "kind", "entry_state", "owner_agent"],
+                "required_integration_fields": ["assistant_agent_name", "route_prefix", "persisted_config_target"],
+                "worker_agent": "_xworker",
             },
         },
     },
-    "agent_system_worker": {
+    "document_dispatch": {
         "prompt": _text(
             """
-            === Agent: agent_system_worker ===
-            Description: Worker agent that materializes planner-approved agent/workflow config bundles.
-            Goal: Produce prompt, runtime, manifest, workflow, handoff, and forced-route configs for a requested agent system.
-
-            Rules:
-            - Use build_agent_system_configs to generate the canonical bundle.
-            - Keep names generic and reusable.
-            - Preserve Domain -> Object -> Function structure in generated configs.
-            - Return the bundle and highlight any remaining manual integration steps.
-            """
-        ),
-        "task": {
-            "mode": "agent_system_worker",
-            "action_tool": "build_agent_system_configs",
-            "action_request_schema": "agent_system_builder_request",
-        },
-        "output_schema": {
-            "bundle_sections": [
-                "prompt_configs",
-                "agent_runtime_configs",
-                "agent_manifest_override_configs",
-                "handoff_schema_configs",
-                "action_request_schema_configs",
-                "tool_configs",
-                "workflow_configs",
-                "forced_route_configs",
-                "assistant_integration",
-            ],
-        },
-    },
-    "parser_agent": {
-        "prompt": _text(
-            """
-            === Agent: parser_agent ===
-            Description: Generic structured extraction agent.
-            Goal: Transform source-grounded input into task-specific JSON without inventing facts.
-
-            Rules:
-            - Extract only what is present in the source.
-            - Use null or [] when information is missing or ambiguous.
-            - Normalize only when meaning stays unchanged.
-            - Keep the output schema stable.
-            - Return JSON only.
-            """
-        ),
-        "task": {
-            "mode": "generic_parser",
-            "execution_model": [
-                "The concrete extraction task is defined by the specialized task entry.",
-                "The task-specific schema overrides generic wording.",
-                "If the source is incomplete, keep the schema stable and surface issues in parse.errors or parse.warnings.",
-            ],
-        },
-        "output_schema": {},
-    },
-    "writer_agent": {
-        "prompt": _text(
-            """
-            === Agent: writer_agent ===
-            Description: Generic structured writing agent.
-            Goal: Produce task-specific written artifacts from structured inputs without inventing facts.
-
-            Rules:
-            - Use only facts present in the provided structured inputs.
-            - Do not add skills, dates, contacts, achievements, or claims that are not supported by the input.
-            - If required information is missing, use neutral wording instead of guessing.
-            - Respect requested language, tone, and length constraints.
-            - Return JSON only.
-            """
-        ),
-        "task": {
-            "mode": "generic_writer",
-            "execution_model": [
-                "The concrete writing task is defined by the specialized task entry.",
-                "The task-specific schema overrides generic wording.",
-                "When constraints conflict, prefer factual correctness over stylistic ambition.",
-            ],
-        },
-        "output_schema": {},
-    },
-    "data_dispatcher": {
-        "prompt": _text(
-            """
-            === Agent: data_dispatcher ===
-            Description: Discovers job posting PDFs, checks DB status, and forwards only eligible items.
-            Goal: Provide deduplicated, validated document references for downstream parsing workflows.
+            === Job: document_dispatch ===
+            Description: Deterministic dispatch job for job-posting PDFs and related store updates.
+            Goal: Discover eligible inputs, classify them against store state, and forward only required parsing work.
 
             Rules:
             - Discover PDF files deterministically.
             - Prefer content_sha256 as stable identity; filename alone is not sufficient.
-            - Do not forward documents that are already processed or currently queued/processing.
+            - Do not forward documents that are already processed or currently queued or processing.
             - Use dispatch_documents only for filesystem scan requests that start from scan_dir.
-            - Use execute_action_request or upsert_object_record when the input already contains structured job/profile data or when stores/DB state should be updated without rescanning files.
-            - Use route_to_agent only when fresh parsing or generation work is required; do not delegate just to perform deterministic store or DB updates.
-            - If the user requests batch generation of cover letters, call the batch workflow and stop after returning its result.
+            - Use execute_action_request or upsert_object_record when structured payloads are already available.
+            - If batch cover-letter generation is requested, call the batch workflow and stop after returning its result.
             - A single broken PDF must not abort the whole run.
             - If DB access is uncertain, report UNKNOWN instead of inventing state.
             """
@@ -221,36 +132,21 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
         "task": {
             "input_contract": {
                 "required": ["scan_dir", "db", "thread_id", "dispatcher_message_id"],
-                "optional": [
-                    "recursive",
-                    "extensions",
-                    "max_files",
-                    "parser_agent_name",
-                    "dry_run",
-                    "handoff_message_id",
-                ],
+                "optional": ["recursive", "extensions", "max_files", "agent_name", "dry_run", "handoff_message_id"],
             },
             "workflow": [
                 "If the request already contains structured non-file payloads for job/profile ingestion or DB synchronization, execute the matching deterministic action tool instead of scanning directories.",
                 "List files in scan_dir and filter to PDFs.",
                 "Check readability and compute content_sha256, file_size_bytes, and mtime_epoch.",
                 "Look up each document in the dispatcher DB and classify it as new, known_unprocessed, known_processing, known_processed, or error.",
-                "Forward only new or known_unprocessed items to the job_posting_parser workflow when parsing work is still required.",
+                "Forward only new or known_unprocessed items to the job_posting_parser job when parsing work is still required.",
                 "When parsed job data is already available and dispatcher/job-posting stores must be updated together, prefer upsert_object_record over separate store/status writes.",
                 "Return a structured report with summary, forwarded items, and errors.",
             ],
-            "tools": [
-                "dispatch_documents",
-                "execute_action_request",
-                "upsert_object_record",
-                "ingest_object",
-                "store_object_result",
-                "batch_generate_documents",
-                "vdb_worker",
-            ],
         },
         "output_schema": {
-            "agent": "data_dispatcher",
+            "agent": "xworker",
+            "job_name": "document_dispatch",
             "scan_dir": "/path",
             "summary": {
                 "pdf_found": 0,
@@ -260,21 +156,15 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
                 "known_processed": 0,
                 "errors": 0,
             },
-            "forwarded": [
-                {
-                    "path": "/path/a.pdf",
-                    "content_sha256": "...",
-                    "link": {"thread_id": "...", "message_id": "..."},
-                }
-            ],
+            "forwarded": [{"path": "/path/a.pdf", "content_sha256": "...", "link": {"thread_id": "...", "message_id": "..."}}],
             "errors": [],
         },
     },
-    "profile_parser": {
+    "applicant_profile_parser": {
         "prompt": _text(
             """
-            === Agent: profile_parser ===
-            Description: Structured applicant profile parser.
+            === Job: applicant_profile_parser ===
+            Description: Structured applicant profile parsing job.
             Goal: Convert CV or applicant-profile input into a reusable, storage-ready JSON profile.
 
             Rules:
@@ -299,14 +189,10 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
             ],
         },
         "output_schema": {
-            "agent": "profile_parser",
+            "agent": "xworker",
+            "job_name": "applicant_profile_parser",
             "correlation_id": None,
-            "parse": {
-                "language": "de",
-                "extraction_quality": "high",
-                "errors": [],
-                "warnings": [],
-            },
+            "parse": {"language": "de", "extraction_quality": "high", "errors": [], "warnings": []},
             "profile": {
                 "profile_id": "profile:<sha256(email)>",
                 "personal_info": {
@@ -322,32 +208,19 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
                 "professional_summary": "",
                 "experience": [],
                 "education": [],
-                "skills": {
-                    "technical": [],
-                    "soft": [],
-                    "languages": [],
-                },
+                "skills": {"technical": [], "soft": [], "languages": []},
                 "certifications": [],
                 "projects": [],
-                "preferences": {
-                    "tone": "modern",
-                    "max_length": 350,
-                    "language": "de",
-                    "focus_areas": [],
-                },
-                "additional_information": {
-                    "travel_willingness": None,
-                    "work_authorization": None,
-                    "marital_status": None,
-                },
+                "preferences": {"tone": "modern", "max_length": 350, "language": "de", "focus_areas": []},
+                "additional_information": {"travel_willingness": None, "work_authorization": None, "marital_status": None},
             },
         },
     },
     "job_posting_parser": {
         "prompt": _text(
             """
-            === Agent: job_posting_parser ===
-            Description: Structured job-posting extraction agent.
+            === Job: job_posting_parser ===
+            Description: Structured job-posting extraction job.
             Goal: Convert dispatcher payloads for job-posting PDFs into a normalized JSON representation.
 
             Rules:
@@ -373,48 +246,19 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
             ],
         },
         "output_schema": {
-            "agent": "job_posting_parser",
+            "agent": "xworker",
+            "job_name": "job_posting_parser",
             "correlation_id": "<content_sha256>",
             "link": {"thread_id": "...", "message_id": "..."},
-            "file": {
-                "path": "...",
-                "name": "...",
-                "content_sha256": "...",
-            },
-            "parse": {
-                "is_job_posting": True,
-                "language": "de",
-                "extraction_quality": "high",
-                "errors": [],
-                "warnings": [],
-            },
+            "file": {"path": "...", "name": "...", "content_sha256": "..."},
+            "parse": {"is_job_posting": True, "language": "de", "extraction_quality": "high", "errors": [], "warnings": []},
             "job_posting": {
                 "job_title": None,
                 "company_name": None,
-                "company_info": {
-                    "industry": None,
-                    "size": None,
-                    "location": None,
-                    "website": None,
-                },
-                "position": {
-                    "type": None,
-                    "level": None,
-                    "department": None,
-                    "reports_to": None,
-                },
-                "location_details": {
-                    "office": None,
-                    "remote": None,
-                    "travel_required": None,
-                },
-                "compensation": {
-                    "salary_min": None,
-                    "salary_max": None,
-                    "salary_period": None,
-                    "currency": None,
-                    "benefits": [],
-                },
+                "company_info": {"industry": None, "size": None, "location": None, "website": None},
+                "position": {"type": None, "level": None, "department": None, "reports_to": None},
+                "location_details": {"office": None, "remote": None, "travel_required": None},
+                "compensation": {"salary_min": None, "salary_max": None, "salary_period": None, "currency": None, "benefits": []},
                 "requirements": {
                     "education": None,
                     "experience_years": None,
@@ -425,18 +269,8 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
                 },
                 "responsibilities": [],
                 "what_we_offer": [],
-                "application": {
-                    "deadline": None,
-                    "application_link": None,
-                    "contact_email": None,
-                    "contact_person": None,
-                },
-                "metadata": {
-                    "posting_date": None,
-                    "job_id": None,
-                    "source": None,
-                    "language": None,
-                },
+                "application": {"deadline": None, "application_link": None, "contact_email": None, "contact_person": None},
+                "metadata": {"posting_date": None, "job_id": None, "source": None, "language": None},
                 "raw_text": "",
             },
             "db_updates": {
@@ -449,11 +283,11 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
             },
         },
     },
-    "cover_letter_agent": {
+    "cover_letter_writer": {
         "prompt": _text(
             """
-            === Agent: cover_letter_agent ===
-            Description: Structured cover-letter writer.
+            === Job: cover_letter_writer ===
+            Description: Structured cover-letter writing job.
             Goal: Produce a tailored cover letter from structured job-posting and applicant-profile inputs.
 
             Rules:
@@ -478,7 +312,8 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
             ],
         },
         "output_schema": {
-            "agent": "writer_agent",
+            "agent": "xworker",
+            "job_name": "cover_letter_writer",
             "correlation": {
                 "job_posting_correlation_id": "...",
                 "profile_correlation_id": "...",
@@ -513,11 +348,44 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
             },
         },
     },
-    "SubAgent_GenAI_Developer": {
+    "agent_system_builder": {
         "prompt": _text(
             """
-            === Agent: SubAgent_GenAI_Developer ===
-            Description: Specialized engineering agent for code analysis, implementation, debugging, refactoring, and validation.
+            === Job: agent_system_builder ===
+            Description: Config bundle materialization job.
+            Goal: Produce prompt, runtime, manifest, workflow, handoff, and forced-route configs for a requested agent system.
+
+            Rules:
+            - Use build_agent_system_configs to generate the canonical bundle.
+            - Keep names generic and reusable.
+            - Preserve Domain -> Object -> Function structure in generated configs.
+            - Return the bundle and highlight any remaining manual integration steps.
+            """
+        ),
+        "task": {
+            "mode": "agent_system_builder",
+            "action_tool": "build_agent_system_configs",
+            "action_request_schema": "agent_system_builder_request",
+        },
+        "output_schema": {
+            "bundle_sections": [
+                "prompt_configs",
+                "agent_runtime_configs",
+                "agent_manifest_override_configs",
+                "handoff_schema_configs",
+                "action_request_schema_configs",
+                "tool_configs",
+                "workflow_configs",
+                "forced_route_configs",
+                "assistant_integration",
+            ],
+        },
+    },
+    "code_analysis": {
+        "prompt": _text(
+            """
+            === Job: code_analysis ===
+            Description: Engineering analysis and implementation job.
             Goal: Deliver precise, defensible, minimal-risk software changes and technical assessments.
 
             Rules:
@@ -529,13 +397,7 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
             """
         ),
         "task": {
-            "priorities": [
-                "correctness",
-                "determinism",
-                "safety",
-                "compatibility",
-                "maintainability",
-            ],
+            "priorities": ["correctness", "determinism", "safety", "compatibility", "maintainability"],
             "deliverables": [
                 "root cause or strongest hypothesis",
                 "concrete change or recommendation",
@@ -548,123 +410,70 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
 }
 
 
-_SPECIALIZED_AGENT_MAP: dict[tuple[str, str], str] = {
-    ("parser", "applicant_profile"): "profile_parser",
+_SPECIALIZED_JOB_PROMPT_MAP: dict[tuple[str, str], str] = {
+    ("parser", "applicant_profile"): "applicant_profile_parser",
     ("parser", "job_posting"): "job_posting_parser",
-    ("writer", "cover_letter"): "cover_letter_agent",
+    ("writer", "cover_letter"): "cover_letter_writer",
 }
 
 
 _LEGACY_AGENT_NAME_MAP: dict[str, str] = {
-    "_primary_assistant": "primary_assistant",
-    "_agent_system_planner": "agent_system_planner",
-    "_agent_system_worker": "agent_system_worker",
-    "_parser_agent": "parser_agent",
-    "_writer_agent": "writer_agent",
-    "_data_dispatcher": "data_dispatcher",
-    "_profile_parser": "profile_parser",
-    "_job_posting_parser": "job_posting_parser",
-    "_cover_letter_agent": "cover_letter_agent",
-    "SubAgent_GenAI_Developer": "SubAgent_GenAI_Developer",
+    "_xplaner_xrouter": "xplaner_xrouter",
+    "_xworker": "xworker",
 }
 
 
 _CANONICAL_AGENT_LABEL_MAP: dict[str, str] = {
-    "primary_assistant": "_primary_assistant",
-    "agent_system_planner": "_agent_system_planner",
-    "agent_system_worker": "_agent_system_worker",
-    "parser_agent": "_parser_agent",
-    "writer_agent": "_writer_agent",
-    "data_dispatcher": "_data_dispatcher",
-    "profile_parser": "_profile_parser",
-    "job_posting_parser": "_job_posting_parser",
-    "cover_letter_agent": "_cover_letter_agent",
-    "SubAgent_GenAI_Developer": "SubAgent_GenAI_Developer",
+    "xplaner_xrouter": "_xplaner_xrouter",
+    "xworker": "_xworker",
 }
 
 
 AGENT_RUNTIME_CONFIG: dict[str, dict[str, Any]] = {
-    "_primary_assistant": {
-        "canonical_name": "primary_assistant",
+    "_xplaner_xrouter": {
+        "canonical_name": "xplaner_xrouter",
         "model": "gpt-4o",
-        "tools": ["memorydb", "route_to_agent", "@doc_rw"],
-        "defaults": {},
-        "workflow": {"definition": "primary_assistant_router"},
+        "tools": ["memorydb", "vectordb", "route_to_agent", "execute_action_request", "upsert_object_record", "@dispatcher", "@doc_rw"],
+        "defaults": {
+            "default_job_name": "interactive_planning",
+            "default_skill_profile": "xplaner_xrouter_core",
+        },
+        "workflow": {"definition": "xplaner_xrouter_router"},
     },
-    "_agent_system_planner": {
-        "canonical_name": "agent_system_planner",
-        "model": "gpt-4o",
-        "tools": ["route_to_agent"],
-        "defaults": {},
-        "workflow": {"definition": "agent_system_planner_router"},
-    },
-    "_agent_system_worker": {
-        "canonical_name": "agent_system_worker",
+    "_xworker": {
+        "canonical_name": "xworker",
         "model": "gpt-4o-mini",
-        "tools": ["build_agent_system_configs", "@doc_rw"],
-        "defaults": {},
-        "workflow": {"definition": "agent_system_builder_leaf"},
-    },
-    "_parser_agent": {
-        "canonical_name": "parser_agent",
-        "model": "gpt-4o-mini",
-        "tools": ["@doc_rw"],
-        "defaults": {},
-        "workflow": {"definition": "parser_agent_leaf"},
-    },
-    "_writer_agent": {
-        "canonical_name": "writer_agent",
-        "model": "gpt-4o",
-        "tools": ["@doc_rw"],
-        "defaults": {},
-        "workflow": {"definition": "writer_agent_leaf"},
-    },
-    "_data_dispatcher": {
-        "canonical_name": "data_dispatcher",
-        "model": "gpt-4o-mini",
-        "tools": ["@dispatcher", "route_to_agent"],
-        "defaults": {},
-        "workflow": {"definition": "data_dispatcher_chain"},
-    },
-    "_profile_parser": {
-        "canonical_name": "profile_parser",
-        "model": "gpt-4o-mini",
-        "tools": ["@doc_rw"],
-        "defaults": {},
-        "workflow": {"definition": "profile_parser_leaf"},
-    },
-    "_job_posting_parser": {
-        "canonical_name": "job_posting_parser",
-        "model": "gpt-4o-mini",
-        "tools": ["@doc_rw"],
-        "defaults": {},
-        "workflow": {"definition": "job_posting_parser_leaf"},
-    },
-    "_cover_letter_agent": {
-        "canonical_name": "cover_letter_agent",
-        "model": "gpt-4o",
-        "tools": ["@doc_rw"],
-        "defaults": {},
-        "workflow": {"definition": "cover_letter_writer_leaf"},
-    },
-    "SubAgent_GenAI_Developer": {
-        "canonical_name": "SubAgent_GenAI_Developer",
-        "model": "gpt-4o-mini",
-        "tools": ["vectordb"],
-        "defaults": {},
-        "workflow": {},
+        "tools": [
+            "memorydb",
+            "vectordb",
+            "build_agent_system_configs",
+            "execute_action_request",
+            "upsert_object_record",
+            "ingest_object",
+            "store_object_result",
+            "batch_generate_documents",
+            "vdb_worker",
+            "@dispatcher",
+            "@doc_ro",
+            "@doc_rw",
+        ],
+        "defaults": {
+            "default_job_name": "generic_execution",
+            "default_skill_profile": "xworker_core",
+        },
+        "workflow": {"definition": "xworker_leaf"},
     },
 }
 
 
 AGENT_ROLE_CONFIGS: dict[str, dict[str, Any]] = {
-    "planner_router": {
-        "description": "Interactive planning entry point that can route work to downstream agents.",
+    "xplaner_xrouter": {
+        "description": "Primary agent role for planning, clarification, and routing.",
         "can_route": True,
         "default_instance_policy": "session_scoped",
-        "default_tool_policy": "planner_router",
+        "default_tool_policy": "xplaner_xrouter",
         "default_handoff_policy": {
-            "default_protocol": "message_text",
+            "default_protocol": "agent_handoff_v1",
             "accepted_protocols": ["message_text", "agent_handoff_v1"],
             "emitted_protocols": ["message_text", "agent_handoff_v1"],
             "allowed_targets": [],
@@ -678,31 +487,11 @@ AGENT_ROLE_CONFIGS: dict[str, dict[str, Any]] = {
             "routed_history_depth": 12,
         },
     },
-    "worker": {
-        "description": "Leaf or specialist worker agent for a focused unit of work.",
+    "xworker": {
+        "description": "Single execution role for all routed worker jobs.",
         "can_route": False,
         "default_instance_policy": "ephemeral",
-        "default_tool_policy": "worker",
-        "default_handoff_policy": {
-            "default_protocol": "message_text",
-            "accepted_protocols": ["message_text", "agent_handoff_v1"],
-            "emitted_protocols": ["message_text", "agent_handoff_v1"],
-            "allowed_targets": [],
-            "allowed_sources": [],
-            "target_policies": {},
-            "source_policies": {},
-        },
-        "default_history_policy": {
-            "followup_history_depth": 6,
-            "include_routed_history": False,
-            "routed_history_depth": 0,
-        },
-    },
-    "workflow_service": {
-        "description": "Deterministic workflow-oriented service agent with orchestrated state progression.",
-        "can_route": False,
-        "default_instance_policy": "workflow_scoped",
-        "default_tool_policy": "workflow_service",
+        "default_tool_policy": "xworker",
         "default_handoff_policy": {
             "default_protocol": "agent_handoff_v1",
             "accepted_protocols": ["message_text", "agent_handoff_v1"],
@@ -746,66 +535,82 @@ HANDOFF_PROTOCOL_CONFIGS: dict[str, dict[str, Any]] = {
 
 
 HANDOFF_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
-    "primary_to_dispatcher_request": {
+    "xplaner_to_xworker_structured": {
+        "protocol": "agent_handoff_v1",
+        "description": "Generic xplaner_xrouter to xworker structured handoff.",
+        "required_payload_any": ["output", "generated", "msg"],
+        "preferred_payload_paths": ["output", "generated", "msg"],
+        "workflow_name": "xworker_leaf",
+        "instructions": [
+            "Treat the handoff payload as the authoritative execution brief.",
+            "Load the selected job-specific skill profile before acting.",
+        ],
+    },
+    "xworker_to_xworker_structured": {
+        "protocol": "agent_handoff_v1",
+        "description": "Generic internal xworker handoff for chained worker jobs.",
+        "required_payload_any": ["output", "generated", "msg"],
+        "preferred_payload_paths": ["output", "generated", "msg"],
+        "workflow_name": "xworker_leaf",
+        "instructions": [
+            "Treat the handoff payload as the next worker-stage brief.",
+            "Preserve correlation, job_name, and source-grounded inputs.",
+        ],
+    },
+    "xplaner_to_xworker_dispatch_request": {
         "protocol": "message_text",
-        "description": "Primary assistant request for the deterministic dispatcher workflow.",
+        "description": "xplaner_xrouter request for the deterministic dispatch workflow.",
         "required_message_text": True,
-        "workflow_name": "data_dispatcher_chain",
+        "workflow_name": "xworker_dispatch_chain",
         "instructions": [
             "Treat the routed user message as the dispatch request.",
-            "Use dispatcher tools deterministically and do not invent filesystem or DB state.",
+            "Execute the document_dispatch job deterministically and do not invent filesystem or DB state.",
         ],
     },
-    "primary_to_parser_brief": {
+    "xplaner_to_xworker_parser_brief": {
         "protocol": "agent_handoff_v1",
-        "description": "Primary assistant brief for a parser-style worker.",
+        "description": "xplaner_xrouter brief for a parser-style xworker job.",
         "required_payload_any": ["output", "generated", "msg"],
         "preferred_payload_paths": ["output", "generated", "msg"],
-        "workflow_name": "parser_agent_leaf",
+        "workflow_name": "xworker_generic_parser_leaf",
+        "result_postprocess": {
+            "tool": "store_object_result",
+            "source_agent": "target_agent",
+        },
         "instructions": [
-            "Treat the handoff payload as the primary parse input.",
+            "Treat the handoff payload as the primary parser input.",
             "Keep extraction source-grounded and preserve schema stability.",
+            "Return the structured parser JSON so runtime persistence can store the parsed object result deterministically.",
         ],
     },
-    "primary_to_writer_brief": {
+    "xplaner_to_xworker_writer_brief": {
         "protocol": "agent_handoff_v1",
-        "description": "Primary assistant brief for a writer-style worker.",
+        "description": "xplaner_xrouter brief for a writer-style xworker job.",
         "required_payload_any": ["output", "generated", "msg"],
         "preferred_payload_paths": ["output", "generated", "msg"],
-        "workflow_name": "writer_agent_leaf",
+        "workflow_name": "xworker_generic_writer_leaf",
         "instructions": [
             "Use the handoff payload as the writing brief.",
             "Do not add unsupported claims beyond the provided structured input.",
         ],
     },
-    "primary_to_agent_system_planner": {
+    "xplaner_to_xworker_builder": {
         "protocol": "agent_handoff_v1",
-        "description": "Primary assistant brief for the interactive agent-system planner.",
+        "description": "xplaner_xrouter brief for the xworker builder job.",
         "required_payload_any": ["output", "generated", "msg"],
         "preferred_payload_paths": ["output", "generated", "msg"],
-        "workflow_name": "agent_system_planner_router",
-        "instructions": [
-            "Treat the handoff payload as the planner brief for the requested agent system.",
-            "Clarify missing system requirements interactively before delegating the build step.",
-        ],
-    },
-    "agent_system_planner_to_builder": {
-        "protocol": "agent_handoff_v1",
-        "description": "Planner brief for the worker agent that materializes config bundles through the builder workflow.",
-        "required_payload_any": ["output", "generated", "msg"],
-        "preferred_payload_paths": ["output", "generated", "msg"],
-        "workflow_name": "agent_system_builder_leaf",
+        "workflow_name": "xworker_builder_leaf",
         "instructions": [
             "Treat the handoff payload as the approved build brief.",
             "Use the build_agent_system_configs tool to produce the canonical config bundle.",
         ],
     },
-    "primary_to_cover_letter_writer_brief": {
+    "xplaner_to_xworker_cover_letter_writer": {
         "protocol": "agent_handoff_v1",
-        "description": "Primary assistant brief for the specialized cover-letter writer with deterministic artifact persistence.",
+        "description": "xplaner_xrouter brief for the cover-letter writer job with deterministic artifact persistence.",
         "required_payload_any": ["output", "generated", "msg"],
         "preferred_payload_paths": ["output", "generated", "msg"],
-        "workflow_name": "cover_letter_writer_leaf",
+        "workflow_name": "xworker_cover_letter_writer_leaf",
         "result_postprocess": {
             "tool": "persist_cover_letter_artifacts",
             "text_writer_tool": "write_document",
@@ -818,9 +623,9 @@ HANDOFF_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
             "Return the structured cover-letter JSON so runtime persistence can write markdown and PDF artifacts.",
         ],
     },
-    "dispatcher_to_job_posting_parser": {
+    "xworker_to_xworker_job_posting_parser": {
         "protocol": "agent_handoff_v1",
-        "description": "Dispatcher handoff for the job-posting parser workflow.",
+        "description": "Internal xworker handoff for the job-posting parser job.",
         "required_payload_paths": [
             "output.type",
             "output.correlation_id",
@@ -833,7 +638,7 @@ HANDOFF_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
         "required_metadata_paths": ["correlation_id", "dispatcher_message_id", "dispatcher_db_path", "obj_name", "obj_db_path"],
         "preferred_payload_paths": ["output", "msg"],
         "target_input_path": "output",
-        "workflow_name": "job_posting_parser_leaf",
+        "workflow_name": "xworker_job_posting_parser_leaf",
         "result_postprocess": {
             "tool": "upsert_object_record",
             "source_agent": "target_agent",
@@ -1056,8 +861,8 @@ ACTION_REQUEST_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
                     "config_key": "batch_workflow_name",
                 }
             ],
-            "dispatcher_route_target": "_data_dispatcher",
-            "ready_route_target": "_cover_letter_agent",
+            "dispatcher_route_target": "_xworker",
+            "ready_route_target": "_xworker",
             "batch_tool_name": "batch_generate_documents",
             "batch_workflow_name": "cover_letter_batch_generation",
         },
@@ -1082,193 +887,132 @@ PROMPT_FRAGMENT_CONFIGS: dict[str, dict[str, Any]] = {
 
 
 AGENT_SKILL_PROFILES: dict[str, dict[str, Any]] = {
-    "conversation_router": {
-        "role": "planner_router",
+    "xplaner_xrouter_core": {
+        "role": "xplaner_xrouter",
         "prompt_fragments": ["source_grounding", "router_handoff"],
-        "description": "Interactive planning and routing skill profile for the primary assistant.",
+        "description": "Default planning and routing profile for the primary agent.",
+        "job_name": "interactive_planning",
     },
-    "structured_parser": {
-        "role": "worker",
-        "prompt_fragments": ["source_grounding", "json_output"],
-        "description": "Structured extraction skill profile for parser-style worker agents.",
+    "xplaner_xrouter_agent_system_planning": {
+        "role": "xplaner_xrouter",
+        "prompt_fragments": ["source_grounding", "router_handoff"],
+        "description": "Planning profile for agent-system design and routing decisions.",
+        "job_name": "agent_system_planning",
     },
-    "structured_writer": {
-        "role": "worker",
-        "prompt_fragments": ["source_grounding", "json_output"],
-        "description": "Structured generation skill profile for writer-style worker agents.",
-    },
-    "workflow_dispatch": {
-        "role": "workflow_service",
-        "prompt_fragments": ["source_grounding", "deterministic_workflow"],
-        "description": "Deterministic workflow service profile for dispatcher-style orchestration.",
-    },
-    "code_analysis": {
-        "role": "worker",
+    "xworker_core": {
+        "role": "xworker",
         "prompt_fragments": ["source_grounding"],
-        "description": "Focused engineering analysis and implementation profile.",
+        "description": "Default worker profile for generic execution.",
+        "job_name": "generic_execution",
+    },
+    "xworker_dispatch": {
+        "role": "xworker",
+        "prompt_fragments": ["source_grounding", "deterministic_workflow"],
+        "description": "Worker profile for deterministic dispatch and document bucketing.",
+        "job_name": "document_dispatch",
+    },
+    "xworker_generic_parser": {
+        "role": "xworker",
+        "prompt_fragments": ["source_grounding", "json_output"],
+        "description": "Worker profile for generic structured parsing.",
+        "job_name": "generic_parser",
+    },
+    "xworker_profile_parser": {
+        "role": "xworker",
+        "prompt_fragments": ["source_grounding", "json_output"],
+        "description": "Worker profile for applicant profile parsing.",
+        "job_name": "applicant_profile_parser",
+    },
+    "xworker_job_posting_parser": {
+        "role": "xworker",
+        "prompt_fragments": ["source_grounding", "json_output"],
+        "description": "Worker profile for job posting parsing.",
+        "job_name": "job_posting_parser",
+    },
+    "xworker_generic_writer": {
+        "role": "xworker",
+        "prompt_fragments": ["source_grounding", "json_output"],
+        "description": "Worker profile for generic structured writing.",
+        "job_name": "generic_writer",
+    },
+    "xworker_cover_letter_writer": {
+        "role": "xworker",
+        "prompt_fragments": ["source_grounding", "json_output"],
+        "description": "Worker profile for cover-letter generation.",
+        "job_name": "cover_letter_writer",
+    },
+    "xworker_agent_system_builder": {
+        "role": "xworker",
+        "prompt_fragments": ["source_grounding", "json_output"],
+        "description": "Worker profile for materializing persisted agent-system config bundles.",
+        "job_name": "agent_system_builder",
+    },
+    "xworker_code_analysis": {
+        "role": "xworker",
+        "prompt_fragments": ["source_grounding"],
+        "description": "Worker profile for focused engineering analysis and implementation.",
+        "job_name": "code_analysis",
     },
 }
 
 
 AGENT_MANIFEST_OVERRIDES: dict[str, dict[str, Any]] = {
-    "_primary_assistant": {
-        "role": "planner_router",
-        "skill_profile": "conversation_router",
+    "_xplaner_xrouter": {
+        "role": "xplaner_xrouter",
+        "skill_profile": "xplaner_xrouter_core",
         "instance_policy": "session_scoped",
-        "routing_policy": {"mode": "planner_router", "can_route": True},
+        "routing_policy": {"mode": "xplaner_xrouter", "can_route": True},
+        "skill_profile_loading": {
+            "mode": "job_name",
+            "fallback_skill_profile": "xplaner_xrouter_core",
+        },
+        "job_skill_profiles": {
+            "interactive_planning": "xplaner_xrouter_core",
+            "agent_system_planning": "xplaner_xrouter_agent_system_planning",
+        },
         "handoff_policy": {
-            "allowed_targets": ["_data_dispatcher", "_parser_agent", "_writer_agent", "_cover_letter_agent", "_agent_system_planner"],
+            "allowed_targets": ["_xworker"],
             "target_policies": {
-                "_data_dispatcher": {
-                    "default_protocol": "message_text",
-                    "accepted_protocols": ["message_text"],
-                    "handoff_schema": "primary_to_dispatcher_request",
-                },
-                "_parser_agent": {
+                "_xworker": {
                     "default_protocol": "agent_handoff_v1",
                     "accepted_protocols": ["message_text", "agent_handoff_v1"],
-                    "handoff_schema": "primary_to_parser_brief",
-                },
-                "_writer_agent": {
-                    "default_protocol": "agent_handoff_v1",
-                    "accepted_protocols": ["message_text", "agent_handoff_v1"],
-                    "handoff_schema": "primary_to_writer_brief",
-                },
-                "_agent_system_planner": {
-                    "default_protocol": "agent_handoff_v1",
-                    "accepted_protocols": ["message_text", "agent_handoff_v1"],
-                    "handoff_schema": "primary_to_agent_system_planner",
-                },
-                "_cover_letter_agent": {
-                    "default_protocol": "agent_handoff_v1",
-                    "accepted_protocols": ["message_text", "agent_handoff_v1"],
-                    "handoff_schema": "primary_to_cover_letter_writer_brief",
+                    "handoff_schema": "xplaner_to_xworker_structured",
                 },
             },
         },
     },
-    "_agent_system_planner": {
-        "role": "planner_router",
-        "skill_profile": "conversation_router",
-        "instance_policy": "session_scoped",
-        "routing_policy": {"mode": "planner_router", "can_route": True},
+    "_xworker": {
+        "role": "xworker",
+        "skill_profile": "xworker_core",
+        "skill_profile_loading": {
+            "mode": "job_name",
+            "fallback_skill_profile": "xworker_core",
+        },
+        "job_skill_profiles": {
+            "generic_execution": "xworker_core",
+            "document_dispatch": "xworker_dispatch",
+            "generic_parser": "xworker_generic_parser",
+            "applicant_profile_parser": "xworker_profile_parser",
+            "job_posting_parser": "xworker_job_posting_parser",
+            "generic_writer": "xworker_generic_writer",
+            "cover_letter_writer": "xworker_cover_letter_writer",
+            "agent_system_builder": "xworker_agent_system_builder",
+            "code_analysis": "xworker_code_analysis",
+        },
         "handoff_policy": {
-            "allowed_sources": ["_primary_assistant"],
-            "allowed_targets": ["_agent_system_worker"],
+            "allowed_sources": ["_xplaner_xrouter", "_xworker"],
+            "allowed_targets": ["_xworker"],
             "source_policies": {
-                "_primary_assistant": {
+                "_xplaner_xrouter": {
                     "accepted_protocols": ["message_text", "agent_handoff_v1"],
-                    "handoff_schema": "primary_to_agent_system_planner",
+                    "handoff_schema": "xplaner_to_xworker_structured",
                 },
-            },
-            "target_policies": {
-                "_agent_system_worker": {
-                    "default_protocol": "agent_handoff_v1",
+                "_xworker": {
                     "accepted_protocols": ["agent_handoff_v1"],
-                    "handoff_schema": "agent_system_planner_to_builder",
+                    "handoff_schema": "xworker_to_xworker_structured",
                 },
             },
         },
-    },
-    "_agent_system_worker": {
-        "role": "worker",
-        "skill_profile": "structured_writer",
-        "handoff_policy": {
-            "allowed_sources": ["_agent_system_planner"],
-            "source_policies": {
-                "_agent_system_planner": {
-                    "accepted_protocols": ["agent_handoff_v1"],
-                    "handoff_schema": "agent_system_planner_to_builder",
-                },
-            },
-        },
-    },
-    "_parser_agent": {
-        "role": "worker",
-        "skill_profile": "structured_parser",
-        "handoff_policy": {
-            "allowed_sources": ["_primary_assistant"],
-            "source_policies": {
-                "_primary_assistant": {
-                    "accepted_protocols": ["message_text", "agent_handoff_v1"],
-                    "handoff_schema": "primary_to_parser_brief",
-                },
-            },
-        },
-    },
-    "_writer_agent": {
-        "role": "worker",
-        "skill_profile": "structured_writer",
-        "handoff_policy": {
-            "allowed_sources": ["_primary_assistant"],
-            "source_policies": {
-                "_primary_assistant": {
-                    "accepted_protocols": ["message_text", "agent_handoff_v1"],
-                    "handoff_schema": "primary_to_writer_brief",
-                },
-            },
-        },
-    },
-    "_data_dispatcher": {
-        "role": "workflow_service",
-        "skill_profile": "workflow_dispatch",
-        "instance_policy": "workflow_scoped",
-        "routing_policy": {"mode": "workflow_service", "can_route": True},
-        "handoff_policy": {
-            "allowed_sources": ["_primary_assistant"],
-            "allowed_targets": ["_job_posting_parser"],
-            "source_policies": {
-                "_primary_assistant": {
-                    "accepted_protocols": ["message_text"],
-                    "handoff_schema": "primary_to_dispatcher_request",
-                },
-            },
-            "target_policies": {
-                "_job_posting_parser": {
-                    "default_protocol": "agent_handoff_v1",
-                    "accepted_protocols": ["agent_handoff_v1"],
-                    "handoff_schema": "dispatcher_to_job_posting_parser",
-                },
-            },
-        },
-    },
-    "_profile_parser": {
-        "role": "worker",
-        "skill_profile": "structured_parser",
-    },
-    "_job_posting_parser": {
-        "role": "worker",
-        "skill_profile": "structured_parser",
-        "handoff_policy": {
-            "allowed_sources": ["_primary_assistant", "_data_dispatcher"],
-            "source_policies": {
-                "_primary_assistant": {
-                    "accepted_protocols": ["message_text", "agent_handoff_v1"],
-                    "handoff_schema": "primary_to_parser_brief",
-                },
-                "_data_dispatcher": {
-                    "accepted_protocols": ["agent_handoff_v1"],
-                    "handoff_schema": "dispatcher_to_job_posting_parser",
-                },
-            },
-        },
-    },
-    "_cover_letter_agent": {
-        "role": "worker",
-        "skill_profile": "structured_writer",
-        "handoff_policy": {
-            "allowed_sources": ["_primary_assistant"],
-            "source_policies": {
-                "_primary_assistant": {
-                    "accepted_protocols": ["message_text", "agent_handoff_v1"],
-                    "handoff_schema": "primary_to_cover_letter_writer_brief",
-                },
-            },
-        },
-    },
-    "SubAgent_GenAI_Developer": {
-        "role": "worker",
-        "skill_profile": "code_analysis",
     },
 }
 
@@ -1444,8 +1188,8 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
             "obj_db_path_field": "obj_db_path",
             "document_type": "file",
             "requested_actions": ["parse", "extract_text", "store_object_result", "mark_processed_on_success"],
-            "default_target_agent": "_job_posting_parser",
-            "source_agent": "_data_dispatcher",
+            "default_target_agent": "_xworker",
+            "source_agent": "_xworker",
             "handoff_protocol": "agent_handoff_v1",
             "metadata_defaults": {
                 "obj_db_path": {
@@ -1464,7 +1208,7 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
             {"name": "recursive", "type": "boolean", "description": "Recurse into subdirectories.", "required": False, "default": True},
             {"name": "extensions", "type": "array", "description": "File extensions to include (default: ['.pdf', '.PDF']).", "required": False, "items": {"type": "string"}},
             {"name": "max_files", "type": "integer", "description": "Optional max number of PDFs to scan.", "required": False},
-            {"name": "parser_agent_name", "type": "string", "description": "Target agent name for handoff messages.", "required": False, "default": "_job_posting_parser"},
+            {"name": "agent_name", "type": "string", "description": "Target agent name for handoff messages.", "required": False, "default": "_xworker"},
             {"name": "dry_run", "type": "boolean", "description": "If true: do not update DB and do not create handoff messages.", "required": False, "default": False},
         ],
     },
@@ -1741,6 +1485,10 @@ ACTION_REQUEST_NAME_ALIASES: dict[str, str] = {
 
 TOOL_GROUP_CONFIGS: dict[str, list[str]] = {
     "rag": ["memorydb", "vectordb"],
+    "doc_ro": [
+        "read_document",
+        "list_documents",
+    ],
     "docs_rw": [
         "read_document",
         "write_document",
@@ -1765,7 +1513,7 @@ TOOL_GROUP_CONFIGS: dict[str, list[str]] = {
 
 
 FORCED_ROUTE_CONFIGS: dict[str, list[dict[str, Any]]] = {
-    "_primary_assistant": [
+    "_xplaner_xrouter": [
         {
             "name": "agent_prefix",
             "trigger": {"type": "at_prefix"},
@@ -1778,7 +1526,8 @@ FORCED_ROUTE_CONFIGS: dict[str, list[dict[str, Any]]] = {
                 "ignore_case": True,
             },
             "route": {
-                "target_agent": "_agent_system_planner",
+                "target_agent": "_xplaner_xrouter",
+                "job_name": "agent_system_planning",
                 "user_question": "__trigger_remainder__",
             },
         },
@@ -1795,11 +1544,13 @@ FORCED_ROUTE_CONFIGS: dict[str, list[dict[str, Any]]] = {
                 },
             },
             "route": {
-                "target_agent": "_cover_letter_agent",
+                "target_agent": "_xworker",
                 "handoff_protocol": "agent_handoff_v1",
+                "handoff_schema": "xplaner_to_xworker_cover_letter_writer",
                 "agent_response": {
-                    "agent_label": "_primary_assistant",
-                    "handoff_to": "_cover_letter_agent",
+                    "agent_label": "_xplaner_xrouter",
+                    "handoff_to": "_xworker",
+                    "job_name": "cover_letter_writer",
                     "output": "__cover_letter_writer_payload__",
                 },
             },
@@ -1817,7 +1568,8 @@ FORCED_ROUTE_CONFIGS: dict[str, list[dict[str, Any]]] = {
                 },
             },
             "route": {
-                "target_agent": "_data_dispatcher",
+                "target_agent": "_xworker",
+                "job_name": "document_dispatch",
                 "user_question": "__original_input__",
             },
         },
@@ -1826,39 +1578,27 @@ FORCED_ROUTE_CONFIGS: dict[str, list[dict[str, Any]]] = {
 
 
 WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
-    "primary_assistant_router": {
-        "description": "Primary assistant router workflow with declarative delegation branches.",
-        "entry_state": "assistant_ready",
+    "xplaner_xrouter_router": {
+        "description": "Primary xplaner_xrouter workflow with generic xworker delegation.",
+        "entry_state": "xplaner_ready",
         "retry_policy": {
             "max_attempts": 2,
             "backoff_seconds": [1, 2],
         },
         "states": {
-            "assistant_ready": {
-                "actor": {"kind": "agent", "name": "_primary_assistant"},
+            "xplaner_ready": {
+                "actor": {"kind": "agent", "name": "_xplaner_xrouter"},
                 "terminal": False,
             },
-            "planner_delegated": {
+            "xworker_delegated": {
                 "actor": {"kind": "tool", "name": "route_to_agent"},
                 "terminal": False,
             },
-            "dispatcher_delegated": {
-                "actor": {"kind": "tool", "name": "route_to_agent"},
-                "terminal": False,
-            },
-            "parser_delegated": {
-                "actor": {"kind": "tool", "name": "route_to_agent"},
-                "terminal": False,
-            },
-            "writer_delegated": {
-                "actor": {"kind": "tool", "name": "route_to_agent"},
-                "terminal": False,
-            },
-            "assistant_retry_pending": {
+            "xplaner_retry_pending": {
                 "actor": {"kind": "state", "name": "retry_pending"},
                 "terminal": False,
             },
-            "assistant_failed": {
+            "xplaner_failed": {
                 "actor": {"kind": "state", "name": "workflow_failed"},
                 "terminal": True,
             },
@@ -1869,54 +1609,25 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
         },
         "transitions": [
             {
-                "from": "assistant_ready",
+                "from": "xplaner_ready",
                 "on": {
                     "kind": "tool",
                     "name": "route_to_agent",
-                    "conditions": {"target_agent": "_agent_system_planner"},
+                    "conditions": {"target_agent": "_xworker"},
                 },
-                "to": "planner_delegated",
+                "to": "xworker_delegated",
             },
             {
-                "from": "assistant_ready",
-                "on": {
-                    "kind": "tool",
-                    "name": "route_to_agent",
-                    "conditions": {"target_agent": "_data_dispatcher"},
-                },
-                "to": "dispatcher_delegated",
-            },
-            {
-                "from": "assistant_ready",
-                "on": {
-                    "kind": "tool",
-                    "name": "route_to_agent",
-                    "conditions": {"target_agent": "_parser_agent"},
-                },
-                "to": "parser_delegated",
-            },
-            {
-                "from": "assistant_ready",
-                "on": {
-                    "kind": "tool",
-                    "name": "route_to_agent",
-                    "conditions": {"target_agent": "_writer_agent"},
-                },
-                "to": "writer_delegated",
-            },
-            {
-                "from": ["planner_delegated", "dispatcher_delegated", "parser_delegated", "writer_delegated"],
+                "from": "xworker_delegated",
                 "on": {
                     "kind": "state",
                     "name": "routed_agent_complete",
-                    "conditions": {
-                        "target_agent": {"in": ["_agent_system_planner", "_data_dispatcher", "_parser_agent", "_writer_agent"]}
-                    },
+                    "conditions": {"target_agent": "_xworker"},
                 },
                 "to": "workflow_complete",
             },
             {
-                "from": ["assistant_ready", "planner_delegated", "dispatcher_delegated", "parser_delegated", "writer_delegated"],
+                "from": ["xplaner_ready", "xworker_delegated"],
                 "on": {
                     "kind": "state",
                     "name": ["model_failed", "routed_agent_failed"],
@@ -1924,105 +1635,60 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
                         "any": [
                             {"error": {"exists": True}},
                             {"result": {"exists": True}},
-                            {"target_agent": {"in": ["_agent_system_planner", "_data_dispatcher", "_parser_agent", "_writer_agent"]}},
+                            {"target_agent": {"in": ["_xworker"]}},
                         ]
                     },
                 },
-                "to": "assistant_retry_pending",
+                "to": "xplaner_retry_pending",
             },
             {
-                "from": "assistant_retry_pending",
+                "from": "xplaner_retry_pending",
                 "on": {"kind": "state", "name": "retry_requested"},
-                "to": "assistant_ready",
+                "to": "xplaner_ready",
             },
             {
-                "from": "assistant_retry_pending",
+                "from": "xplaner_retry_pending",
                 "on": {"kind": "state", "name": "retry_exhausted"},
-                "to": "assistant_failed",
+                "to": "xplaner_failed",
             },
         ],
     },
-    "agent_system_planner_router": {
-        "description": "Planner workflow that keeps the user interaction in the planner until the builder worker is delegated.",
-        "entry_state": "planner_ready",
-        "retry_policy": {
-            "max_attempts": 2,
-            "backoff_seconds": [1, 2],
-        },
+    "xworker_leaf": {
+        "description": "Generic leaf workflow for xworker jobs without further routing.",
+        "entry_state": "xworker_active",
         "states": {
-            "planner_ready": {
-                "actor": {"kind": "agent", "name": "_agent_system_planner"},
+            "xworker_active": {
+                "actor": {"kind": "agent", "name": "_xworker"},
                 "terminal": False,
             },
-            "builder_delegated": {
-                "actor": {"kind": "tool", "name": "route_to_agent"},
-                "terminal": False,
-            },
-            "planner_retry_pending": {
-                "actor": {"kind": "state", "name": "retry_pending"},
-                "terminal": False,
-            },
-            "planner_failed": {
-                "actor": {"kind": "state", "name": "workflow_failed"},
+            "xworker_complete": {
+                "actor": {"kind": "state", "name": "workflow_complete"},
                 "terminal": True,
             },
-            "workflow_complete": {
-                "actor": {"kind": "state", "name": "workflow_complete"},
+            "xworker_failed": {
+                "actor": {"kind": "state", "name": "workflow_failed"},
                 "terminal": True,
             },
         },
         "transitions": [
             {
-                "from": "planner_ready",
-                "on": {
-                    "kind": "tool",
-                    "name": "route_to_agent",
-                    "conditions": {"target_agent": "_agent_system_worker"},
-                },
-                "to": "builder_delegated",
+                "from": "xworker_active",
+                "on": {"kind": "state", "name": ["followup_complete", "tool_complete"]},
+                "to": "xworker_complete",
             },
             {
-                "from": "builder_delegated",
-                "on": {
-                    "kind": "state",
-                    "name": "routed_agent_complete",
-                    "conditions": {"target_agent": "_agent_system_worker"},
-                },
-                "to": "workflow_complete",
-            },
-            {
-                "from": ["planner_ready", "builder_delegated"],
-                "on": {
-                    "kind": "state",
-                    "name": ["model_failed", "routed_agent_failed"],
-                    "conditions": {
-                        "any": [
-                            {"error": {"exists": True}},
-                            {"result": {"exists": True}},
-                            {"target_agent": {"in": ["_agent_system_worker"]}},
-                        ]
-                    },
-                },
-                "to": "planner_retry_pending",
-            },
-            {
-                "from": "planner_retry_pending",
-                "on": {"kind": "state", "name": "retry_requested"},
-                "to": "planner_ready",
-            },
-            {
-                "from": "planner_retry_pending",
-                "on": {"kind": "state", "name": "retry_exhausted"},
-                "to": "planner_failed",
+                "from": "xworker_active",
+                "on": {"kind": "state", "name": ["model_failed", "tool_failed"]},
+                "to": "xworker_failed",
             },
         ],
     },
-    "agent_system_builder_leaf": {
-        "description": "Leaf workflow for the builder worker that emits the generated config bundle.",
+    "xworker_builder_leaf": {
+        "description": "Leaf workflow for the xworker builder job.",
         "entry_state": "builder_active",
         "states": {
             "builder_active": {
-                "actor": {"kind": "agent", "name": "_agent_system_worker"},
+                "actor": {"kind": "agent", "name": "_xworker"},
                 "terminal": False,
             },
             "builder_complete": {
@@ -2047,12 +1713,12 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
             },
         ],
     },
-    "parser_agent_leaf": {
-        "description": "Leaf workflow for the generic parser worker without downstream routing.",
+    "xworker_generic_parser_leaf": {
+        "description": "Leaf workflow for generic xworker parser jobs.",
         "entry_state": "parser_active",
         "states": {
             "parser_active": {
-                "actor": {"kind": "agent", "name": "_parser_agent"},
+                "actor": {"kind": "agent", "name": "_xworker"},
                 "terminal": False,
             },
             "parser_complete": {
@@ -2072,12 +1738,12 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
             },
         ],
     },
-    "writer_agent_leaf": {
-        "description": "Leaf workflow for the generic writer worker without downstream routing.",
+    "xworker_generic_writer_leaf": {
+        "description": "Leaf workflow for generic xworker writer jobs.",
         "entry_state": "writer_active",
         "states": {
             "writer_active": {
-                "actor": {"kind": "agent", "name": "_writer_agent"},
+                "actor": {"kind": "agent", "name": "_xworker"},
                 "terminal": False,
             },
             "writer_complete": {
@@ -2102,12 +1768,12 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
             },
         ],
     },
-    "profile_parser_leaf": {
-        "description": "Leaf workflow for the specialized profile parser.",
+    "xworker_profile_parser_leaf": {
+        "description": "Leaf workflow for the applicant profile parser job.",
         "entry_state": "profile_parser_active",
         "states": {
             "profile_parser_active": {
-                "actor": {"kind": "agent", "name": "_profile_parser"},
+                "actor": {"kind": "agent", "name": "_xworker"},
                 "terminal": False,
             },
             "profile_parser_complete": {
@@ -2121,18 +1787,18 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
                 "on": {
                     "kind": "state",
                     "name": ["followup_complete", "routed_agent_complete"],
-                    "conditions": {"any": [{"result": {"exists": True}}, {"target_agent": "_profile_parser"}]},
+                    "conditions": {"any": [{"result": {"exists": True}}, {"target_agent": "_xworker"}]},
                 },
                 "to": "profile_parser_complete",
             }
         ],
     },
-    "job_posting_parser_leaf": {
-        "description": "Leaf workflow for the specialized job-posting parser.",
+    "xworker_job_posting_parser_leaf": {
+        "description": "Leaf workflow for the job-posting parser job.",
         "entry_state": "job_posting_parser_active",
         "states": {
             "job_posting_parser_active": {
-                "actor": {"kind": "agent", "name": "_job_posting_parser"},
+                "actor": {"kind": "agent", "name": "_xworker"},
                 "terminal": False,
             },
             "job_posting_parser_complete": {
@@ -2146,18 +1812,18 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
                 "on": {
                     "kind": "state",
                     "name": ["followup_complete", "routed_agent_complete"],
-                    "conditions": {"any": [{"result": {"exists": True}}, {"target_agent": "_job_posting_parser"}]},
+                    "conditions": {"any": [{"result": {"exists": True}}, {"target_agent": "_xworker"}]},
                 },
                 "to": "job_posting_parser_complete",
             }
         ],
     },
-    "cover_letter_writer_leaf": {
-        "description": "Leaf workflow for the specialized cover-letter writer.",
+    "xworker_cover_letter_writer_leaf": {
+        "description": "Leaf workflow for the cover-letter writer job.",
         "entry_state": "cover_letter_writer_active",
         "states": {
             "cover_letter_writer_active": {
-                "actor": {"kind": "agent", "name": "_cover_letter_agent"},
+                "actor": {"kind": "agent", "name": "_xworker"},
                 "terminal": False,
             },
             "cover_letter_writer_complete": {
@@ -2182,8 +1848,8 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
             }
         ],
     },
-    "data_dispatcher_chain": {
-        "description": "Deterministic dispatcher chain driven by workflow definition in agents_config.py.",
+    "xworker_dispatch_chain": {
+        "description": "Deterministic xworker dispatch chain for document discovery, action execution, and parser handoff.",
         "entry_state": "dispatcher_ready",
         "retry_policy": {
             "max_attempts": 3,
@@ -2191,7 +1857,7 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
         },
         "states": {
             "dispatcher_ready": {
-                "actor": {"kind": "agent", "name": "_data_dispatcher"},
+                "actor": {"kind": "agent", "name": "_xworker"},
                 "terminal": False,
             },
             "documents_dispatched": {
@@ -2253,7 +1919,7 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
                 "on": {
                     "kind": "tool",
                     "name": "route_to_agent",
-                    "conditions": {"target_agent": "_job_posting_parser"},
+                    "conditions": {"target_agent": "_xworker"},
                 },
                 "to": "parser_routed",
             },
@@ -2263,7 +1929,7 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
                 "to": "workflow_complete",
             },
             {
-                "from": ["action_executed", "job_record_upserted"],
+                "from": ["documents_dispatched", "action_executed", "job_record_upserted"],
                 "on": {
                     "kind": "state",
                     "name": ["followup_complete", "tool_complete"],
@@ -2285,7 +1951,7 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
                         "any": [
                             {"tool_name": {"in": ["dispatch_documents", "batch_generate_documents", "execute_action_request", "upsert_object_record", "route_to_agent"]}},
                             {"error": {"exists": True}},
-                            {"target_agent": "_job_posting_parser"},
+                            {"target_agent": "_xworker"},
                         ]
                     },
                 },
@@ -2322,7 +1988,7 @@ BATCH_WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
             "skip_basenames": ["Muster_Anschreiben.pdf"],
         },
         "profile_result": {
-            "agent": "profile_parser",
+            "agent": "xworker",
             "correlation_id_path": "profile_id",
             "language_path": "preferences.language",
             "default_language": "de",
@@ -2376,6 +2042,7 @@ BATCH_WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
                 "content": {"from_context": "cover_letter_result.cover_letter.full_text"},
                 "path": {"from_context": "out_dir"},
                 "doc_id": {"from_context": "doc_id"},
+                "correlation_id": {"from_context": "correlation_id"},
             },
             "pdf_writer": "internal_text_pdf",
             "pdf_writer_input": {
@@ -2403,5 +2070,317 @@ BATCH_WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
                 "last_error_at": {"from_context": "utc_now"},
             },
         },
+    },
+}
+
+
+AGENTS_DB_STRUCTURE_CONFIGS: dict[str, dict[str, Any]] = {
+    "document_knowledge_pipeline": {
+        "description": "Canonical structure for the agents_db document pipeline that bridges operational persistence in tools.py to the Mongo-backed knowledge projection in agents_dbs.py.",
+        "modules": {
+            "tools.py": {
+                "role": "operational_runtime",
+                "layers": [
+                    {
+                        "name": "backend_layer",
+                        "owner_objects": ["MongoDocumentBackend"],
+                        "functions": [
+                            "load_db",
+                            "save_db",
+                            "load_record",
+                            "upsert_record",
+                            "delete_record",
+                        ],
+                        "responsibility": "Backend boundary for file-based or Mongo-backed operational document stores.",
+                    },
+                    {
+                        "name": "repository_layer",
+                        "owner_objects": ["DocumentRepository"],
+                        "functions": [
+                            "load_db",
+                            "save_db",
+                            "upsert_db",
+                            "persist_document",
+                            "get_document",
+                            "get_dispatcher_record",
+                            "get_dispatcher_records",
+                        ],
+                        "responsibility": "Operational truth for document stores and dispatcher state.",
+                    },
+                    {
+                        "name": "resolution_layer",
+                        "owner_objects": ["RequestObjectResolutionService"],
+                        "functions": [
+                            "resolve_request_object",
+                            "resolve_request_payload",
+                        ],
+                        "responsibility": "Resolve incoming request payloads to generic object_name and object_result bindings.",
+                    },
+                    {
+                        "name": "object_service_layer",
+                        "owner_objects": ["DocumentObjectService"],
+                        "functions": [
+                            "store_object_result",
+                            "ingest_object",
+                            "upsert_object_record",
+                        ],
+                        "responsibility": "Object-centric persistence entry point for parser results and deterministic updates.",
+                    },
+                    {
+                        "name": "action_layer",
+                        "owner_objects": ["ActionRequestService"],
+                        "functions": [
+                            "execute_request",
+                            "execute_request_tool",
+                        ],
+                        "responsibility": "Schema-driven deterministic routing from action requests to operational services.",
+                    },
+                    {
+                        "name": "dispatch_layer",
+                        "owner_objects": ["DocumentDispatchService"],
+                        "functions": [
+                            "dispatch_documents",
+                        ],
+                        "responsibility": "Filesystem scan, dispatcher bucketing, and parser handoff orchestration.",
+                    },
+                ],
+            },
+            "agents_dbs.py": {
+                "role": "knowledge_projection",
+                "layers": [
+                    {
+                        "name": "knowledge_object_layer",
+                        "owner_objects": [
+                            "NamespaceObject",
+                            "DocumentObject",
+                            "BlockObject",
+                            "EntityObject",
+                            "EntityRelationObject",
+                            "EmbeddingObject",
+                            "RetrievalRunObject",
+                            "DispatcherRunObject",
+                        ],
+                        "helper_objects": [
+                            "EntityMentionObject",
+                            "EntityAliasObject",
+                            "RelationEvidenceObject",
+                        ],
+                        "responsibility": "Canonical object model for namespace, document, block, entity, relation, embedding, dispatcher, and retrieval truth.",
+                    },
+                    {
+                        "name": "knowledge_repository_layer",
+                        "owner_objects": ["KnowledgeRepository", "KnowledgeObjectService"],
+                        "functions": [
+                            "store_namespace_object",
+                            "store_document_object",
+                            "store_entity_object",
+                            "store_relation_object",
+                            "store_embedding_object",
+                            "store_retrieval_run_object",
+                            "store_dispatcher_run_object",
+                            "find_objects",
+                            "load_relation_object_graph",
+                            "build_vector_candidate_pipeline",
+                        ],
+                        "responsibility": "Mongo-backed persistence and query facade for the knowledge model.",
+                    },
+                    {
+                        "name": "mapping_layer",
+                        "owner_objects": ["ObjectMappingService"],
+                        "functions": [
+                            "build_document_object",
+                            "build_entity_objects",
+                            "build_relation_objects",
+                            "store_mapped_object",
+                        ],
+                        "responsibility": "Map parsed object_result payloads to canonical document, block, entity, and relation objects.",
+                    },
+                    {
+                        "name": "pipeline_layer",
+                        "owner_objects": ["PipelineService"],
+                        "functions": [
+                            "load_namespace_object",
+                            "build_retrieval_run_object",
+                            "store_retrieval_run",
+                        ],
+                        "responsibility": "Runtime namespace resolution and retrieval telemetry projection.",
+                    },
+                ],
+            },
+        },
+        "bridge_points": [
+            {
+                "name": "parser_result_sync",
+                "entry_functions": [
+                    "store_object_result_tool",
+                    "ingest_object_tool",
+                    "upsert_object_record_tool",
+                    "sync_parser_result_to_mongodb_knowledge",
+                ],
+                "from_module": "tools.py",
+                "to_module": "agents_dbs.py",
+                "target_objects": ["ObjectMappingService", "KnowledgeObjectService"],
+                "responsibility": "Bridge operational parser-result persistence to Mongo knowledge projection.",
+            },
+            {
+                "name": "retrieval_run_sync",
+                "entry_functions": [
+                    "memorydb",
+                    "vectordb",
+                    "sync_retrieval_run_to_mongodb_knowledge",
+                ],
+                "from_module": "tools.py",
+                "to_module": "agents_dbs.py",
+                "target_objects": ["PipelineService", "KnowledgeObjectService"],
+                "responsibility": "Bridge retrieval execution telemetry to RetrievalRunObject persistence.",
+            },
+        ],
+    },
+}
+
+
+AGENTS_DB_WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
+    "document_to_knowledge_dataset": {
+        "description": "Persisted workflow blueprint for the end-to-end agents_db pipeline from parser result to Mongo knowledge projection and retrieval validation.",
+        "structure_ref": "document_knowledge_pipeline",
+        "entry_contract": {
+            "required_fields": ["object_name", "object_result"],
+            "recommended_fields": [
+                "correlation_id",
+                "handoff_metadata",
+                "handoff_payload",
+                "dispatcher_db_path",
+                "obj_db_path",
+                "retrieval_query",
+                "validate_retrieval",
+            ],
+        },
+        "stage_order": [
+            "request_resolution",
+            "operational_persistence",
+            "knowledge_projection",
+            "retrieval_telemetry_projection",
+            "retrieval_validation",
+        ],
+        "stages": [
+            {
+                "name": "request_resolution",
+                "module": "tools.py",
+                "owner_objects": ["RequestObjectResolutionService", "ActionRequestService"],
+                "entry_functions": [
+                    "resolve_request_object",
+                    "resolve_request_payload",
+                    "execute_request",
+                ],
+                "inputs": ["action_request", "object_name", "object_result"],
+                "outputs": ["resolved_object_name", "resolved_result_payload"],
+                "success_criteria": [
+                    "A normalized object_name is resolved.",
+                    "A parser-style result payload is available for persistence.",
+                ],
+            },
+            {
+                "name": "operational_persistence",
+                "module": "tools.py",
+                "owner_objects": ["DocumentRepository", "DocumentObjectService"],
+                "entry_functions": [
+                    "persist_document",
+                    "store_object_result_tool",
+                    "ingest_object_tool",
+                    "upsert_object_record_tool",
+                ],
+                "inputs": [
+                    "resolved_object_name",
+                    "resolved_result_payload",
+                    "correlation_id",
+                    "handoff_metadata",
+                    "handoff_payload",
+                ],
+                "outputs": [
+                    "stored_record",
+                    "obj_db_path",
+                    "dispatcher_db_path",
+                    "operational_store_status",
+                ],
+                "success_criteria": [
+                    "The object store contains the parser result.",
+                    "The dispatcher record is synchronized when dispatcher context exists.",
+                ],
+            },
+            {
+                "name": "knowledge_projection",
+                "module": "agents_dbs.py",
+                "owner_objects": ["ObjectMappingService", "KnowledgeObjectService"],
+                "entry_functions": [
+                    "sync_parser_result_to_mongodb_knowledge",
+                    "store_mapped_object",
+                    "build_document_object",
+                    "build_entity_objects",
+                    "build_relation_objects",
+                ],
+                "inputs": [
+                    "resolved_object_name",
+                    "resolved_result_payload",
+                    "correlation_id",
+                    "handoff_metadata",
+                    "handoff_payload",
+                ],
+                "outputs": [
+                    "namespace_id",
+                    "document_id",
+                    "entity_count",
+                    "relation_count",
+                ],
+                "materialized_objects": [
+                    "NamespaceObject",
+                    "DocumentObject",
+                    "BlockObject",
+                    "EntityObject",
+                    "EntityRelationObject",
+                ],
+                "success_criteria": [
+                    "Mongo knowledge projection stores namespace and document truth.",
+                    "Entity and relation objects are materialized from the same parser result.",
+                ],
+            },
+            {
+                "name": "retrieval_telemetry_projection",
+                "module": "agents_dbs.py",
+                "owner_objects": ["PipelineService", "KnowledgeObjectService"],
+                "entry_functions": [
+                    "sync_retrieval_run_to_mongodb_knowledge",
+                    "store_retrieval_run",
+                    "build_retrieval_run_object",
+                ],
+                "inputs": ["tool_name", "query_event", "outcome_event", "retrieval_result"],
+                "outputs": ["retrieval_run_id", "namespace_id"],
+                "materialized_objects": ["RetrievalRunObject"],
+                "success_criteria": [
+                    "Retrieval telemetry is persisted in the same namespace as the projected knowledge objects.",
+                ],
+            },
+            {
+                "name": "retrieval_validation",
+                "module": "agents_dbs.py",
+                "owner_objects": ["KnowledgeObjectService"],
+                "entry_functions": [
+                    "find_objects",
+                    "load_relation_object_graph",
+                    "build_vector_candidate_pipeline",
+                ],
+                "inputs": ["namespace_id", "retrieval_query", "validate_retrieval"],
+                "outputs": ["document_hits", "block_hits", "entity_hits", "relation_context"],
+                "success_criteria": [
+                    "A query against the projected namespace returns the stored document or one of its blocks.",
+                    "The validation query uses the same projected namespace_id instead of an external store.",
+                ],
+            },
+        ],
+        "completion_criteria": [
+            "The parser result is persisted in the operational store.",
+            "The same parser result is projected to NamespaceObject, DocumentObject, BlockObject, EntityObject, and EntityRelationObject records.",
+            "Retrieval telemetry can be projected as RetrievalRunObject records in the same namespace.",
+            "A retrieval validation query returns the projected document or one of its blocks.",
+        ],
     },
 }

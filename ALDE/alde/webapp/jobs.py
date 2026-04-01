@@ -3,13 +3,12 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime, UTC
 import importlib
-from queue import Empty, Queue
-from threading import Event, Thread
 from typing import Any
 
 from .config import settings
 from .repository import repo
 from .services import _call_agent_runtime
+from ..runtime_core import InMemoryMessageRunnerService
 
 
 @dataclass(slots=True)
@@ -69,35 +68,24 @@ def process_rq_job(payload: dict[str, Any]) -> None:
 
 class AgentJobRunner:
     def __init__(self) -> None:
-        self._queue: Queue[JobMessage] = Queue()
-        self._stop = Event()
-        self._thread = Thread(target=self._work_loop, daemon=True, name="alde-agent-runner")
+        self._runner = InMemoryMessageRunnerService[
+            JobMessage
+        ](
+            worker_name="alde-agent-runner",
+            process_object_message=process_job_message,
+        )
 
     def start(self) -> None:
-        if not self._thread.is_alive():
-            self._thread = Thread(target=self._work_loop, daemon=True, name="alde-agent-runner")
-            self._stop.clear()
-            self._thread.start()
+        self._runner.start_object_runner()
 
     def stop(self) -> None:
-        self._stop.set()
-        if self._thread.is_alive():
-            self._thread.join(timeout=5)
+        self._runner.stop_object_runner()
 
     def submit(self, msg: JobMessage) -> None:
-        self._queue.put(msg)
+        self._runner.submit_object_message(msg)
 
-    def _work_loop(self) -> None:
-        while not self._stop.is_set():
-            try:
-                msg = self._queue.get(timeout=0.5)
-            except Empty:
-                continue
-
-            try:
-                process_job_message(msg)
-            finally:
-                self._queue.task_done()
+    def load_health(self) -> dict[str, Any]:
+        return self._runner.load_object_health()
 
 
 runner = AgentJobRunner()
@@ -158,7 +146,8 @@ def submit_agent_job(msg: JobMessage) -> None:
 
 def get_queue_health() -> tuple[str, bool]:
     if settings.queue_backend != "rq":
-        return "inmemory", True
+        runner_health = runner.load_health()
+        return str(runner_health.get("backend") or "inmemory"), bool(runner_health.get("healthy", True))
 
     try:
         redis_module = importlib.import_module("redis")

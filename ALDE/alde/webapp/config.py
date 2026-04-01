@@ -2,6 +2,36 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from pathlib import Path
+
+
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_DATABASE_URL = "sqlite:///./AppData/alde_web.db"
+_SQLITE_URL_PREFIXES = ("sqlite:///", "sqlite+pysqlite:///")
+
+
+def _resolve_object_database_url(database_url: str) -> str:
+    normalized_url = str(database_url or "").strip() or _DEFAULT_DATABASE_URL
+    for prefix in _SQLITE_URL_PREFIXES:
+        if not normalized_url.startswith(prefix):
+            continue
+        raw_path, separator, query_string = normalized_url[len(prefix):].partition("?")
+        if not raw_path or raw_path == ":memory:" or raw_path.startswith("file:"):
+            return normalized_url
+        database_path = Path(raw_path)
+        if not database_path.is_absolute():
+            database_path = _PROJECT_ROOT / database_path
+        database_path = database_path.resolve()
+        database_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_url = f"{prefix}{database_path.as_posix()}"
+        if separator:
+            resolved_url = f"{resolved_url}?{query_string}"
+        return resolved_url
+    return normalized_url
+
+
+def load_object_database_url() -> str:
+    return _resolve_object_database_url(os.getenv("ALDE_WEB_DATABASE_URL", _DEFAULT_DATABASE_URL))
 
 
 @dataclass(frozen=True)
@@ -13,7 +43,7 @@ class Settings:
     token_ttl_minutes: int = int(os.getenv("ALDE_WEB_TOKEN_TTL_MIN", "60"))
     token_secret: str = os.getenv("ALDE_WEB_TOKEN_SECRET", "change-me-in-production")
     allow_dev_bootstrap: bool = os.getenv("ALDE_WEB_ALLOW_DEV_BOOTSTRAP", "1") == "1"
-    database_url: str = os.getenv("ALDE_WEB_DATABASE_URL", "sqlite:///./AppData/alde_web.db")
+    database_url: str = load_object_database_url()
     oidc_issuer: str = os.getenv("ALDE_WEB_OIDC_ISSUER", "")
     oidc_client_id: str = os.getenv("ALDE_WEB_OIDC_CLIENT_ID", "")
     oidc_client_secret: str = os.getenv("ALDE_WEB_OIDC_CLIENT_SECRET", "")
@@ -31,7 +61,7 @@ class Settings:
     refresh_token_ttl_days: int = int(os.getenv("ALDE_WEB_REFRESH_TTL_DAYS", "14"))
 
     # Comma-separated allow-lists for role-based access control.
-    rbac_member_agents: str = os.getenv("ALDE_WEB_RBAC_MEMBER_AGENTS", "_primary_assistant,_data_dispatcher")
+    rbac_member_agents: str = os.getenv("ALDE_WEB_RBAC_MEMBER_AGENTS", "_xplaner_xrouter,_xworker")
     rbac_member_tools: str = os.getenv("ALDE_WEB_RBAC_MEMBER_TOOLS", "")
     queue_backend: str = os.getenv("ALDE_WEB_QUEUE_BACKEND", "inmemory").strip().lower()
     redis_url: str = os.getenv("ALDE_WEB_REDIS_URL", "redis://localhost:6379/0")
