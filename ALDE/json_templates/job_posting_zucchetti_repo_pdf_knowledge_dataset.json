@@ -74,6 +74,105 @@
       "warnings": [],
       "errors": []
     },
+    "raw_text_document": {
+      "document_type": "job_posting",
+      "title": "Software Support Specialist euroSUITE (m/w/d)",
+      "language": "de",
+      "raw_text": "Software Support Specialist euroSUITE (m/w/d)\nZucchetti Germany GmbH\nSaarbrücken\nVollzeit",
+      "sections": [
+        {
+          "section_key": "header",
+          "heading": "Object Header",
+          "text": "Title: Software Support Specialist euroSUITE (m/w/d)\nOrganization: Zucchetti Germany GmbH\nLocation: Saarbrücken\nEmployment Type: Vollzeit",
+          "metadata": {
+            "section_type": "header"
+          }
+        },
+        {
+          "section_key": "requirements",
+          "heading": "Requirements",
+          "text": "- Linux\n- Windows\n- PostgreSQL\n- Oracle\n- TCP/IP\n- http(S)\n- RDP\n- Deutsch\n- Englisch",
+          "metadata": {
+            "section_type": "requirements"
+          }
+        }
+      ],
+      "metadata": {
+        "content_sha256": "6df0f7639425076a82c214fe184a70faf5bd44c61995b2698f70a35bcbc1be55",
+        "source": "repo_pdf"
+      }
+    },
+    "entity_objects": [
+      {
+        "entity_key": "subject",
+        "entity_type": "job_posting",
+        "canonical_name": "Software Support Specialist euroSUITE (m/w/d)",
+        "mention_text": "Software Support Specialist euroSUITE (m/w/d)",
+        "section_key": "header",
+        "summary": "Primary job posting subject.",
+        "confidence": 0.99,
+        "aliases": [],
+        "attributes": {
+          "position_type": "full-time"
+        },
+        "metadata": {
+          "role": "subject",
+          "source_field": "job_posting.job_title"
+        }
+      },
+      {
+        "entity_key": "organization:zucchetti_germany_gmbh",
+        "entity_type": "organization",
+        "canonical_name": "Zucchetti Germany GmbH",
+        "mention_text": "Zucchetti Germany GmbH",
+        "section_key": "header",
+        "summary": "Organization associated with the job posting.",
+        "confidence": 0.98,
+        "aliases": [],
+        "attributes": {},
+        "metadata": {
+          "source_field": "job_posting.company_name"
+        }
+      },
+      {
+        "entity_key": "database:postgresql",
+        "entity_type": "database",
+        "canonical_name": "PostgreSQL",
+        "mention_text": "PostgreSQL",
+        "section_key": "requirements",
+        "summary": "Required database knowledge.",
+        "confidence": 0.9,
+        "aliases": [
+          "Postgres"
+        ],
+        "attributes": {},
+        "metadata": {
+          "source_field": "job_posting.requirements.technical_skills"
+        }
+      }
+    ],
+    "relation_objects": [
+      {
+        "source_entity_key": "subject",
+        "target_entity_key": "organization:zucchetti_germany_gmbh",
+        "relation_type": "offered_by",
+        "section_key": "header",
+        "confidence": 0.98,
+        "metadata": {
+          "source_field": "job_posting.company_name"
+        }
+      },
+      {
+        "source_entity_key": "subject",
+        "target_entity_key": "database:postgresql",
+        "relation_type": "requires_database_knowledge",
+        "section_key": "requirements",
+        "confidence": 0.9,
+        "metadata": {
+          "source_field": "job_posting.requirements.technical_skills"
+        }
+      }
+    ],
     "job_posting": {
       "job_title": "Software Support Specialist euroSUITE (m/w/d)",
       "company_name": "Zucchetti Germany GmbH",

@@ -10,8 +10,10 @@ import base64
 import binascii
 import uuid
 import html
+import re
 import subprocess
 import shutil
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 # Keep both repository roots on sys.path so local imports work in direct-script
@@ -33,7 +35,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'xcb')
 import warnings
 warnings.filterwarnings('ignore', category=Warning)
 from pathlib import Path
-from typing import Any, Final, List, Optional
+from typing import Any, Callable, Final, List, Optional
 from io import BytesIO
 import mimetypes
 
@@ -141,7 +143,6 @@ def decode_image_payload(payload: object) -> tuple[bytes, str | None]:
     if isinstance(payload, str):
         mime, b64 = _split_data_uri(payload)
         b64 = "".join(b64.split())
-        # fix missing padding
         if len(b64) % 4:
             b64 += "=" * (4 - (len(b64) % 4))
         try:
@@ -222,9 +223,13 @@ from PySide6.QtGui import (
 
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QComboBox,
+    QDialog,
+    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QGridLayout,
     QInputDialog,
     QDockWidget,
     QFrame,
@@ -234,7 +239,7 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPlainTextEdit,
-    
+    QLineEdit,
     QPushButton,
     QSizePolicy,
     QSpacerItem,
@@ -260,16 +265,13 @@ from PySide6.QtWidgets import (
 
 try:
     if __package__:
-        from .agents_ccompletion import ChatHistory  # type: ignore
-        from .desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
+        from .agents_ccompletion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore
     else:
-        from alde.agents_ccompletion import ChatHistory  # type: ignore
-        from alde.desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
+        from alde.agents_ccompletion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore
 except ImportError as e:
     msg = str(e)
     if "attempted relative import" in msg or "no known parent package" in msg:
-        from agents_ccompletion import ChatHistory  # type: ignore  # noqa: E402
-        from desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore  # noqa: E402
+        from agents_ccompletion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore  # noqa: E402
     else:
         raise
 
@@ -491,7 +493,7 @@ QDockWidget::separator:hover {{
 
  
 #aiInput {{                 /* was  #aiInput  */
-    background: {col9};
+    background: {col10};
     border: 1px solid {col1};   /* 1 px, Akzentfarbe */
     border-radius: 15px;
     padding: 5px;
@@ -575,6 +577,25 @@ QMenuBar::item:selected {{
 
 def _build_scheme(accent: dict, base: dict) -> dict:
     return {**base, **accent}
+
+
+def _color_with_alpha(color_value: str, alpha: int, *, fallback: str) -> str:
+    """Convert a color token to rgba(...) with the requested alpha channel."""
+    color = QColor(str(color_value or ""))
+    if not color.isValid():
+        return fallback
+    alpha_clamped = max(0, min(255, int(alpha)))
+    return f"rgba({color.red()},{color.green()},{color.blue()},{alpha_clamped})"
+
+
+def _splitter_handle_palette(scheme: dict[str, str]) -> tuple[str, str, str]:
+    """Return (idle, hover, pressed) colors for splitter handles."""
+    base_color = str(scheme.get("col10") or "#404040")
+    accent_color = str(scheme.get("col2") or scheme.get("col1") or "#6280ff")
+    idle = _color_with_alpha(base_color, 96, fallback="rgba(64,64,64,96)")
+    hover = _color_with_alpha(accent_color, 170, fallback="rgba(98,128,255,170)")
+    pressed = _color_with_alpha(accent_color, 210, fallback="rgba(98,128,255,210)")
+    return idle, hover, pressed
 
 # ─── helper zum Aufbringen des Stylesheets  ───────────────────────────────
 
@@ -668,6 +689,24 @@ def _draw_fallback(symbol: str = "x") -> QIcon:
     return QIcon(pm)
 
 
+def _draw_circle_icon() -> QIcon:
+    """Paint a simple neutral circle icon for the color-scheme menu action."""
+    size = 32
+    pm = QPixmap(size, size)
+    pm.fill(Qt.transparent)
+
+    pen = QPen(QColor("#666666"))
+    pen.setWidth(3)
+
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    p.setPen(pen)
+    p.setBrush(Qt.NoBrush)
+    p.drawEllipse(6, 6, size - 12, size - 12)
+    p.end()
+    return QIcon(pm)
+
+
 def _icon(name: str) -> QIcon:
     """
     Robust icon loader.
@@ -736,6 +775,249 @@ def detect_file_format(path: str | os.PathLike) -> str:
     if mime.startswith("text/"):
         return "text"
     return "binary"
+
+
+class ChatAttachmentService:
+    _MAX_TEXT_LINES = 240
+    _MAX_TEXT_CHARS = 12000
+    _INLINE_OBJECT_KINDS = {"code", "text", "markdown", "pdf"}
+    _SOURCE_HEADER_PREFIX = "[SOURCE]"
+    _LANGUAGE_BY_SUFFIX = {
+        ".bat": "bat",
+        ".c": "c",
+        ".cpp": "cpp",
+        ".css": "css",
+        ".go": "go",
+        ".h": "c",
+        ".hpp": "cpp",
+        ".html": "html",
+        ".htm": "html",
+        ".java": "java",
+        ".js": "javascript",
+        ".json": "json",
+        ".jsx": "jsx",
+        ".md": "markdown",
+        ".markdown": "markdown",
+        ".php": "php",
+        ".ps1": "powershell",
+        ".py": "python",
+        ".rb": "ruby",
+        ".rs": "rust",
+        ".scss": "scss",
+        ".sh": "bash",
+        ".sql": "sql",
+        ".toml": "toml",
+        ".ts": "typescript",
+        ".tsx": "tsx",
+        ".txt": "text",
+        ".xml": "xml",
+        ".yaml": "yaml",
+        ".yml": "yaml",
+        ".zsh": "bash",
+    }
+
+    def normalize_object_paths(self, paths: list[str] | None) -> list[str]:
+        normalized_paths: list[str] = []
+        seen_paths: set[str] = set()
+        for raw_path in paths or []:
+            candidate_path = str(raw_path or "").strip()
+            if not candidate_path:
+                continue
+            try:
+                resolved_path = str(Path(candidate_path).expanduser().resolve())
+            except Exception:
+                resolved_path = os.path.abspath(os.path.expanduser(candidate_path))
+            if resolved_path in seen_paths or not os.path.exists(resolved_path):
+                continue
+            seen_paths.add(resolved_path)
+            normalized_paths.append(resolved_path)
+        return normalized_paths
+
+    def classify_object(self, file_path: str | Path) -> str:
+        path = Path(file_path)
+        classified_kind = ""
+        if callable(_fv_classify):
+            try:
+                classified_kind = str(_fv_classify(path) or "").strip().lower()
+            except Exception:
+                classified_kind = ""
+
+        if classified_kind in {"code", "text", "markdown"} and not self._looks_like_text(path):
+            classified_kind = "unknown"
+
+        if classified_kind:
+            return classified_kind
+
+        if path.suffix.lower() == ".pdf":
+            return "pdf"
+
+        detected_kind = detect_file_format(path)
+        if detected_kind == "image":
+            return "image"
+
+        suffix = path.suffix.lower()
+        if suffix in {".md", ".markdown"}:
+            return "markdown"
+        if suffix in self._LANGUAGE_BY_SUFFIX:
+            return "code"
+        if detected_kind == "text" or self._looks_like_text(path):
+            return "text"
+        return "unknown"
+
+    def load_image_object_paths(self, file_paths: list[str] | None) -> list[str]:
+        return [
+            file_path
+            for file_path in self.normalize_object_paths(file_paths)
+            if self.classify_object(file_path) == "image"
+        ]
+
+    def build_status_message(self, file_paths: list[str] | None) -> str:
+        normalized_paths = self.normalize_object_paths(file_paths)
+        if not normalized_paths:
+            return ""
+        attachment_labels = [
+            f"{Path(file_path).name} ({self.classify_object(file_path)})"
+            for file_path in normalized_paths
+        ]
+        prefix = "Attachment ready" if len(attachment_labels) == 1 else "Attachments ready"
+        return f"{prefix}: {', '.join(attachment_labels)}"
+
+    def build_prompt_payload(self, *, prompt_text: str, file_paths: list[str] | None) -> tuple[str, list[str]]:
+        normalized_prompt = str(prompt_text or "").strip()
+        normalized_paths = self.normalize_object_paths(file_paths)
+        image_paths: list[str] = []
+        attachment_lines: list[str] = []
+        object_blocks: list[str] = []
+
+        for file_path in normalized_paths:
+            path = Path(file_path)
+            object_kind = self.classify_object(path)
+            if object_kind == "image":
+                image_paths.append(file_path)
+                attachment_lines.append(f"- {path.name} (image)")
+                continue
+
+            if object_kind in self._INLINE_OBJECT_KINDS:
+                object_block = self._build_object_block(file_path=file_path, object_kind=object_kind)
+                if object_block:
+                    object_blocks.append(object_block)
+                    attachment_lines.append(f"- {path.name} ({object_kind}, loaded)")
+                else:
+                    attachment_lines.append(f"- {path.name} ({object_kind}, unreadable)")
+                continue
+
+            attachment_lines.append(f"- {path.name} ({object_kind})")
+
+        prompt_parts: list[str] = []
+        if normalized_prompt:
+            prompt_parts.append(normalized_prompt)
+        if attachment_lines:
+            prompt_parts.append("Attached files:\n" + "\n".join(attachment_lines))
+        if object_blocks:
+            prompt_parts.append("\n\n".join(object_blocks))
+
+        return "\n\n".join(part for part in prompt_parts if part).strip(), image_paths
+
+    def _looks_like_text(self, path: Path) -> bool:
+        try:
+            with open(path, "rb") as handle:
+                sample = handle.read(2048)
+        except OSError:
+            return False
+
+        if not sample:
+            return True
+        if b"\x00" in sample:
+            return False
+
+        printable_bytes = sum(byte >= 32 or byte in (9, 10, 13) for byte in sample)
+        return printable_bytes / max(len(sample), 1) >= 0.9
+
+    def load_object_text(self, *, file_path: str | Path, object_kind: str) -> str:
+        path = Path(file_path)
+        if object_kind == "pdf":
+            return self._load_pdf_text(path)
+        return path.read_text(encoding="utf-8", errors="replace")
+
+    def _load_pdf_text(self, path: Path) -> str:
+        read_document = None
+        try:
+            if __package__:
+                from .tools import read_document  # type: ignore
+            else:
+                from alde.tools import read_document  # type: ignore
+        except ImportError as e:
+            msg = str(e)
+            if "attempted relative import" in msg or "no known parent package" in msg:
+                from tools import read_document  # type: ignore
+            else:
+                raise
+
+        extracted_text = str(read_document(str(path)) or "").strip()
+        if extracted_text.startswith("Error"):
+            return ""
+        return extracted_text
+
+    def _trim_object_text(self, text: str) -> tuple[str, bool]:
+        trimmed_lines = str(text or "").splitlines()
+        was_trimmed = False
+        if len(trimmed_lines) > self._MAX_TEXT_LINES:
+            trimmed_lines = trimmed_lines[: self._MAX_TEXT_LINES]
+            was_trimmed = True
+
+        trimmed_text = "\n".join(trimmed_lines)
+        if len(trimmed_text) > self._MAX_TEXT_CHARS:
+            trimmed_text = trimmed_text[: self._MAX_TEXT_CHARS].rstrip()
+            was_trimmed = True
+
+        return trimmed_text, was_trimmed
+
+    def _load_code_language(self, *, path: Path, object_kind: str) -> str:
+        if object_kind == "markdown":
+            return "markdown"
+        if object_kind in {"text", "pdf"}:
+            return "text"
+        return self._LANGUAGE_BY_SUFFIX.get(path.suffix.lower(), "")
+
+    def _build_object_block(self, *, file_path: str, object_kind: str) -> str | None:
+        path = Path(file_path)
+        try:
+            raw_text = self.load_object_text(file_path=path, object_kind=object_kind)
+        except OSError:
+            return None
+
+        normalized_text = str(raw_text or "").strip("\n")
+        if not normalized_text:
+            normalized_text = "[empty file]"
+
+        trimmed_text, was_trimmed = self._trim_object_text(normalized_text)
+        header = f"[FILE] {path.name} ({object_kind})"
+        if was_trimmed:
+            header += " [truncated]"
+
+        code_language = self._load_code_language(path=path, object_kind=object_kind)
+        fence = f"```{code_language}" if code_language else "```"
+        source_header = f"{self._SOURCE_HEADER_PREFIX} {path}"
+        return f"{header}\n{source_header}\n{fence}\n{trimmed_text}\n```"
+
+
+CHAT_ATTACHMENT_SERVICE = ChatAttachmentService()
+
+
+@dataclass(frozen=True)
+class ChatSegment:
+    kind: str
+    language: str
+    block: str
+    file_path: str = ""
+
+
+@dataclass(frozen=True)
+class ChatFileContext:
+    header_line: str
+    language: str
+    file_path: str = ""
+    body_start_index: int = 1
 
 # ────────────────────────────────────────────────────────────────────────────
 #  FIX: Tooltip-Schrift ist unsichtbar                                    (NEW)
@@ -1581,6 +1863,8 @@ class ChatDock(QDockWidget):
 class AIWidget(QWidget):
     '''AI-Chat-Dock – fehlerbereinigte Version'''
 
+    _PROMPT_SNAP_HEIGHT = 90
+
     def __init__(self,
         accent, 
         base, 
@@ -1592,15 +1876,9 @@ class AIWidget(QWidget):
         self._api_key_missing: bool = not bool(self.api_key)
         self._model:   str = "o3-2025-04-16"                 # <<< zentrales Modell
         self._dropped_files: List[str] = []
-        self._pending_local_run_ids: list[str] = []
         self.scheme = _build_scheme(accent, base)                # Farbschema mergen
         self._build_ui()
         self._wire()
-
-        self._local_run_timer = QTimer(self)
-        self._local_run_timer.setInterval(500)
-        self._local_run_timer.timeout.connect(self._poll_local_runs)
-        self._local_run_timer.start()
 
         if self._api_key_missing:
             try:
@@ -1650,20 +1928,41 @@ class AIWidget(QWidget):
         • footer: Tool-Buttons
         """
         # 1)  Chat-History (read-only)
-        self.chat_view = ChatWindow()
+        self.chat_view = ChatWindow(self.scheme)
 
         # 2)  Prompt-Editor  (Drag-&-Drop + Multiline)
         self.prompt_edit = FileDropTextEdit(               # neu: nur EIN Editor
             placeholderText="Prompt …",
             objectName="aiInput"       )
         self.prompt_edit.setAttribute(Qt.WA_StyledBackground, True)
-        self.prompt_edit.setMinimumHeight(110)
+        self.prompt_edit.setMinimumHeight(self._PROMPT_SNAP_HEIGHT )
+        self.prompt_edit.setStyleSheet("QTextEdit#aiInput { font-size: 15px; }")
 
         # 3) Splitter  ▌ ChatHistory ▌ Prompt ▌
         splitter = QSplitter(Qt.Vertical, self)
+        splitter.setObjectName("chatPaneSplitter")
+        splitter.setChildrenCollapsible(True)
+        splitter.setHandleWidth(7)
+        splitter.setOpaqueResize(True)
+        handle_idle, handle_hover, handle_pressed = _splitter_handle_palette(self.scheme)
+        splitter.setStyleSheet(
+            f"""
+            QSplitter#chatPaneSplitter::handle {{
+                background: {handle_idle};
+                margin: 2px 0;
+                border-radius: 6px;
+            }}
+            QSplitter#chatPaneSplitter::handle:hover {{
+                background: {handle_hover};
+            }}
+            QSplitter#chatPaneSplitter::handle:pressed {{
+                background: {handle_pressed};
+            }}
+            """
+        )
         splitter.addWidget(self.chat_view)
         splitter.addWidget(self.prompt_edit)
-        splitter.setSizes([400, 140]) # Anfangsgröße
+        splitter.setSizes([400, self._PROMPT_SNAP_HEIGHT ])
 
         # 4) Footer-Buttons
         footer = QWidget(self, objectName="footer")
@@ -1677,20 +1976,12 @@ class AIWidget(QWidget):
         self.btn_send        = ToolButton("send.svg",    "Send",
                                           slot=self._send)
         self.btn_mic         = ToolButton("mic.svg",     "Record speech")
-        self.run_mode_box    = QComboBox(footer)
-        self.run_mode_box.addItem("Async local", "async")
-        self.run_mode_box.addItem("Sync local", "sync")
-        self.run_mode_box.setCurrentIndex(0 if os.getenv("AI_IDE_LOCAL_CHAT_RUN_MODE", "async").strip().lower() == "async" else 1)
-        self.run_status_label = QLabel("Local chat mode", footer)
-        self.run_status_label.setObjectName("controlMeta")
 
         for w in (self.btn_img_create,
                   self.btn_img_analyse,
                   self.btn_send,
                   self.btn_mic):
             flay.addWidget(w, 0, Qt.AlignLeft)
-        flay.addWidget(self.run_mode_box, 0, Qt.AlignLeft)
-        flay.addWidget(self.run_status_label, 0, Qt.AlignLeft)
         flay.addStretch()
 
         # 5) Gesamtlayout
@@ -1709,44 +2000,17 @@ class AIWidget(QWidget):
                self. _remember_files)
     @Slot(list)
     def _remember_files(self, paths:list|None) -> None:
-                self._dropped_files = paths
-                self.prompt_edit.append(f'{paths}')
-
-    def _refresh_local_run_status(self) -> None:
-        mode = str(self.run_mode_box.currentData() or "async")
-        pending_count = len(self._pending_local_run_ids)
-        mode_label = "Async" if mode == "async" else "Sync"
-        self.run_status_label.setText(f"{mode_label} local | pending: {pending_count}")
-
-    def _refresh_control_plane(self) -> None:
-        win = self.window()
-        control_plane = getattr(win, "control_plane_widget", None)
-        if control_plane is not None:
-            try:
-                control_plane.refresh_view()
-            except Exception:
-                pass
-
-    @Slot()
-    def _poll_local_runs(self) -> None:
-        if not self._pending_local_run_ids:
-            self._refresh_local_run_status()
-            return
-
-        remaining_run_ids: list[str] = []
-        for run_id in self._pending_local_run_ids:
-            run = DESKTOP_AGENT_RUN_FACADE_SERVICE.load_object_run(run_id)
-            if run is None or run.status in {"queued", "running"}:
-                remaining_run_ids.append(run_id)
-                continue
-            if run.status == "completed":
-                self._append("AI", str(run.output or ""))
-            else:
-                self._append("AI", f"[ERROR] {run.error or 'Local async run failed'}")
-            self._refresh_control_plane()
-
-        self._pending_local_run_ids = remaining_run_ids
-        self._refresh_local_run_status()
+                self._dropped_files = CHAT_ATTACHMENT_SERVICE.normalize_object_paths(paths)
+                status_message = CHAT_ATTACHMENT_SERVICE.build_status_message(self._dropped_files)
+                if not status_message:
+                    return
+                try:
+                    window = self.window()
+                    status_bar = window.statusBar() if window is not None and hasattr(window, "statusBar") else None
+                    if status_bar is not None:
+                        status_bar.showMessage(status_message, 6000)
+                except Exception:
+                    pass
     # ---------------------------------------------------------------------------
     #  CHAT – Text-Prompt
     # ---------------------------------------------------------------------------
@@ -1758,40 +2022,27 @@ class AIWidget(QWidget):
             except Exception:
                 pass
             return
-        prompt = self.prompt_edit.toPlainText().strip()
-        if not prompt:
+        prompt, image_paths = CHAT_ATTACHMENT_SERVICE.build_prompt_payload(
+            prompt_text=self.prompt_edit.toPlainText(),
+            file_paths=self._dropped_files,
+        )
+        if not prompt and not image_paths:
             return
 
-        url = self._dropped_files[:] 
         self._append("You", prompt)
         self.prompt_edit.clear()
-        run_mode = str(self.run_mode_box.currentData() or "async")
+        
+        try:
+            reply = ChatCom(
+                _model=self._model,
+                _url=image_paths or None,
+                _input_text=prompt
+            ).get_response()
+        except Exception as exc:
+            reply = f"[ERROR] {exc}"
 
-        if run_mode == "async":
-            run = DESKTOP_AGENT_RUN_FACADE_SERVICE.queue_object_run(
-                request_kind="chat",
-                target_agent="_xplaner_xrouter",
-                prompt=prompt,
-                attachments=url,
-                model_name=self._model,
-                metadata={"source": "desktop_chat", "mode": "async"},
-            )
-            self._pending_local_run_ids.append(run.run_id)
-            self._append("System", f"Queued local async run {run.run_id[:8]} …")
-        else:
-            run = DESKTOP_AGENT_RUN_FACADE_SERVICE.run_object_sync(
-                request_kind="chat",
-                target_agent="_xplaner_xrouter",
-                prompt=prompt,
-                attachments=url,
-                model_name=self._model,
-                metadata={"source": "desktop_chat", "mode": "sync"},
-            )
-            self._append("AI", str(run.output or (f"[ERROR] {run.error}" if run.error else "")))
-            self._refresh_control_plane()
-
+        self._append("AI", str(reply))
         self._dropped_files = []
-        self._refresh_local_run_status()
 
     # ---------------------------------------------------------------------------
     #  CHAT – Bild analysieren
@@ -1805,29 +2056,34 @@ class AIWidget(QWidget):
                 pass
             return
         prompt = self.prompt_edit.toPlainText().strip()
-        if not (prompt and self._dropped_files):
+        image_paths = CHAT_ATTACHMENT_SERVICE.load_image_object_paths(self._dropped_files)
+        if not (prompt and image_paths):
             QMessageBox.warning(self, "Info",
                 "Ziehe ein Bild in das Chat-Fenster und gib anschließend deinen Prompt ein.")
             return
 
         self._append("You", prompt)
         self.prompt_edit.clear()
-        url = self._dropped_files[0]
+        url = image_paths[0]
 
         try:
-            run = DESKTOP_AGENT_RUN_FACADE_SERVICE.describe_object_image(
-                prompt=prompt,
-                image_path=url,
-                model_name="gpt-5",
-                metadata={"source": "desktop_image_description"},
-            )
-            reply = str(run.output or "") if not run.error else f"[ERROR] {run.error}"
+            resp = ImageDescription(
+                _model="gpt-5",
+                _url=url,
+                _input_text=prompt
+            ).get_descript()
+
+            if hasattr(resp, 'choices') and resp.choices:
+                reply = (resp.choices[0].message.content or "")
+            elif hasattr(resp, 'content'):
+                reply = (resp.content or "")
+            else:
+                reply = str(resp)
         except Exception as exc:
             reply = f"[ERROR] {exc}"
 
         self._append("AI", reply)
         self._dropped_files = []
-        self._refresh_control_plane()
 
     # ---------------------------------------------------------------------------
     #  CHAT – Bild generieren
@@ -1848,15 +2104,10 @@ class AIWidget(QWidget):
         self.prompt_edit.clear()    
 
         try:
-            run = DESKTOP_AGENT_RUN_FACADE_SERVICE.create_object_image(
-                prompt=prompt,
-                model_name="gpt-5",
-                metadata={"source": "desktop_image_create"},
-            )
-            if run.error:
-                self._append("AI", f"[ERROR] {run.error}")
-                return
-            raw = run.output
+            raw = ImageCreate(
+                _model="gpt-5",
+                _input_text=prompt
+            ).get_img()
         except Exception as exc:
             self._append("AI", f"[ERROR] {exc}")
             return
@@ -1876,7 +2127,6 @@ class AIWidget(QWidget):
             self._append("AI", f"[IMAGE] {path}")
         else:
             self._append("AI", f"[IMAGE SAVED] {path}")
-        self._refresh_control_plane()
 
     # ---------------------------------------------------------------------------
     #  HILFSFUNKTION – Nachricht an ChatWindow anhängen
@@ -1884,6 +2134,193 @@ class AIWidget(QWidget):
     def _append(self, who: str, txt: str) -> None:
         """legt eine neue Nachricht im Chat-Viewport an"""
         self.chat_view.add_message(who, txt)
+
+    def open_agent_system_builder_panel(
+        self,
+        *,
+        initial_payload: dict[str, Any],
+        build_handler: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> None:
+        previous_row = getattr(self, "_agent_builder_panel_row", None)
+        if previous_row is not None:
+            self.chat_view.remove_inline_panel(previous_row)
+            self._agent_builder_panel_row = None
+
+        panel = QFrame(self.chat_view.viewport)
+        panel.setObjectName("chatInlineBuilderPanel")
+        panel.setStyleSheet(
+            """
+            QFrame#chatInlineBuilderPanel {
+                background: #2a2a2a;
+                border: 1px solid #404040;
+                border-radius: 10px;
+            }
+            QLabel#builderSectionTitle {
+                color: #d7d7d7;
+                font-weight: 700;
+            }
+            QLabel#builderSectionText {
+                color: #c2c2c2;
+            }
+            QPushButton#builderPrimaryButton {
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 8px;
+                padding: 1px;
+                min-width: 22px;
+                min-height: 22px;
+            }
+            QPushButton#builderPrimaryButton:hover {
+                background: rgba(255, 255, 255, 0.08);
+                border-color: rgba(255, 255, 255, 0.18);
+            }
+            QPushButton#builderIconButton {
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 8px;
+                padding: 1px;
+                min-width: 22px;
+                min-height: 22px;
+            }
+            QPushButton#builderIconButton:hover {
+                background: rgba(255, 255, 255, 0.08);
+                border-color: rgba(255, 255, 255, 0.18);
+            }
+            """
+        )
+
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(12, 12, 12, 12)
+        panel_layout.setSpacing(8)
+
+        top_buttons = QHBoxLayout()
+        top_buttons.setContentsMargins(0, 0, 0, 0)
+        top_buttons.setSpacing(6)
+        btn_template = QPushButton("", panel)
+        btn_build = QPushButton("", panel)
+        btn_template.setIcon(_icon("open_file.svg"))
+        btn_build.setIcon(_icon("deployed_code.svg"))
+        btn_template.setToolTip("Template laden")
+        btn_build.setToolTip("Sync Build starten")
+        btn_template.setIconSize(QSize(18, 18))
+        btn_build.setIconSize(QSize(18, 18))
+        btn_template.setCursor(Qt.PointingHandCursor)
+        btn_build.setCursor(Qt.PointingHandCursor)
+        btn_template.setObjectName("builderPrimaryButton")
+        btn_build.setObjectName("builderPrimaryButton")
+        top_buttons.addWidget(btn_template, 0)
+        top_buttons.addWidget(btn_build, 0)
+        top_buttons.addStretch(1)
+        panel_layout.addLayout(top_buttons)
+
+        editor = CodeViewer(
+            json.dumps(initial_payload, ensure_ascii=False, indent=2),
+            panel,
+            language="json",
+            editable=True,
+            auto_fit=False,
+            accent_color=self.scheme.get("col1", "#3a5fff"),
+            accent_selection_color=self.scheme.get("col2", "#6280ff"),
+            surface_color=self.scheme.get("col10", "#404040"),
+            font_size_px=17,
+        )
+        editor.setMinimumHeight(260)
+        editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        panel_layout.addWidget(editor)
+
+        status_text = QLabel("Status: Bereit", panel)
+        status_text.setObjectName("builderSectionText")
+        status_text.setWordWrap(True)
+        panel_layout.addWidget(status_text)
+
+        bottom_buttons = QHBoxLayout()
+        bottom_buttons.setContentsMargins(0, 0, 0, 0)
+        bottom_buttons.setSpacing(6)
+        btn_post = QPushButton("", panel)
+        btn_copy = QPushButton("", panel)
+        btn_close = QPushButton("", panel)
+        btn_post.setIcon(_icon("send.svg"))
+        btn_copy.setIcon(_icon("file_export_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg"))
+        btn_close.setIcon(_icon("close.svg"))
+        btn_post.setToolTip("Ergebnis in Chat verschieben")
+        btn_copy.setToolTip("JSON exportieren")
+        btn_close.setToolTip("Panel schliessen")
+        btn_post.setIconSize(QSize(18, 18))
+        btn_copy.setIconSize(QSize(18, 18))
+        btn_close.setIconSize(QSize(18, 18))
+        btn_post.setCursor(Qt.PointingHandCursor)
+        btn_copy.setCursor(Qt.PointingHandCursor)
+        btn_close.setCursor(Qt.PointingHandCursor)
+        btn_post.setObjectName("builderIconButton")
+        btn_copy.setObjectName("builderIconButton")
+        btn_close.setObjectName("builderIconButton")
+        bottom_buttons.addWidget(btn_post, 0)
+        bottom_buttons.addWidget(btn_copy, 0)
+        bottom_buttons.addWidget(btn_close, 0)
+        bottom_buttons.addStretch(1)
+        panel_layout.addLayout(bottom_buttons)
+
+        panel_row = self.chat_view.add_inline_panel(panel)
+        self._agent_builder_panel_row = panel_row
+        latest_result: dict[str, Any] = {}
+
+        def _load_template() -> None:
+            editor.setPlainText(json.dumps(initial_payload, ensure_ascii=False, indent=2))
+            status_text.setText("Status: Template geladen")
+
+        def _run_build() -> None:
+            nonlocal latest_result
+            raw_text = editor.toPlainText().strip()
+            if not raw_text:
+                status_text.setText("Status: Payload ist leer")
+                return
+
+            try:
+                payload = json.loads(raw_text)
+            except Exception as exc:
+                status_text.setText(f"Status: JSON-Fehler ({type(exc).__name__})")
+                return
+
+            if not isinstance(payload, dict):
+                status_text.setText("Status: Payload muss JSON-Objekt sein")
+                return
+
+            btn_build.setEnabled(False)
+            try:
+                latest_result = dict(build_handler(payload) or {})
+                validation = dict(latest_result.get("validation") or {})
+                status_text.setText(
+                    f"Status: Build abgeschlossen (valid={bool(validation.get('valid', True))})"
+                )
+            except Exception as exc:
+                status_text.setText(f"Status: Build fehlgeschlagen ({type(exc).__name__})")
+                latest_result = {}
+            finally:
+                btn_build.setEnabled(True)
+
+        def _post_result() -> None:
+            if not latest_result:
+                self._append("System", "Kein Build-Ergebnis vorhanden. Bitte zuerst Sync Build starten.")
+                return
+            self._append("AI", json.dumps(latest_result, ensure_ascii=False, indent=2))
+
+        def _copy_json() -> None:
+            payload_text = editor.toPlainText()
+            try:
+                QApplication.clipboard().setText(payload_text)
+                status_text.setText("Status: JSON in Zwischenablage")
+            except Exception as exc:
+                status_text.setText(f"Status: Kopieren fehlgeschlagen ({type(exc).__name__})")
+
+        def _close_panel() -> None:
+            self.chat_view.remove_inline_panel(panel_row)
+            self._agent_builder_panel_row = None
+
+        btn_template.clicked.connect(_load_template)
+        btn_build.clicked.connect(_run_build)
+        btn_post.clicked.connect(_post_result)
+        btn_copy.clicked.connect(_copy_json)
+        btn_close.clicked.connect(_close_panel)
 
 # ---------------------------------------------------------------------------
 #  HILFSFUNKTION – Nachricht an ChatWindow anhängen
@@ -1907,335 +2344,913 @@ Der Patch ist vollständig lauffähig und benötigt lediglich die bestehenden
 Hilfsklassen (FileDropTextEdit, ToolButton, ChatCom …) aus deinem Projekt.'''
 
 # ────────────────────────────────────────────────────────────────────────────
-#  2)  NEUER  CodeViewer  –  richtiges Highlighting, flexible Größe
-# ───
-# -----------------------------------------------------------------
-class CodeViewer(QPlainTextEdit,QSHighlighter):
-    """
-    Read-only Code-Viewer ohne eigene Scrollbars.
-    Höhe = Zeilenanzahl  ×  Zeilenhöhe  (+ Padding)
-    """
-    _PADDING = 12          # px  – ober/unter­halb des Codes
+#  2)  NEUER  CodeViewer  –  editierbare Chat-Bloecke mit Highlighting
+# ────────────────────────────────────────────────────────────────────────────
+class CodeViewer(QPlainTextEdit):
+    """Editierbarer Chat-Block fuer Code, Konfiguration und Dateiinhalt."""
 
-    def __init__(self, code: str, parent: QWidget | None = None) -> None:
+    editRequested = Signal()
+
+    _PADDING = 20
+    _MIN_HEIGHT = 88
+    _MAX_HEIGHT = 420
+    _LANGUAGE_ALIASES = {
+        "": "",
+        "md": "markdown",
+        "py": "python",
+        "plaintext": "text",
+        "text/plain": "text",
+        "yml": "yaml",
+    }
+    _HIGHLIGHTERS = {
+        "json": JSONHighlighter,
+        "markdown": MDHighlighter,
+        "python": QSHighlighter,
+        "toml": TOMLHighlighter,
+        "yaml": YAMLHighlighter,
+    }
+    _VIEW_BORDER_COLOR = "#2e2e2e"
+    _BACKGROUND_COLOR = "#111"
+    _TEXT_COLOR = "#DDD"
+
+    def __init__(
+        self,
+        code: str,
+        parent: QWidget | None = None,
+        *,
+        language: str = "",
+        editable: bool = True,
+        auto_fit: bool = True,
+        accent_color: str = "#3a5fff",
+        accent_selection_color: str = "#6280ff",
+        surface_color: str = "#404040",
+        font_size_px: int | None = None,
+    ) -> None:
         super().__init__(parent=parent)
-        self.setReadOnly(True)
+        self._language = self._normalize_language(language)
+        self._highlighter = None
+        self._edit_mode = False
+        self._accent_color = str(accent_color or "#3a5fff")
+        self._accent_selection_color = str(accent_selection_color or self._accent_color)
+        self._surface_color = str(surface_color or "#404040")
+        self._font_size_px = int(font_size_px) if font_size_px is not None else None
+        self._uses_wrapped_layout = self._language in {"markdown", "text"}
+        self._auto_fit = bool(auto_fit)
+
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setUndoRedoEnabled(True)
         self.setFrameShape(QFrame.NoFrame)
-        self.setLineWrapMode(QPlainTextEdit.NoWrap)
-        QSHighlighter(self.document())
-
-        # Keine Scrollbars innerhalb des Widgets
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-        self.setPlainText(code.rstrip("\n"))
-        self.setStyleSheet(
-            "background:#111; color:#DDD; padding:12px; border-radius:8px;"
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setSizePolicy(
+            QSizePolicy.Expanding,
+            QSizePolicy.Fixed if self._auto_fit else QSizePolicy.Expanding,
         )
-        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.setTabStopDistance(max(32, QFontMetrics(self.font()).horizontalAdvance("    ")))
 
-        self._autofit()
+        self.setLineWrapMode(QPlainTextEdit.WidgetWidth if self._uses_wrapped_layout else QPlainTextEdit.NoWrap)
+        self.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere if self._uses_wrapped_layout else QTextOption.NoWrap)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff if self._uses_wrapped_layout else Qt.ScrollBarAsNeeded)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff if self._uses_wrapped_layout else Qt.ScrollBarAsNeeded)
+        self.viewport().installEventFilter(self)
+        self.setPlainText(code.rstrip("\n"))
+        self._install_highlighter()
+        self.set_edit_mode(editable)
 
-    # ----------------------------------------------------------------
-    # Höhe bei jeder Größen­änderung nachstellen
-    def resizeEvent(self, ev):                         # noqa: N802
-        super().resizeEvent(ev)
+        if self._auto_fit:
+            self.textChanged.connect(self._schedule_autofit)
+            try:
+                self.document().documentLayout().documentSizeChanged.connect(lambda _size: self._schedule_autofit())
+            except Exception:
+                pass
+            self._schedule_autofit()
+        else:
+            self.setMinimumHeight(max(220, self._MIN_HEIGHT))
+            self.setMaximumHeight(16777215)
+
+    @classmethod
+    def _normalize_language(cls, language: str | None) -> str:
+        normalized = str(language or "").strip().lower()
+        return cls._LANGUAGE_ALIASES.get(normalized, normalized)
+
+    def _install_highlighter(self) -> None:
+        highlighter_class = self._HIGHLIGHTERS.get(self._language)
+        if highlighter_class is None:
+            return
+        try:
+            self._highlighter = highlighter_class(self.document())
+        except Exception:
+            self._highlighter = None
+
+    def _schedule_autofit(self) -> None:
+        if not self._auto_fit:
+            return
         QTimer.singleShot(0, self._autofit)
 
-    # ----------------------------------------------------------------
+    def set_edit_mode(self, active: bool) -> None:
+        self._edit_mode = bool(active)
+        self.setReadOnly(not self._edit_mode)
+        self.setTextInteractionFlags(
+            Qt.TextEditorInteraction
+            if self._edit_mode
+            else Qt.TextSelectableByMouse | Qt.TextSelectableByKeyboard
+        )
+        self.setObjectName("aiInput" if self._edit_mode else "chatCodeViewer")
+        self.setStyleSheet(self._build_style(edit_mode=self._edit_mode))
+
+        style = self.style()
+        if style is not None:
+            style.unpolish(self)
+            style.polish(self)
+        self.viewport().update()
+        self.update()
+        if self._auto_fit:
+            self._schedule_autofit()
+
+    def _build_style(self, *, edit_mode: bool) -> str:
+        border_color = self._accent_color if edit_mode else self._VIEW_BORDER_COLOR
+        border_radius = 15 if edit_mode else 8
+        selection_color = self._accent_selection_color if edit_mode else "#264f78"
+        scrollbar_hover_color = self._surface_color
+        scrollbar_pressed_color = self._accent_selection_color
+        font_size_rule = f" font-size:{self._font_size_px}px;" if self._font_size_px is not None else ""
+        return (
+            f"QPlainTextEdit#{self.objectName()} {{"
+            f" background:{self._BACKGROUND_COLOR};"
+            f" color:{self._TEXT_COLOR};"
+            " padding:12px;"
+            f" border:1px solid {border_color};"
+            f" border-radius:{border_radius}px;"
+            f" selection-background-color:{selection_color};"
+            f"{font_size_rule}"
+            " font-family:'Fira Code','DejaVu Sans Mono','Liberation Mono',monospace;"
+            "}"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar:vertical {{"
+            " background:transparent;"
+            " width:6px;"
+            " margin:0px;"
+            " border:none;"
+            "}"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar:horizontal {{"
+            " background:transparent;"
+            " height:6px;"
+            " margin:0px;"
+            " border:none;"
+            "}"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::handle:vertical,"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::handle:horizontal {{"
+            " background:transparent;"
+            " min-height:24px;"
+            " min-width:24px;"
+            " border-radius:3px;"
+            "}"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::handle:vertical:hover,"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::handle:horizontal:hover,"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::handle:hover:vertical,"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::handle:hover:horizontal {{"
+            f" background:{scrollbar_hover_color};"
+            "}"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::handle:vertical:pressed,"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::handle:horizontal:pressed,"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::handle:pressed:vertical,"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::handle:pressed:horizontal {{"
+            f" background:{scrollbar_pressed_color};"
+            "}"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::add-line:vertical,"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::sub-line:vertical,"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::add-line:horizontal,"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::sub-line:horizontal {{"
+            " width:0px;"
+            " height:0px;"
+            " border:none;"
+            " background:transparent;"
+            "}"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::add-page:vertical,"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::sub-page:vertical,"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::add-page:horizontal,"
+            f"QPlainTextEdit#{self.objectName()} QScrollBar::sub-page:horizontal {{"
+            " background:transparent;"
+            "}"
+        )
+
+    def mousePressEvent(self, ev):  # noqa: N802
+        if self.isReadOnly():
+            self.editRequested.emit()
+        super().mousePressEvent(ev)
+
+    def eventFilter(self, obj, ev):  # noqa: N802
+        if obj is self.viewport() and ev.type() == QEvent.Wheel:
+            self.wheelEvent(ev)
+            return bool(ev.isAccepted())
+        return super().eventFilter(obj, ev)
+
+    def wheelEvent(self, ev: QWheelEvent) -> None:
+        angle_delta = ev.angleDelta()
+        pixel_delta = ev.pixelDelta()
+        delta_y = angle_delta.y() if angle_delta.y() else pixel_delta.y()
+        delta_x = angle_delta.x() if angle_delta.x() else pixel_delta.x()
+
+        use_horizontal = bool(delta_x) or bool(ev.modifiers() & Qt.ShiftModifier)
+        target_bar = self.horizontalScrollBar() if use_horizontal else self.verticalScrollBar()
+        delta = delta_x if use_horizontal and delta_x else delta_y
+
+        if target_bar is not None and target_bar.maximum() > target_bar.minimum() and delta:
+            direction = -1 if delta > 0 else 1
+            step = max(target_bar.singleStep(), 24)
+            target_bar.setValue(target_bar.value() + direction * step)
+            ev.accept()
+            return
+
+        super().wheelEvent(ev)
+
+    def resizeEvent(self, ev):  # noqa: N802
+        super().resizeEvent(ev)
+        if self._auto_fit:
+            self._schedule_autofit()
+
     def _autofit(self) -> None:
-        line_h = QFontMetrics(self.font()).height()
-        line_h = max(18, line_h)          # Mindesthöhe
-        # Höhe am Inhalt ausrichten, aber mind. 2 Zeilen
-        lines  = max(2, self.blockCount())
-        self.setFixedHeight(lines * line_h + self._PADDING)
+        document = self.document()
+        if self.lineWrapMode() == QPlainTextEdit.WidgetWidth:
+            document.setTextWidth(max(1, self.viewport().width()))
+        else:
+            document.setTextWidth(-1)
 
-# -----------------------------------------------------------------
-class MsgWidget(QWidget):
-    """
-    Chat-Bubble im iMessage/WhatsApp-Stil:
-    • AI-Nachrichten: grau, linksbündig
-    • User-Nachrichten: blau, rechtsbündig
-    • max-width 65% für Bubble-Effekt
-    • abgerundete Ecken mit Schatten
-    """
+        layout = document.documentLayout()
+        content_height = layout.documentSize().height() if layout is not None else document.size().height()
+        target_height = int(content_height) + self._PADDING
+        target_height = max(self._MIN_HEIGHT, min(target_height, self._MAX_HEIGHT))
+        self.setFixedHeight(target_height)
 
-    def __init__(self, who: str,
-                 segments: list[tuple[str, str]],
-                 parent: QWidget | None = None):
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff if self._uses_wrapped_layout else Qt.ScrollBarAsNeeded)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff if self._uses_wrapped_layout else Qt.ScrollBarAsNeeded)
+
+
+class ChatEditorPanel(QWidget):
+    """Editor-Panel fuer Chat-Bloecke mit Klick-aktiviertem Edit-Mode."""
+
+    def __init__(
+        self,
+        *,
+        segment: ChatSegment,
+        parent: QWidget | None = None,
+        save_handler: Callable[[QPlainTextEdit, str], None] | None = None,
+        scheme: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(parent)
-        
-        # Transparenter Hintergrund für äußeren Container
-        self.setStyleSheet("MsgWidget { background: transparent; }")
+        self._file_path = str(segment.file_path or "")
+        self._save_handler = save_handler
+        self._scheme = dict(scheme or {})
 
-        # Haupt-Layout (horizontal für Links/Rechts-Ausrichtung)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        self._controls = QWidget(self)
+        controls_layout = QHBoxLayout(self._controls)
+        controls_layout.setContentsMargins(0, 0, 0, 0)
+        controls_layout.setSpacing(6)
+        controls_layout.addStretch(1)
+
+        self._save_btn: QToolButton | None = None
+        if self._file_path:
+            self._save_btn = QToolButton(self._controls)
+            self._save_btn.setText("Save to source")
+            self._save_btn.setToolTip(self._file_path)
+            self._save_btn.setEnabled(False)
+            controls_layout.addWidget(self._save_btn)
+
+        self._done_btn = QToolButton(self._controls)
+        self._done_btn.setText("Done")
+        controls_layout.addWidget(self._done_btn)
+
+        self.viewer = CodeViewer(
+            segment.block.rstrip("\n"),
+            self,
+            language=segment.language,
+            editable=False,
+            accent_color=self._scheme.get("col1", "#3a5fff"),
+            accent_selection_color=self._scheme.get("col2", self._scheme.get("col1", "#6280ff")),
+            surface_color=self._scheme.get("col10", "#404040"),
+            font_size_px=14,
+        )
+        self.viewer.setProperty("file_path", self._file_path)
+
+        layout.addWidget(self._controls)
+        layout.addWidget(self.viewer)
+
+        self._controls.hide()
+        self.viewer.editRequested.connect(self._enter_edit_mode)
+        self._done_btn.clicked.connect(lambda _checked=False: self.set_edit_mode(False))
+
+        if self._save_btn is not None:
+            self.viewer.document().modificationChanged.connect(self._save_btn.setEnabled)
+            self._save_btn.clicked.connect(self._save_to_source)
+
+    def _enter_edit_mode(self) -> None:
+        self.set_edit_mode(True)
+
+    def set_edit_mode(self, active: bool) -> None:
+        self._controls.setVisible(bool(active))
+        self.viewer.set_edit_mode(active)
+        if active:
+            self.viewer.setFocus(Qt.MouseFocusReason)
+        else:
+            self.viewer.clearFocus()
+
+    def _save_to_source(self) -> None:
+        if self._save_handler is None or not self._file_path:
+            return
+        self._save_handler(self.viewer, self._file_path)
+
+
+class MsgWidget(QWidget):
+    """Chat-Bubble mit Text-, Bild- und editierbaren Block-Segmenten."""
+
+    def __init__(
+        self,
+        who: str,
+        segments: list[ChatSegment],
+        parent: QWidget | None = None,
+        *,
+        scheme: dict[str, str] | None = None,
+    ):
+        super().__init__(parent)
+        self.setStyleSheet("MsgWidget { background: transparent; }")
+        self._scheme = dict(scheme or {})
+
         h_layout = QHBoxLayout(self)
         h_layout.setContentsMargins(8, 4, 8, 4)
         h_layout.setSpacing(0)
 
-        # Bubble-Container (begrenzte Breite auf 90% der Gesamtbreite)
         bubble = QWidget()
         bubble.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self._bubble = bubble
-        
+
         v_layout = QVBoxLayout(bubble)
         v_layout.setContentsMargins(14, 10, 14, 10)
         v_layout.setSpacing(6)
 
-        # Styling & Ausrichtung je nach Sender
         from PySide6.QtWidgets import QLabel
+        bubble.setStyleSheet(
+            """
+            QWidget {
+                background: #2a2a2a;
+                border: none;
+                border-radius: 10px;
+                padding: 10px 14px;
+                color: #e0e0e0;
+            }
+            QWidget * {
+                border: none;
+                outline: none;
+            }
+            """
+        )
+
+        username_label = QLabel(f"<small style='opacity:0.6; color:#e0e0e0;'>{who}</small>")
         if who == "AI":
-            bubble.setStyleSheet("""
-                QWidget {
-                    background: #2a2a2a;
-                    border: none;
-                    border-radius: 10px;
-                    padding: 10px 14px;
-                    color: #e0e0e0;
-                }
-                QWidget * {
-                    border: none;
-                    outline: none;
-                }
-            """)
-            # Username klein links
-            username_label = QLabel(f"<small style='opacity:0.6; color:#e0e0e0;'>{who}</small>")
             v_layout.addWidget(username_label, 0, Qt.AlignLeft)
-            h_layout.addWidget(bubble, 95)  # 95% Stretch
-            h_layout.addStretch(5)  # 5% rechts frei
-        else:  # "You"
-            bubble.setStyleSheet("""
-                QWidget {
-                    background: #2a2a2a;
-                    border: none;
-                    border-radius: 10px;
-                    padding: 10px 14px;
-                    color: #e0e0e0;
-                }
-                QWidget * {
-                    border: none;
-                    outline: none;
-                }
-            """)
-            # Username klein rechts
-            username_label = QLabel(f"<small style='opacity:0.6; color:#e0e0e0;'>{who}</small>")
+            h_layout.addWidget(bubble, 1)
+        else:
             v_layout.addWidget(username_label, 0, Qt.AlignRight)
-            h_layout.addStretch(5)  # 5% links frei
-            h_layout.addWidget(bubble, 95)  # 95% Stretch
+            h_layout.addWidget(bubble, 1)
 
-        # Segmente rendern (Code + Text)
-        import re, shutil
-        for kind, block in segments:
-            block = block.strip()
-            if not block:
+        for segment in segments:
+            kind = segment.kind
+            language = segment.language
+            block = segment.block
+            if not str(block or "").strip():
                 continue
-            if kind == "code":
-                code_viewer = CodeViewer(block, bubble)
-                v_layout.addWidget(code_viewer)
-            else:
 
-                # Detect image markers: either markdown ![alt](path) or
-                # a literal line starting with "[IMAGE] <path>"
-                first = block.splitlines()[0].strip()
-                m = re.match(r'!\[.*?\]\((.*?)\)', first)
-                if first.startswith("[IMAGE]") or m:
-                    path_str = None
-                    if first.startswith("[IMAGE]"):
-                        parts = first.split(None, 1)
-                        if len(parts) > 1:
-                            path_str = parts[1].strip()
-                    elif m:
-                        path_str = m.group(1)
+            if kind == "editor":
+                editor_panel = ChatEditorPanel(
+                    segment=segment,
+                    parent=bubble,
+                    save_handler=self._save_editor_block if segment.file_path else None,
+                    scheme=self._scheme,
+                )
+                v_layout.addWidget(editor_panel)
+                continue
 
-                    if path_str:
-                        try:
-                            p = Path(path_str)
-                        except Exception:
-                            p = None
+            first = block.splitlines()[0].strip()
+            image_match = re.match(r'!\[.*?\]\((.*?)\)', first)
+            if first.startswith("[IMAGE]") or image_match:
+                path_str = None
+                if first.startswith("[IMAGE]"):
+                    parts = first.split(None, 1)
+                    if len(parts) > 1:
+                        path_str = parts[1].strip()
+                elif image_match:
+                    path_str = image_match.group(1)
 
-                        if p and p.exists():
-                            # Controls row (buttons similar to JsonTree toolbar)
-                            ctrl = QWidget(bubble)
-                            hctrl = QHBoxLayout(ctrl)
-                            hctrl.setContentsMargins(0, 0, 0, 0)
-                            hctrl.addStretch(1)
-                            save_btn = QToolButton(ctrl)
-                            save_btn.setText("Save as")
-                            export_btn = QToolButton(ctrl)
-                            export_btn.setText("Export to tab")
-                            hctrl.addWidget(save_btn)
-                            hctrl.addWidget(export_btn)
+                if path_str:
+                    try:
+                        p = Path(path_str)
+                    except Exception:
+                        p = None
 
-                            # Image viewer (prefer ZoomImageWidget)
-                            img_widget = None
-                            # In chat bubbles, prefer a compact auto-fit preview.
-                            if '_FVChatImageWidget' in globals() and _FVChatImageWidget is not None:
-                                try:
-                                    img_widget = _FVChatImageWidget(p, parent=bubble)
-                                except Exception:
-                                    img_widget = None
-                            if img_widget is None and _FVImageWidget is not None:
-                                try:
-                                    img_widget = _FVImageWidget(p, parent=bubble)
-                                except Exception:
-                                    img_widget = None
+                    if p and p.exists():
+                        ctrl = QWidget(bubble)
+                        hctrl = QHBoxLayout(ctrl)
+                        hctrl.setContentsMargins(0, 0, 0, 0)
+                        hctrl.addStretch(1)
+                        save_btn = QToolButton(ctrl)
+                        save_btn.setText("Save as")
+                        export_btn = QToolButton(ctrl)
+                        export_btn.setText("Export to tab")
+                        hctrl.addWidget(save_btn)
+                        hctrl.addWidget(export_btn)
 
-                            if img_widget is None:
-                                # fallback: simple QLabel
-                                lbl = QLabel(bubble, alignment=Qt.AlignCenter)
-                                pix = QPixmap(str(p))
-                                if not pix.isNull():
-                                    lbl.setPixmap(pix.scaledToWidth(400, Qt.SmoothTransformation))
-                                v_layout.addWidget(lbl)
-                            else:
-                                cont = QWidget(bubble)
-                                vbox_img = QVBoxLayout(cont)
-                                vbox_img.setContentsMargins(0, 0, 0, 0)
-                                vbox_img.setSpacing(4)
-                                vbox_img.addWidget(ctrl)
-                                vbox_img.addWidget(img_widget)
-                                v_layout.addWidget(cont)
+                        img_widget = None
+                        if '_FVChatImageWidget' in globals() and _FVChatImageWidget is not None:
+                            try:
+                                img_widget = _FVChatImageWidget(p, parent=bubble)
+                            except Exception:
+                                img_widget = None
+                        if img_widget is None and _FVImageWidget is not None:
+                            try:
+                                img_widget = _FVImageWidget(p, parent=bubble)
+                            except Exception:
+                                img_widget = None
 
-                                # Button actions
-                                def _on_save():
-                                    fname, _ = QFileDialog.getSaveFileName(self, "Save image as", str(Path.home()))
-                                    if fname:
-                                        try:
-                                            shutil.copy(str(p), fname)
-                                            QMessageBox.information(self, "Saved", f"Saved to {fname}")
-                                        except Exception as exc:
-                                            QMessageBox.critical(self, "Error", str(exc))
+                        if img_widget is None:
+                            lbl = QLabel(bubble, alignment=Qt.AlignCenter)
+                            pix = QPixmap(str(p))
+                            if not pix.isNull():
+                                lbl.setPixmap(pix.scaledToWidth(400, Qt.SmoothTransformation))
+                            v_layout.addWidget(lbl)
+                        else:
+                            cont = QWidget(bubble)
+                            vbox_img = QVBoxLayout(cont)
+                            vbox_img.setContentsMargins(0, 0, 0, 0)
+                            vbox_img.setSpacing(4)
+                            vbox_img.addWidget(ctrl)
+                            vbox_img.addWidget(img_widget)
+                            v_layout.addWidget(cont)
 
-                                def _on_export():
-                                    # open in focused tab dock
-                                    win = self.window()
-                                    opener = getattr(win, "_open_path_in_focused_tab", None)
-                                    if callable(opener):
-                                        opener(p, title=p.name)
-                                    else:
-                                        QMessageBox.information(self, "Info", "No tab-dock available to export image")
+                            def _on_save() -> None:
+                                fname, _ = QFileDialog.getSaveFileName(self, "Save image as", str(Path.home()))
+                                if fname:
+                                    try:
+                                        shutil.copy(str(p), fname)
+                                        QMessageBox.information(self, "Saved", f"Saved to {fname}")
+                                    except Exception as exc:
+                                        QMessageBox.critical(self, "Error", str(exc))
 
-                                save_btn.clicked.connect(_on_save)
-                                export_btn.clicked.connect(_on_export)
-                                # done with image handling – continue to next segment
-                                continue
+                            def _on_export() -> None:
+                                win = self.window()
+                                opener = getattr(win, "_open_path_in_focused_tab", None)
+                                if callable(opener):
+                                    opener(p, title=p.name)
+                                else:
+                                    QMessageBox.information(self, "Info", "No tab-dock available to export image")
 
-                # Regular text / markdown fallback
-                br = QTextBrowser(bubble)
-                br.setFrameShape(QFrame.NoFrame)
-                br.setOpenExternalLinks(True)
-                br.setMarkdown(block)
+                            save_btn.clicked.connect(_on_save)
+                            export_btn.clicked.connect(_on_export)
+                            continue
 
-                # möglichst "tight": keine Dokument-Margins
-                br.document().setDocumentMargin(0)
+            br = QTextBrowser(bubble)
+            br.setFrameShape(QFrame.NoFrame)
+            br.setOpenExternalLinks(True)
+            br.setMarkdown(block)
+            br.document().setDocumentMargin(0)
+            br.setStyleSheet("QTextBrowser { background: transparent; color: #e0e0e0; font-size: 14px; }")
+            br.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            br.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            br.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self._fit_browser(br)
+            v_layout.addWidget(br)
+            QTimer.singleShot(0, lambda b=br: self._fit_browser(b))
 
-                # Transparenter Hintergrund für Text
-                br.setStyleSheet("QTextBrowser { background: transparent; color: #e0e0e0; }")
+            try:
+                br.document().documentLayout().documentSizeChanged.connect(lambda _sz, b=br: self._fit_browser(b))
+            except Exception:
+                pass
 
-                # Scrollbars unterbinden
-                br.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-                br.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-
-                # Automatische Höhe (strict am Inhalt, min. 2 Zeilen)
-                br.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-                self._fit_browser(br)
-                v_layout.addWidget(br)
-                
-                # Verzögerte Höhenanpassung nach Layout-Pass
-                from PySide6.QtCore import QTimer
-                QTimer.singleShot(0, lambda b=br: self._fit_browser(b))
-
-                # Bei Reflow (z.B. Zeilenumbruch) erneut fitten
-                try:
-                    br.document().documentLayout().documentSizeChanged.connect(
-                        lambda _sz, b=br: self._fit_browser(b)
-                    )
-                except Exception:
-                    pass
-
-        # Kein Extra-Spacer, sonst wird die Bubble künstlich höher
         v_layout.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Fixed))
+
+    @staticmethod
+    def _write_editor_text_to_path(*, file_path: str | Path, text: str) -> None:
+        target_path = Path(file_path).expanduser()
+        if not target_path.parent.exists():
+            raise FileNotFoundError(f"Zielpfad nicht gefunden: {target_path.parent}")
+        target_path.write_text(text, encoding="utf-8")
+
+    def _save_editor_block(self, viewer: QPlainTextEdit, file_path: str) -> None:
+        try:
+            self._write_editor_text_to_path(file_path=file_path, text=viewer.toPlainText())
+        except Exception as exc:
+            QMessageBox.critical(self, "Fehler", str(exc))
+            return
+
+        viewer.document().setModified(False)
+        message = f"{file_path} gespeichert"
+        window = self.window()
+        status_bar_getter = getattr(window, "statusBar", None)
+        if callable(status_bar_getter):
+            try:
+                status_bar = status_bar_getter()
+            except Exception:
+                status_bar = None
+            if status_bar is not None:
+                status_bar.showMessage(message, 3000)
+                return
+        QMessageBox.information(self, "Gespeichert", message)
 
     def resizeEvent(self, ev):  # noqa: N802
         super().resizeEvent(ev)
-        # Clamp bubble width for a chat-like layout and to keep images readable.
         try:
-            max_w = int(self.width() * 0.95)
+            max_w = max(1, self.width() - 16)
             if max_w > 0 and hasattr(self, "_bubble") and self._bubble is not None:
                 self._bubble.setMaximumWidth(max_w)
         except Exception:
             pass
 
-    # ----------------------------------------------------------------
     def _fit_browser(self, br: QTextBrowser) -> None:
-        """
-        Passt die Höhe des QTextBrowser an (am Inhalt, min. 2 Zeilen).
-        """
-        from PySide6.QtGui import QFontMetrics
         doc = br.document()
-
-        # Textbreite an Viewport anpassen, damit doc.size().height() korrekt ist
         w = max(1, br.viewport().width())
         doc.setTextWidth(w)
 
         h_doc = int(doc.size().height()) + 2
         font_h = QFontMetrics(br.font()).height()
-        h_min = max(3,3 * font_h)
-
+        h_min = max(3, 3 * font_h)
         br.setFixedHeight(max(h_doc, h_min))
 
 
-# -----------------------------------------------------------------
-class ChatWindow(QWidget):
-    """
-    Container für den kompletten Chat-Verlauf.
-    Jede Nachricht ist ein MsgWidget.  
-    Nur dieser Bereich besitzt Scrollbars.
-    """
-    def __init__(self):
-        super().__init__()
+class ChatInlinePanelSlot(QFrame):
+    """Inline chat slot with vertical resize handle."""
+
+    def __init__(self, panel: QWidget, *, parent: QWidget | None = None):
+        super().__init__(parent)
+        self.setObjectName("chatInlineSlot")
+
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
+
+        self.splitter = QSplitter(Qt.Vertical, self)
+        self.splitter.setObjectName("chatInlineSlotSplitter")
+        self.splitter.setChildrenCollapsible(True)
+        self.splitter.setHandleWidth(7)
+        self.splitter.setOpaqueResize(True)
+
+        self.content_host = QWidget(self.splitter)
+        content_layout = QVBoxLayout(self.content_host)
+        content_layout.setContentsMargins(8, 8, 8, 8)
+        content_layout.setSpacing(0)
+        panel.setParent(self.content_host)
+        content_layout.addWidget(panel, 1)
+
+        self.resize_buffer = QWidget(self.splitter)
+        self.resize_buffer.setObjectName("chatInlineSlotResizeBuffer")
+        self.resize_buffer.setMinimumHeight(22)
+        self.resize_buffer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+
+        self.splitter.addWidget(self.content_host)
+        self.splitter.addWidget(self.resize_buffer)
+        self.splitter.setSizes([max(220, panel.sizeHint().height() + 20), 1])
+        root.addWidget(self.splitter, 1)
+
+
+class ChatWindow(QWidget):
+    """Container fuer den kompletten Chat-Verlauf."""
+
+    _FILE_HEADER_PATTERN = re.compile(
+        r"^\[FILE\]\s+(?P<name>.+?)\s+\((?P<kind>[^)]+)\)(?:\s+\[truncated\])?$"
+    )
+    _SOURCE_HEADER_PATTERN = re.compile(
+        rf"^{re.escape(ChatAttachmentService._SOURCE_HEADER_PREFIX)}\s+(?P<path>.+?)\s*$"
+    )
+    _LANGUAGE_BY_SUFFIX = dict(ChatAttachmentService._LANGUAGE_BY_SUFFIX)
+
+    def __init__(self, scheme: dict[str, str] | None = None):
+        super().__init__()
+        self._scheme = dict(scheme or {})
+        root = QVBoxLayout(self)
+        root.setContentsMargins(0, 0, 0, 0)
+        self.setObjectName("chatHistoryWindow")
 
         from PySide6.QtWidgets import QScrollArea
+
         self.scroller = QScrollArea(self)
+        self.scroller.setObjectName("chatHistoryScroller")
         self.scroller.setWidgetResizable(True)
-        self.scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.scroller.setFrameShape(QFrame.NoFrame)
+        self.scroller.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.scroller.viewport().setObjectName("chatHistoryScrollViewport")
         root.addWidget(self.scroller, 1)
 
-        # Nachricht-Viewport
         self.viewport = QWidget()
-        self.vlayout  = QVBoxLayout(self.viewport)
+        self.viewport.setObjectName("chatHistoryViewport")
+        self.vlayout = QVBoxLayout(self.viewport)
+        self.vlayout.setContentsMargins(8, 8, 8, 8)
+        self.vlayout.setSpacing(2)
         self.vlayout.setAlignment(Qt.AlignTop)
         self.scroller.setWidget(self.viewport)
+        self._apply_history_style()
 
-    # ----------------------------------------------------------------
-    def add_message(self, who: str, text: str):
-        msg = MsgWidget(who, self._split_segments(text), self.viewport)
+    def _apply_history_style(self) -> None:
+        history_bg = self._scheme.get("col9", "#181818")
+        history_border = self._scheme.get("col10", "#404040")
+        history_accent = self._scheme.get("col2", self._scheme.get("col1", "#6280ff"))
+        slot_handle_idle, slot_handle_hover, slot_handle_pressed = _splitter_handle_palette(self._scheme)
+        self.setStyleSheet(
+            f"""
+            QWidget#chatHistoryWindow {{
+                background: transparent;
+            }}
+            QScrollArea#chatHistoryScroller {{
+                background: {history_bg};
+                border: 1px solid {history_border};
+                border-radius: 12px;
+            }}
+            QWidget#chatHistoryScrollViewport {{
+                background: {history_bg};
+                border-radius: 12px;
+            }}
+            QWidget#chatHistoryViewport {{
+                background: {history_bg};
+                border-radius: 12px;
+            }}
+            QScrollArea#chatHistoryScroller QScrollBar:vertical,
+            QScrollArea#chatHistoryScroller QScrollBar:horizontal {{
+                background: transparent;
+                margin: 0px;
+                border: none;
+            }}
+            QScrollArea#chatHistoryScroller QScrollBar:vertical {{
+                width: 6px;
+            }}
+            QScrollArea#chatHistoryScroller QScrollBar:horizontal {{
+                height: 6px;
+            }}
+            QScrollArea#chatHistoryScroller QScrollBar::handle:vertical,
+            QScrollArea#chatHistoryScroller QScrollBar::handle:horizontal {{
+                background: transparent;
+                border-radius: 3px;
+                min-height: 28px;
+                min-width: 28px;
+            }}
+            QScrollArea#chatHistoryScroller QScrollBar::handle:vertical:hover,
+            QScrollArea#chatHistoryScroller QScrollBar::handle:horizontal:hover,
+            QScrollArea#chatHistoryScroller QScrollBar::handle:hover:vertical,
+            QScrollArea#chatHistoryScroller QScrollBar::handle:hover:horizontal {{
+                background: {history_border};
+            }}
+            QScrollArea#chatHistoryScroller QScrollBar::handle:vertical:pressed,
+            QScrollArea#chatHistoryScroller QScrollBar::handle:horizontal:pressed,
+            QScrollArea#chatHistoryScroller QScrollBar::handle:pressed:vertical,
+            QScrollArea#chatHistoryScroller QScrollBar::handle:pressed:horizontal {{
+                background: {history_accent};
+            }}
+            QScrollArea#chatHistoryScroller QScrollBar::add-line,
+            QScrollArea#chatHistoryScroller QScrollBar::sub-line,
+            QScrollArea#chatHistoryScroller QScrollBar::add-page,
+            QScrollArea#chatHistoryScroller QScrollBar::sub-page {{
+                background: none;
+                border: none;
+                width: 5px;
+                height:40px;
+            }}
+            QFrame#chatInlineSlot {{
+                border: 1px solid {history_border};
+                border-radius: 10px;
+                background: transparent;
+            }}
+            QSplitter#chatInlineSlotSplitter::handle {{
+                background: {slot_handle_idle};
+                min-height: 7px;
+            }}
+            QSplitter#chatInlineSlotSplitter::handle:hover {{
+                background: {slot_handle_hover};
+            }}
+            QSplitter#chatInlineSlotSplitter::handle:pressed {{
+                background: {slot_handle_pressed};
+            }}
+            """
+        )
+
+    def add_message(self, who: str, text: str) -> None:
+        msg = MsgWidget(who, self._split_segments(text), self.viewport, scheme=self._scheme)
         self.vlayout.addWidget(msg)
-
-        # nach unten scrollen
         bar = self.scroller.verticalScrollBar()
         bar.setValue(bar.maximum())
 
-    # ----------------------------------------------------------------
+    def add_inline_panel(self, panel: QWidget) -> QWidget:
+        slot = ChatInlinePanelSlot(panel, parent=self.viewport)
+        self.vlayout.addWidget(slot)
+        bar = self.scroller.verticalScrollBar()
+        bar.setValue(bar.maximum())
+        return slot
+
+    def remove_inline_panel(self, row: QWidget | None) -> None:
+        if row is None:
+            return
+        self.vlayout.removeWidget(row)
+        row.setParent(None)
+        row.deleteLater()
+
     @staticmethod
-    def _split_segments(raw: str) -> list[tuple[str, str]]:
-        """
-        Zerlegt den Roh-Text in («text» | «code» , Block)-Paare anhand
-        von ```-Fenced Code Blocks.
-        """
-        out, buf, mode = [], [], "text"
+    def _split_segments(raw: str) -> list[ChatSegment]:
+        out: list[ChatSegment] = []
+        buf: list[str] = []
+        mode = "text"
+        fence_language = ""
+        pending_file_context: ChatFileContext | None = None
+
         for ln in raw.splitlines():
-            if ln.strip().startswith("```"):
-                if buf:
-                    out.append((mode, "\n".join(buf)))
-                buf, mode = [], ("code" if mode == "text" else "text")
-            else:
-                buf.append(ln)
+            stripped = ln.strip()
+            if stripped.startswith("```"):
+                if mode == "text":
+                    if buf:
+                        plain_segments, pending_file_context = ChatWindow._split_plain_segment(
+                            "\n".join(buf),
+                            allow_file_context=True,
+                        )
+                        out.extend(plain_segments)
+                    buf = []
+                    mode = "code"
+                    fence_language = stripped[3:].strip()
+                else:
+                    out.append(
+                        ChatSegment(
+                            kind="editor",
+                            language=ChatWindow._normalize_language(fence_language)
+                            or (pending_file_context.language if pending_file_context else ""),
+                            block="\n".join(buf).rstrip("\n"),
+                            file_path=pending_file_context.file_path if pending_file_context else "",
+                        )
+                    )
+                    buf = []
+                    mode = "text"
+                    fence_language = ""
+                    pending_file_context = None
+                continue
+            buf.append(ln)
+
         if buf:
-            out.append((mode, "\n".join(buf)))
+            if mode == "code":
+                out.append(
+                    ChatSegment(
+                        kind="editor",
+                        language=ChatWindow._normalize_language(fence_language)
+                        or (pending_file_context.language if pending_file_context else ""),
+                        block="\n".join(buf).rstrip("\n"),
+                        file_path=pending_file_context.file_path if pending_file_context else "",
+                    )
+                )
+            else:
+                plain_segments, _ = ChatWindow._split_plain_segment("\n".join(buf), allow_file_context=False)
+                out.extend(plain_segments)
         return out
+
+    @classmethod
+    def _split_plain_segment(
+        cls,
+        raw_block: str,
+        *,
+        allow_file_context: bool,
+    ) -> tuple[list[ChatSegment], ChatFileContext | None]:
+        normalized = str(raw_block or "").strip("\n")
+        if not normalized.strip():
+            return [], None
+
+        lines = normalized.splitlines()
+        file_context = cls._parse_file_context(lines)
+        if file_context is not None:
+            body = "\n".join(lines[file_context.body_start_index:]).strip("\n")
+            segments: list[ChatSegment] = [ChatSegment(kind="text", language="", block=file_context.header_line)]
+            if body:
+                segments.append(
+                    ChatSegment(
+                        kind="editor",
+                        language=file_context.language,
+                        block=body,
+                        file_path=file_context.file_path,
+                    )
+                )
+                return segments, None
+            return segments, file_context if allow_file_context else None
+
+        language = cls._infer_plain_block_language(normalized)
+        if cls._should_use_editor(normalized, language):
+            return [ChatSegment(kind="editor", language=language, block=normalized)], None
+        return [ChatSegment(kind="text", language="", block=normalized)], None
+
+    @classmethod
+    def _parse_file_context(cls, lines: list[str]) -> ChatFileContext | None:
+        if not lines:
+            return None
+
+        header_line = lines[0].strip()
+        header_match = cls._FILE_HEADER_PATTERN.match(header_line)
+        if header_match is None:
+            return None
+
+        body_start_index = 1
+        file_path = ""
+        if len(lines) > 1:
+            source_match = cls._SOURCE_HEADER_PATTERN.match(lines[1].strip())
+            if source_match is not None:
+                file_path = source_match.group("path").strip()
+                body_start_index = 2
+
+        language = cls._language_from_file_header(
+            file_name=header_match.group("name"),
+            object_kind=header_match.group("kind"),
+        )
+        return ChatFileContext(
+            header_line=header_line,
+            language=language,
+            file_path=file_path,
+            body_start_index=body_start_index,
+        )
+
+    @classmethod
+    def _normalize_language(cls, language: str | None) -> str:
+        return CodeViewer._normalize_language(language)
+
+    @classmethod
+    def _language_from_file_header(cls, *, file_name: str, object_kind: str) -> str:
+        normalized_kind = str(object_kind or "").strip().lower()
+        if normalized_kind == "markdown":
+            return "markdown"
+        if normalized_kind in {"pdf", "text"}:
+            return "text"
+        suffix = Path(str(file_name or "").strip()).suffix.lower()
+        return cls._normalize_language(cls._LANGUAGE_BY_SUFFIX.get(suffix, ""))
+
+    @classmethod
+    def _infer_plain_block_language(cls, block: str) -> str:
+        lines = [line.rstrip() for line in str(block or "").splitlines() if line.strip()]
+        if not lines:
+            return ""
+
+        stripped = "\n".join(lines).strip()
+        if (stripped.startswith("{") or stripped.startswith("[")) and re.search(r'"[^"\\]+"\s*:', stripped):
+            return "json"
+
+        if any(re.match(r"^\s*\[[^\]]+\]\s*$", line) for line in lines) and any(
+            re.match(r"^\s*[A-Za-z0-9_.-]+\s*=\s*.+$", line) for line in lines
+        ):
+            return "toml"
+
+        yaml_hits = sum(1 for line in lines if re.match(r"^\s*[A-Za-z0-9_.-]+\s*:\s*.+$", line))
+        if yaml_hits >= 2 or (yaml_hits >= 1 and any(re.match(r"^\s*-\s+.+$", line) for line in lines)):
+            return "yaml"
+
+        python_hits = sum(
+            1
+            for line in lines
+            if re.match(r"^\s*(def|class|from|import|if|elif|else|for|while|try|except|with|return|async|await|yield|pass)\b", line)
+        )
+        if python_hits >= 2:
+            return "python"
+
+        js_hits = sum(
+            1
+            for line in lines
+            if re.match(r"^\s*(const|let|var|function|export|import|interface|type)\b", line)
+            or "=>" in line
+        )
+        if js_hits >= 2:
+            return "javascript"
+
+        if any(line.startswith("#!/") for line in lines):
+            return "bash"
+
+        if any(re.match(r"^\s*<[^>]+>\s*$", line) for line in lines) and any("</" in line for line in lines):
+            return "html"
+
+        return ""
+
+    @classmethod
+    def _should_use_editor(cls, block: str, language: str) -> bool:
+        normalized_language = cls._normalize_language(language)
+        if normalized_language and normalized_language != "markdown":
+            return True
+        if normalized_language == "markdown":
+            return False
+
+        lines = [line.rstrip() for line in str(block or "").splitlines() if line.strip()]
+        if len(lines) < 4:
+            return False
+
+        structured_hits = sum(
+            1
+            for line in lines
+            if re.match(r"^\s*([A-Za-z0-9_.-]+\s*[:=].+|Traceback|File \".+\")", line)
+            or re.match(r"^\s*[{}\[\]<>].*$", line)
+            or re.match(r"^\s*(#include|SELECT\b|INSERT\b|UPDATE\b|DELETE\b)", line, re.IGNORECASE)
+        )
+        sentence_hits = sum(1 for line in lines if re.search(r"[.!?]\s*$", line) and len(line.split()) > 4)
+        blank_ratio = 1 - (len(lines) / max(len(str(block or "").splitlines()), 1))
+
+        if structured_hits >= 2:
+            return True
+        if len(lines) >= 8 and sentence_hits * 2 < len(lines) and blank_ratio < 0.35:
+            return True
+        return False
         
 # ───────────────────────────────────────────────────────────────
 # PATCH: Mindesthöhe für QTextBrowser-Segmente im Chat
@@ -2339,6 +3354,7 @@ from PySide6.QtCore import (
 
 class ControlPlaneWidget(QWidget):
     snapshotChanged = Signal(dict)
+    _OPERATOR_FILTER_SETTINGS_PREFIX = "ControlPlane/OperatorFilters"
 
     def __init__(self, accent: dict[str, str], base: dict[str, str], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -2347,7 +3363,8 @@ class ControlPlaneWidget(QWidget):
         self.scheme = _build_scheme(accent, base)
         self._metric_labels: dict[str, QLabel] = {}
         self._last_snapshot: dict[str, Any] = {}
-        self._operator_log_entries: list[str] = []
+        self._operator_log_entries: list[dict[str, Any] | str] = []
+        self._operator_filter_preferences = self._load_operator_filter_preferences()
         self._agent_rows_by_label: dict[str, dict[str, Any]] = {}
         self._build_ui()
         self.update_scheme(accent, base)
@@ -2357,6 +3374,49 @@ class ControlPlaneWidget(QWidget):
         self._refresh_timer.timeout.connect(self.refresh_view)
         self._refresh_timer.start()
         self.refresh_view()
+
+    def _control_plane_settings(self) -> QSettings:
+        try:
+            settings = QSettings(MainAIEditor.ORG_NAME, MainAIEditor.APP_NAME)
+        except Exception:
+            settings = QSettings()
+        settings.setFallbacksEnabled(False)
+        return settings
+
+    def _load_operator_filter_preferences(self) -> dict[str, str]:
+        settings = self._control_plane_settings()
+        prefix = self._OPERATOR_FILTER_SETTINGS_PREFIX
+        return {
+            "status": str(settings.value(f"{prefix}/status", "All statuses") or "All statuses"),
+            "audit_type": str(settings.value(f"{prefix}/audit_type", "All action types") or "All action types"),
+            "action_group": str(settings.value(f"{prefix}/action_group", "All action groups") or "All action groups"),
+            "source": str(settings.value(f"{prefix}/source", "All sources") or "All sources"),
+        }
+
+    def _current_operator_filter_preferences(self) -> dict[str, str]:
+        return {
+            "status": self.operator_status_selector.currentText().strip() or "All statuses",
+            "audit_type": self.operator_audit_selector.currentText().strip() or "All action types",
+            "action_group": self.operator_group_selector.currentText().strip() or "All action groups",
+            "source": self.operator_source_selector.currentText().strip() or "All sources",
+        }
+
+    def _save_operator_filter_preferences(self) -> None:
+        settings = self._control_plane_settings()
+        prefix = self._OPERATOR_FILTER_SETTINGS_PREFIX
+        settings.setValue(f"{prefix}/status", self._operator_filter_preferences.get("status") or "All statuses")
+        settings.setValue(f"{prefix}/audit_type", self._operator_filter_preferences.get("audit_type") or "All action types")
+        settings.setValue(f"{prefix}/action_group", self._operator_filter_preferences.get("action_group") or "All action groups")
+        settings.setValue(f"{prefix}/source", self._operator_filter_preferences.get("source") or "All sources")
+        try:
+            settings.sync()
+        except Exception:
+            pass
+
+    def _handle_operator_filter_change(self, _text: str = "") -> None:
+        self._operator_filter_preferences = self._current_operator_filter_preferences()
+        self._save_operator_filter_preferences()
+        self._render_operator_log()
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -2408,9 +3468,12 @@ class ControlPlaneWidget(QWidget):
         header_meta.addWidget(self._runtime_hint_label, 0, Qt.AlignRight)
         header_row.addLayout(header_meta)
 
-        self.btn_refresh = QPushButton("Refresh", hero)
-        self.btn_refresh.setObjectName("controlRefresh")
-        self.btn_refresh.clicked.connect(self.refresh_view)
+        self.btn_refresh = ToolButton(
+            "reload_.svg",
+            "Control Plane aktualisieren",
+            slot=self.refresh_view,
+            parent=hero,
+        )
         header_row.addWidget(self.btn_refresh, 0, Qt.AlignTop)
 
         hero_layout.addLayout(header_row)
@@ -2421,7 +3484,7 @@ class ControlPlaneWidget(QWidget):
         for metric_key, metric_label in (
             ("agents", "Agents"),
             ("workflows", "Workflows"),
-            ("sessions", "Signals"),
+            ("sessions", "Sessions"),
             ("failures", "Failures"),
         ):
             card, value_label = self._create_metric_card(metric_label)
@@ -2438,6 +3501,7 @@ class ControlPlaneWidget(QWidget):
         self.tabs.tabBar().setExpanding(False)
 
         config_tab = QWidget(self.tabs)
+        self._config_tab = config_tab
         config_tab.setMinimumSize(0, 0)
         config_tab.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
         config_layout = QVBoxLayout(config_tab)
@@ -2449,18 +3513,36 @@ class ControlPlaneWidget(QWidget):
         self.config_summary_view.setOpenExternalLinks(False)
         self.config_summary_view.setMinimumHeight(0)
         self.config_summary_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        config_layout.addWidget(self.config_summary_view)
 
         self.config_manifest_view = QTextBrowser(config_tab)
         self.config_manifest_view.setObjectName("controlBrowser")
         self.config_manifest_view.setOpenExternalLinks(False)
         self.config_manifest_view.setMinimumHeight(0)
         self.config_manifest_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+
         self.config_splitter = self._create_viewport_splitter(config_tab)
         self.config_splitter.addWidget(self.config_summary_view)
         self.config_splitter.addWidget(self.config_manifest_view)
         self.config_splitter.setSizes([140, 280])
-        config_layout.addWidget(self.config_splitter, 1)
+        self.config_splitter.setStretchFactor(0, 1)
+        self.config_splitter.setStretchFactor(1, 2)
+
+        self.config_builder_container = QFrame(config_tab)
+        self.config_builder_container.setObjectName("controlBuilderContainer")
+        self.config_builder_container.setMinimumSize(0, 0)
+        self.config_builder_container.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        self.config_builder_layout = QVBoxLayout(self.config_builder_container)
+        self.config_builder_layout.setContentsMargins(0, 0, 0, 0)
+        self.config_builder_layout.setSpacing(0)
+        self._config_builder_panel: QWidget | None = None
+
+        self.config_root_splitter = self._create_viewport_splitter(config_tab)
+        self.config_root_splitter.addWidget(self.config_splitter)
+        self.config_root_splitter.addWidget(self.config_builder_container)
+        self.config_root_splitter.setSizes([1, 0])
+        self.config_root_splitter.setStretchFactor(0, 3)
+        self.config_root_splitter.setStretchFactor(1, 2)
+        config_layout.addWidget(self.config_root_splitter, 1)
 
         monitor_tab = QWidget(self.tabs)
         monitor_tab.setMinimumSize(0, 0)
@@ -2475,7 +3557,11 @@ class ControlPlaneWidget(QWidget):
         self.monitor_summary_view.setMinimumHeight(0)
         self.monitor_summary_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
 
-        drilldown_layout = QVBoxLayout()
+        self.monitor_filter_panel = QWidget(monitor_tab)
+        self.monitor_filter_panel.setMinimumSize(0, 0)
+        self.monitor_filter_panel.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+
+        drilldown_layout = QVBoxLayout(self.monitor_filter_panel)
         drilldown_layout.setContentsMargins(0, 0, 0, 0)
         drilldown_layout.setSpacing(6)
 
@@ -2508,36 +3594,97 @@ class ControlPlaneWidget(QWidget):
 
         drilldown_layout.addLayout(drilldown_form)
 
+        trace_filter_form = QFormLayout()
+        trace_filter_form.setContentsMargins(0, 0, 0, 0)
+        trace_filter_form.setSpacing(8)
+        trace_filter_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
+        trace_agent_label = QLabel("Trace Agent", monitor_tab)
+        trace_agent_label.setObjectName("controlMeta")
+        self.trace_agent_selector = QComboBox(monitor_tab)
+        self.trace_agent_selector.setObjectName("controlSelector")
+        self.trace_agent_selector.setMinimumContentsLength(10)
+        self.trace_agent_selector.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.trace_agent_selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.trace_agent_selector.currentTextChanged.connect(self._refresh_monitoring_views)
+        trace_filter_form.addRow(trace_agent_label, self.trace_agent_selector)
+
+        trace_workflow_label = QLabel("Trace Workflow", monitor_tab)
+        trace_workflow_label.setObjectName("controlMeta")
+        self.trace_workflow_selector = QComboBox(monitor_tab)
+        self.trace_workflow_selector.setObjectName("controlSelector")
+        self.trace_workflow_selector.setMinimumContentsLength(10)
+        self.trace_workflow_selector.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.trace_workflow_selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.trace_workflow_selector.currentTextChanged.connect(self._refresh_monitoring_views)
+        trace_filter_form.addRow(trace_workflow_label, self.trace_workflow_selector)
+
+        trace_tool_label = QLabel("Trace Tool", monitor_tab)
+        trace_tool_label.setObjectName("controlMeta")
+        self.trace_tool_selector = QComboBox(monitor_tab)
+        self.trace_tool_selector.setObjectName("controlSelector")
+        self.trace_tool_selector.setMinimumContentsLength(10)
+        self.trace_tool_selector.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.trace_tool_selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.trace_tool_selector.currentTextChanged.connect(self._refresh_monitoring_views)
+        trace_filter_form.addRow(trace_tool_label, self.trace_tool_selector)
+
+        trace_handoff_label = QLabel("Trace Handoff", monitor_tab)
+        trace_handoff_label.setObjectName("controlMeta")
+        self.trace_handoff_selector = QComboBox(monitor_tab)
+        self.trace_handoff_selector.setObjectName("controlSelector")
+        self.trace_handoff_selector.setMinimumContentsLength(10)
+        self.trace_handoff_selector.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.trace_handoff_selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.trace_handoff_selector.currentTextChanged.connect(self._refresh_monitoring_views)
+        trace_filter_form.addRow(trace_handoff_label, self.trace_handoff_selector)
+
+        drilldown_layout.addLayout(trace_filter_form)
+
         detail_action_row = QHBoxLayout()
         detail_action_row.setContentsMargins(0, 0, 0, 0)
         detail_action_row.setSpacing(8)
 
-        self.btn_refresh_detail = QPushButton("Refresh Detail", monitor_tab)
-        self.btn_refresh_detail.setObjectName("controlAction")
+        self.btn_refresh_detail = ToolButton(
+            "reload_.svg",
+            "Monitor-Detail aktualisieren",
+            slot=self._refresh_drilldown_views,
+            parent=monitor_tab,
+        )
         self.btn_refresh_detail.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.btn_refresh_detail.clicked.connect(self._refresh_drilldown_views)
         detail_action_row.addWidget(self.btn_refresh_detail, 0)
         detail_action_row.addStretch(1)
         drilldown_layout.addLayout(detail_action_row)
-        monitor_layout.addLayout(drilldown_layout)
 
         self.monitor_detail_view = QTextBrowser(monitor_tab)
         self.monitor_detail_view.setObjectName("controlBrowser")
         self.monitor_detail_view.setOpenExternalLinks(False)
         self.monitor_detail_view.setMinimumHeight(0)
         self.monitor_detail_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
-        monitor_layout.addWidget(self.monitor_detail_view)
 
         self.monitor_timeline_view = QTextBrowser(monitor_tab)
         self.monitor_timeline_view.setObjectName("controlBrowser")
         self.monitor_timeline_view.setOpenExternalLinks(False)
         self.monitor_timeline_view.setMinimumHeight(0)
         self.monitor_timeline_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+
+        self.monitor_trace_view = QTextBrowser(monitor_tab)
+        self.monitor_trace_view.setObjectName("controlBrowser")
+        self.monitor_trace_view.setOpenExternalLinks(False)
+        self.monitor_trace_view.setMinimumHeight(0)
+        self.monitor_trace_view.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Ignored)
+
+        self.monitor_header_splitter = self._create_viewport_splitter(monitor_tab)
+        self.monitor_header_splitter.addWidget(self.monitor_summary_view)
+        self.monitor_header_splitter.addWidget(self.monitor_filter_panel)
+        self.monitor_header_splitter.setSizes([130, 170])
+
         self.monitor_splitter = self._create_viewport_splitter(monitor_tab)
-        self.monitor_splitter.addWidget(self.monitor_summary_view)
+        self.monitor_splitter.addWidget(self.monitor_header_splitter)
         self.monitor_splitter.addWidget(self.monitor_detail_view)
         self.monitor_splitter.addWidget(self.monitor_timeline_view)
-        self.monitor_splitter.setSizes([120, 220, 180])
+        self.monitor_splitter.addWidget(self.monitor_trace_view)
+        self.monitor_splitter.setSizes([300, 200, 170, 280])
         monitor_layout.addWidget(self.monitor_splitter, 1)
 
         operations_tab = QWidget(self.tabs)
@@ -2547,54 +3694,81 @@ class ControlPlaneWidget(QWidget):
         operations_layout.setContentsMargins(0, 0, 0, 0)
         operations_layout.setSpacing(8)
 
-        operator_actions_top = QHBoxLayout()
-        operator_actions_top.setContentsMargins(0, 0, 0, 0)
-        operator_actions_top.setSpacing(8)
+        operator_actions_label = QLabel("Operator Tools", operations_tab)
+        operator_actions_label.setObjectName("controlMeta")
+        operations_layout.addWidget(operator_actions_label, 0)
 
-        operator_actions_bottom = QHBoxLayout()
-        operator_actions_bottom.setContentsMargins(0, 0, 0, 0)
-        operator_actions_bottom.setSpacing(8)
+        operator_actions_grid = QGridLayout()
+        operator_actions_grid.setContentsMargins(0, 0, 0, 0)
+        operator_actions_grid.setHorizontalSpacing(8)
+        operator_actions_grid.setVerticalSpacing(8)
 
-        self.btn_refresh_health = QPushButton("Run Health Checks", operations_tab)
-        self.btn_refresh_health.setObjectName("controlAction")
-        self.btn_refresh_health.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.btn_refresh_health.clicked.connect(self._run_operator_health_checks)
-        operator_actions_top.addWidget(self.btn_refresh_health, 0)
+        action_specs = [
+            ("reload_.svg", "Health Checks", "Alle Operator-Checks aktualisieren", self._run_operator_health_checks, "btn_refresh_health"),
+            ("swap_horiz_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg", "Queue Probe", "Queue-Backend pruefen", self._probe_queue_health, "btn_probe_queue"),
+            ("check_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg", "Dispatcher Probe", "Dispatcher-Store pruefen", self._probe_dispatcher_health, "btn_probe_dispatcher"),
+            ("settings_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg", "Dispatcher Repair", "Dispatcher-Store reparieren", self._repair_dispatcher_store, "btn_repair_dispatcher"),
+            ("deployed_code.svg", "MCP Probe", "MCP-Konfiguration pruefen", self._probe_mcp_health, "btn_probe_mcp"),
+            ("file_export_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg", "Export Snapshot", "Control-Plane-Snapshot exportieren", self._export_runtime_snapshot_report, "btn_export_runtime"),
+        ]
+        for index, (icon_name, label_text, tooltip, slot, attr_name) in enumerate(action_specs):
+            tile, button = self._create_operator_action_tile(
+                icon_name,
+                label_text,
+                tooltip,
+                slot,
+                operations_tab,
+            )
+            setattr(self, attr_name, button)
+            operator_actions_grid.addWidget(tile, index // 3, index % 3)
+        operations_layout.addLayout(operator_actions_grid)
 
-        self.btn_probe_queue = QPushButton("Probe Queue", operations_tab)
-        self.btn_probe_queue.setObjectName("controlAction")
-        self.btn_probe_queue.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.btn_probe_queue.clicked.connect(self._probe_queue_health)
-        operator_actions_top.addWidget(self.btn_probe_queue, 0)
+        operator_filter_form = QFormLayout()
+        operator_filter_form.setContentsMargins(0, 0, 0, 0)
+        operator_filter_form.setSpacing(8)
+        operator_filter_form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
 
-        self.btn_probe_dispatcher = QPushButton("Probe Dispatcher", operations_tab)
-        self.btn_probe_dispatcher.setObjectName("controlAction")
-        self.btn_probe_dispatcher.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.btn_probe_dispatcher.clicked.connect(self._probe_dispatcher_health)
-        operator_actions_top.addWidget(self.btn_probe_dispatcher, 0)
+        operator_status_label = QLabel("Action Status", operations_tab)
+        operator_status_label.setObjectName("controlMeta")
+        self.operator_status_selector = QComboBox(operations_tab)
+        self.operator_status_selector.setObjectName("controlSelector")
+        self.operator_status_selector.setMinimumContentsLength(10)
+        self.operator_status_selector.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.operator_status_selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.operator_status_selector.currentTextChanged.connect(self._handle_operator_filter_change)
+        operator_filter_form.addRow(operator_status_label, self.operator_status_selector)
 
-        operator_actions_top.addStretch(1)
+        operator_audit_label = QLabel("Action Type", operations_tab)
+        operator_audit_label.setObjectName("controlMeta")
+        self.operator_audit_selector = QComboBox(operations_tab)
+        self.operator_audit_selector.setObjectName("controlSelector")
+        self.operator_audit_selector.setMinimumContentsLength(10)
+        self.operator_audit_selector.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.operator_audit_selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.operator_audit_selector.currentTextChanged.connect(self._handle_operator_filter_change)
+        operator_filter_form.addRow(operator_audit_label, self.operator_audit_selector)
 
-        self.btn_repair_dispatcher = QPushButton("Repair Dispatcher Store", operations_tab)
-        self.btn_repair_dispatcher.setObjectName("controlAction")
-        self.btn_repair_dispatcher.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.btn_repair_dispatcher.clicked.connect(self._repair_dispatcher_store)
-        operator_actions_bottom.addWidget(self.btn_repair_dispatcher, 0)
+        operator_group_label = QLabel("Action Group", operations_tab)
+        operator_group_label.setObjectName("controlMeta")
+        self.operator_group_selector = QComboBox(operations_tab)
+        self.operator_group_selector.setObjectName("controlSelector")
+        self.operator_group_selector.setMinimumContentsLength(10)
+        self.operator_group_selector.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.operator_group_selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.operator_group_selector.currentTextChanged.connect(self._handle_operator_filter_change)
+        operator_filter_form.addRow(operator_group_label, self.operator_group_selector)
 
-        self.btn_probe_mcp = QPushButton("Probe MCP", operations_tab)
-        self.btn_probe_mcp.setObjectName("controlAction")
-        self.btn_probe_mcp.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.btn_probe_mcp.clicked.connect(self._probe_mcp_health)
-        operator_actions_bottom.addWidget(self.btn_probe_mcp, 0)
+        operator_source_label = QLabel("Action Source", operations_tab)
+        operator_source_label.setObjectName("controlMeta")
+        self.operator_source_selector = QComboBox(operations_tab)
+        self.operator_source_selector.setObjectName("controlSelector")
+        self.operator_source_selector.setMinimumContentsLength(10)
+        self.operator_source_selector.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.operator_source_selector.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.operator_source_selector.currentTextChanged.connect(self._handle_operator_filter_change)
+        operator_filter_form.addRow(operator_source_label, self.operator_source_selector)
 
-        self.btn_export_runtime = QPushButton("Export Runtime JSON", operations_tab)
-        self.btn_export_runtime.setObjectName("controlAction")
-        self.btn_export_runtime.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self.btn_export_runtime.clicked.connect(self._export_runtime_snapshot_report)
-        operator_actions_bottom.addWidget(self.btn_export_runtime, 0)
-        operator_actions_bottom.addStretch(1)
-        operations_layout.addLayout(operator_actions_top)
-        operations_layout.addLayout(operator_actions_bottom)
+        operations_layout.addLayout(operator_filter_form)
 
         self.operator_summary_view = QTextBrowser(operations_tab)
         self.operator_summary_view.setObjectName("controlBrowser")
@@ -2616,13 +3790,15 @@ class ControlPlaneWidget(QWidget):
         self.tabs.addTab(config_tab, "Configuration")
         self.tabs.addTab(monitor_tab, "Monitoring")
         self.tabs.addTab(operations_tab, "Operations")
-        self.primary_splitter.addWidget(hero)
         self.primary_splitter.addWidget(self.tabs)
-        self.primary_splitter.setSizes([170, 560])
-        self.primary_splitter.setStretchFactor(0, 1)
-        self.primary_splitter.setStretchFactor(1, 4)
+        self.primary_splitter.addWidget(hero)
+        self.primary_splitter.setSizes([560, 170])
+        self.primary_splitter.setStretchFactor(0, 4)
+        self.primary_splitter.setStretchFactor(1, 1)
         root.addWidget(self.primary_splitter, 1)
         self._render_operator_log()
+        self._open_agent_system_builder_in_configuration_tab()
+        self._set_config_builder_visible(False)
 
     def _create_metric_card(self, title: str) -> tuple[QFrame, QLabel]:
         card = QFrame(self)
@@ -2644,22 +3820,694 @@ class ControlPlaneWidget(QWidget):
         splitter = QSplitter(Qt.Vertical, parent)
         splitter.setObjectName("controlViewportSplitter")
         splitter.setChildrenCollapsible(True)
-        splitter.setHandleWidth(10)
+        splitter.setHandleWidth(7)
         splitter.setOpaqueResize(True)
         splitter.setMinimumSize(0, 0)
         splitter.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
         return splitter
 
+    def _create_operator_action_tile(
+        self,
+        icon_name: str,
+        label_text: str,
+        tooltip: str,
+        slot,
+        parent: QWidget,
+    ) -> tuple[QFrame, ToolButton]:
+        tile = QFrame(parent)
+        tile.setObjectName("controlMetricCard")
+        layout = QVBoxLayout(tile)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
+
+        button = ToolButton(icon_name, tooltip, slot=slot, parent=tile)
+        button.setFixedSize(32, 32)
+        layout.addWidget(button, 0, Qt.AlignHCenter)
+
+        label = QLabel(label_text, tile)
+        label.setObjectName("controlMeta")
+        label.setAlignment(Qt.AlignHCenter)
+        label.setWordWrap(True)
+        layout.addWidget(label, 0, Qt.AlignHCenter)
+        return tile, button
+
+    def _set_config_builder_visible(self, visible: bool) -> None:
+        if not hasattr(self, "config_root_splitter"):
+            return
+        if not visible:
+            self.config_root_splitter.setSizes([1, 0])
+            return
+
+        sizes = self.config_root_splitter.sizes()
+        if len(sizes) == 2:
+            total = max(520, sizes[0] + sizes[1])
+        else:
+            total = max(520, self.height())
+        builder_height = max(220, min(420, total // 2))
+        self.config_root_splitter.setSizes([total - builder_height, builder_height])
+
+    def _clear_config_builder_panel(self) -> None:
+        panel = getattr(self, "_config_builder_panel", None)
+        if panel is None:
+            return
+        self.config_builder_layout.removeWidget(panel)
+        panel.setParent(None)
+        panel.deleteLater()
+        self._config_builder_panel = None
+
+    def _close_config_builder_panel(self) -> None:
+        # Legacy wrapper: keep the panel mounted and collapse via splitter only.
+        self._set_config_builder_visible(False)
+
+    def _mount_config_builder_panel(self, panel: QWidget) -> None:
+        self._clear_config_builder_panel()
+        self._config_builder_panel = panel
+        self.config_builder_layout.addWidget(panel, 1)
+        self.tabs.setCurrentWidget(self._config_tab)
+
+    def _create_agent_system_builder_config_panel(
+        self,
+        *,
+        initial_payload: dict[str, Any],
+        build_handler: Callable[[dict[str, Any]], dict[str, Any]],
+    ) -> QWidget:
+        panel = QFrame(self.config_builder_container)
+        panel.setObjectName("controlBuilderPanel")
+        panel.setStyleSheet(
+            f"""
+            QFrame#controlBuilderPanel {{
+                background: {self.scheme['col5']};
+                border: 1px solid {self.scheme['col10']};
+                border-radius: 10px;
+            }}
+            QLabel#builderSectionText {{
+                color: #c2c2c2;
+            }}
+            QPushButton#builderPrimaryButton {{
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 8px;
+                padding: 1px;
+                min-width: 22px;
+                min-height: 22px;
+            }}
+            QPushButton#builderPrimaryButton:hover {{
+                background: rgba(255, 255, 255, 0.08);
+                border-color: rgba(255, 255, 255, 0.18);
+            }}
+            QPushButton#builderIconButton {{
+                background: transparent;
+                border: 1px solid transparent;
+                border-radius: 8px;
+                padding: 1px;
+                min-width: 22px;
+                min-height: 22px;
+            }}
+            QPushButton#builderIconButton:hover {{
+                background: rgba(255, 255, 255, 0.08);
+                border-color: rgba(255, 255, 255, 0.18);
+            }}
+            """
+        )
+
+        panel_layout = QVBoxLayout(panel)
+        panel_layout.setContentsMargins(12, 12, 12, 12)
+        panel_layout.setSpacing(8)
+
+        top_buttons = QHBoxLayout()
+        top_buttons.setContentsMargins(0, 0, 0, 0)
+        top_buttons.setSpacing(6)
+        btn_template = QPushButton("", panel)
+        btn_build = QPushButton("", panel)
+        btn_template.setIcon(_icon("open_file.svg"))
+        btn_build.setIcon(_icon("deployed_code.svg"))
+        btn_template.setToolTip("Template laden")
+        btn_build.setToolTip("Sync Build starten")
+        btn_template.setIconSize(QSize(18, 18))
+        btn_build.setIconSize(QSize(18, 18))
+        btn_template.setCursor(Qt.PointingHandCursor)
+        btn_build.setCursor(Qt.PointingHandCursor)
+        btn_template.setObjectName("builderPrimaryButton")
+        btn_build.setObjectName("builderPrimaryButton")
+        top_buttons.addWidget(btn_template, 0)
+        top_buttons.addWidget(btn_build, 0)
+        top_buttons.addStretch(1)
+        panel_layout.addLayout(top_buttons)
+
+        editor = CodeViewer(
+            json.dumps(initial_payload, ensure_ascii=False, indent=2),
+            panel,
+            language="json",
+            editable=True,
+            auto_fit=False,
+            accent_color=self.scheme.get("col1", "#3a5fff"),
+            accent_selection_color=self.scheme.get("col2", "#6280ff"),
+            surface_color=self.scheme.get("col10", "#404040"),
+            font_size_px=14,
+        )
+        editor.setMinimumHeight(260)
+        editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        panel_layout.addWidget(editor)
+
+        status_text = QLabel("Status: Bereit", panel)
+        status_text.setObjectName("builderSectionText")
+        status_text.setWordWrap(True)
+        panel_layout.addWidget(status_text)
+
+        bottom_buttons = QHBoxLayout()
+        bottom_buttons.setContentsMargins(0, 0, 0, 0)
+        bottom_buttons.setSpacing(6)
+        btn_post = QPushButton("", panel)
+        btn_copy = QPushButton("", panel)
+        btn_post.setIcon(_icon("send.svg"))
+        btn_copy.setIcon(_icon("file_export_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg"))
+        btn_post.setToolTip("Ergebnis ins Operations-Log schreiben")
+        btn_copy.setToolTip("JSON exportieren")
+        btn_post.setIconSize(QSize(18, 18))
+        btn_copy.setIconSize(QSize(18, 18))
+        btn_post.setCursor(Qt.PointingHandCursor)
+        btn_copy.setCursor(Qt.PointingHandCursor)
+        btn_post.setObjectName("builderIconButton")
+        btn_copy.setObjectName("builderIconButton")
+        bottom_buttons.addWidget(btn_post, 0)
+        bottom_buttons.addWidget(btn_copy, 0)
+        bottom_buttons.addStretch(1)
+        panel_layout.addLayout(bottom_buttons)
+
+        latest_result: dict[str, Any] = {}
+
+        def _load_template() -> None:
+            editor.setPlainText(json.dumps(initial_payload, ensure_ascii=False, indent=2))
+            status_text.setText("Status: Template geladen")
+
+        def _run_build() -> None:
+            nonlocal latest_result
+            raw_text = editor.toPlainText().strip()
+            if not raw_text:
+                status_text.setText("Status: Payload ist leer")
+                return
+
+            try:
+                payload = json.loads(raw_text)
+            except Exception as exc:
+                status_text.setText(f"Status: JSON-Fehler ({type(exc).__name__})")
+                return
+
+            if not isinstance(payload, dict):
+                status_text.setText("Status: Payload muss JSON-Objekt sein")
+                return
+
+            btn_build.setEnabled(False)
+            try:
+                latest_result = dict(build_handler(payload) or {})
+                validation = dict(latest_result.get("validation") or {})
+                status_text.setText(
+                    f"Status: Build abgeschlossen (valid={bool(validation.get('valid', True))})"
+                )
+            except Exception as exc:
+                status_text.setText(f"Status: Build fehlgeschlagen ({type(exc).__name__})")
+                latest_result = {}
+            finally:
+                btn_build.setEnabled(True)
+
+        def _post_result() -> None:
+            if not latest_result:
+                self._append_operator_log("Agent builder has no result yet. Run Sync Build first.")
+                status_text.setText("Status: Kein Ergebnis zum Loggen")
+                return
+            validation = dict(latest_result.get("validation") or {})
+            system_name = str(latest_result.get("system_name") or "agent_system")
+            self._append_operator_log(
+                f"Agent builder completed: system={system_name} valid={bool(validation.get('valid', True))}"
+            )
+            status_text.setText("Status: Ergebnis im Operations-Log vermerkt")
+
+        def _copy_json() -> None:
+            payload_text = editor.toPlainText()
+            try:
+                QApplication.clipboard().setText(payload_text)
+                status_text.setText("Status: JSON in Zwischenablage")
+            except Exception as exc:
+                status_text.setText(f"Status: Kopieren fehlgeschlagen ({type(exc).__name__})")
+
+        btn_template.clicked.connect(_load_template)
+        btn_build.clicked.connect(_run_build)
+        btn_post.clicked.connect(_post_result)
+        btn_copy.clicked.connect(_copy_json)
+        return panel
+
+    def _open_agent_system_builder_in_configuration_tab(self) -> None:
+        if self._config_builder_panel is not None:
+            self.tabs.setCurrentWidget(self._config_tab)
+            return
+        template = self._build_agent_system_template("agent_system", "/create agents")
+        panel = self._create_agent_system_builder_config_panel(
+            initial_payload=template,
+            build_handler=self._execute_agent_system_builder_payload,
+        )
+        self._mount_config_builder_panel(panel)
+
+    def _build_agent_system_template(self, system_name: str, route_prefix: str) -> dict[str, Any]:
+        resolved_system_name = str(system_name or "agent_system").strip() or "agent_system"
+        resolved_route_prefix = str(route_prefix or "/create agents").strip() or "/create agents"
+
+        try:
+            if __package__:
+                from .agents_config import AgentSystemBuilderRequestObject  # type: ignore
+            else:
+                from alde.agents_config import AgentSystemBuilderRequestObject  # type: ignore
+        except ImportError as exc:
+            msg = str(exc)
+            if "attempted relative import" in msg or "no known parent package" in msg:
+                from agents_config import AgentSystemBuilderRequestObject  # type: ignore
+            else:
+                raise
+
+        request_object = AgentSystemBuilderRequestObject(
+            resolved_system_name,
+            {
+                "system_name": resolved_system_name,
+                "route_prefix": resolved_route_prefix,
+            },
+        )
+        request_config = request_object.to_config_dict()
+        integration_targets = dict(request_config.get("integration_targets") or {})
+        persisted_target = str(integration_targets.get("persisted_config_target") or "").strip()
+
+        return {
+            "action": "build_agent_system_configs",
+            "section_identity": {
+                "system_name": request_config.get("system_name"),
+                "system_slug": request_config.get("system_slug"),
+                "route_prefix": request_config.get("route_prefix"),
+                "route_name": request_config.get("route_name"),
+            },
+            "section_agents": {
+                "assistant_agent_name": request_config.get("assistant_agent_name"),
+                "planner_agent_name": request_config.get("planner_agent_name"),
+                "worker_agent_name": request_config.get("worker_agent_name"),
+                "planner_prompt_name": request_config.get("planner_prompt_name"),
+                "worker_prompt_name": request_config.get("worker_prompt_name"),
+                "planner_model": request_config.get("planner_model"),
+                "worker_model": request_config.get("worker_model"),
+                "agent_specs": request_config.get("agent_specs"),
+            },
+            "section_workflows": {
+                "planner_workflow_name": request_config.get("planner_workflow_name"),
+                "builder_workflow_name": request_config.get("builder_workflow_name"),
+                "workflow_specs": request_config.get("workflow_specs"),
+            },
+            "section_handoff_and_action": {
+                "primary_to_planner_schema_name": request_config.get("primary_to_planner_schema_name"),
+                "planner_to_builder_schema_name": request_config.get("planner_to_builder_schema_name"),
+                "action_request_schema_name": request_config.get("action_request_schema_name"),
+                "action_tool_name": request_config.get("action_tool_name"),
+            },
+            "section_planning": {
+                "planning_schema": request_config.get("planning_schema"),
+            },
+            "section_integration": {
+                "integration_targets": integration_targets,
+            },
+            "section_execution": {
+                "write_file": False,
+                "persist_path": persisted_target,
+            },
+        }
+
+    def _resolve_builder_request_from_sections(self, payload: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+        request_payload = dict(payload or {})
+        execution_payload: dict[str, Any] = {}
+
+        section_names = (
+            "section_identity",
+            "section_agents",
+            "section_workflows",
+            "section_handoff_and_action",
+            "section_planning",
+            "section_integration",
+            "section_execution",
+        )
+
+        for section_name in section_names:
+            section_value = request_payload.pop(section_name, None)
+            if not isinstance(section_value, dict):
+                continue
+            if section_name == "section_execution":
+                execution_payload.update(section_value)
+                continue
+            for key, value in section_value.items():
+                if key not in request_payload or request_payload.get(key) in (None, "", [], {}):
+                    request_payload[key] = value
+
+        return request_payload, execution_payload
+
+    def _run_agent_system_builder_sync(
+        self,
+        *,
+        system_name: str,
+        request_payload: dict[str, Any],
+        write_file: bool,
+        persist_path: str | None,
+    ) -> dict[str, Any]:
+        try:
+            if __package__:
+                from .tools import build_agent_system_configs_tool  # type: ignore
+            else:
+                from alde.tools import build_agent_system_configs_tool  # type: ignore
+        except ImportError as exc:
+            msg = str(exc)
+            if "attempted relative import" in msg or "no known parent package" in msg:
+                from tools import build_agent_system_configs_tool  # type: ignore
+            else:
+                raise
+
+        result_text = build_agent_system_configs_tool(
+            system_name=system_name,
+            action_request=request_payload,
+            persist_path=persist_path,
+            write_file=write_file,
+        )
+
+        if isinstance(result_text, str):
+            try:
+                result = json.loads(result_text)
+            except Exception as exc:
+                raise ValueError(f"Builder returned non-JSON output: {exc}") from exc
+        elif isinstance(result_text, dict):
+            result = result_text
+        else:
+            raise ValueError("Builder returned unsupported result type")
+
+        if isinstance(result, dict) and result.get("ok") is False:
+            error_text = str(result.get("error") or "unknown_builder_error")
+            raise ValueError(error_text)
+
+        return dict(result) if isinstance(result, dict) else {"result": result}
+
+    def _execute_agent_system_builder_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        request_payload, execution_payload = self._resolve_builder_request_from_sections(payload)
+        system_name = str(request_payload.get("system_name") or "agent_system").strip() or "agent_system"
+        request_payload.setdefault("system_name", system_name)
+        request_payload.setdefault("route_prefix", "/create agents")
+
+        write_file = bool(execution_payload.get("write_file"))
+        persist_path_text = str(execution_payload.get("persist_path") or "").strip()
+        persist_path = persist_path_text or None
+
+        return self._run_agent_system_builder_sync(
+            system_name=system_name,
+            request_payload=request_payload,
+            write_file=write_file,
+            persist_path=persist_path,
+        )
+
+    def _resolve_ai_widget(self) -> AIWidget | None:
+        window = self.window()
+        chat_dock = getattr(window, "chat_dock", None)
+        chat_widget = chat_dock.widget() if chat_dock is not None and hasattr(chat_dock, "widget") else None
+        if isinstance(chat_widget, AIWidget):
+            return chat_widget
+        return None
+
+    def _open_agent_system_builder_in_ai_chat(self) -> None:
+        try:
+            self._open_agent_system_builder_in_configuration_tab()
+            self._append_operator_log("Agent builder panel opened in Configuration tab")
+        except Exception as exc:
+            self._append_operator_log(f"Agent builder panel failed: {type(exc).__name__}: {exc}")
+            self._open_agent_system_builder_dialog()
+
+    def _open_agent_system_builder_dialog(self) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Agent System Builder (Sync, lokal)")
+        dialog.resize(980, 760)
+
+        root = QVBoxLayout(dialog)
+        root.setContentsMargins(12, 12, 12, 12)
+        root.setSpacing(8)
+
+        intro = QLabel(
+            "Builder-Dict in Sections bearbeiten und synchron lokal ausfuehren. Async folgt spaeter.",
+            dialog,
+        )
+        intro.setWordWrap(True)
+        intro.setObjectName("controlMeta")
+        root.addWidget(intro)
+
+        form = QFormLayout()
+        form.setContentsMargins(0, 0, 0, 0)
+        form.setSpacing(8)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+
+        system_name_edit = QLineEdit("agent_system", dialog)
+        route_prefix_edit = QLineEdit("/create agents", dialog)
+        persist_path_edit = QLineEdit("", dialog)
+        write_file_box = QCheckBox("Persisted module auf Disk schreiben", dialog)
+
+        form.addRow("System Name", system_name_edit)
+        form.addRow("Route Prefix", route_prefix_edit)
+        form.addRow("Persist Path", persist_path_edit)
+        form.addRow("Sync Build", write_file_box)
+        root.addLayout(form)
+
+        editor_label = QLabel("Builder Dict (sectioned)", dialog)
+        editor_label.setObjectName("controlMeta")
+        root.addWidget(editor_label)
+
+        payload_editor = QPlainTextEdit(dialog)
+        payload_editor.setLineWrapMode(QPlainTextEdit.NoWrap)
+        payload_editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        payload_editor.setStyleSheet("QPlainTextEdit { font-size: 17px; }")
+        root.addWidget(payload_editor, 1)
+
+        result_label = QLabel("Build Result", dialog)
+        result_label.setObjectName("controlMeta")
+        root.addWidget(result_label)
+
+        result_view = QPlainTextEdit(dialog)
+        result_view.setReadOnly(True)
+        result_view.setLineWrapMode(QPlainTextEdit.NoWrap)
+        result_view.setFixedHeight(180)
+        root.addWidget(result_view)
+
+        button_box = QDialogButtonBox(dialog)
+        btn_template = button_box.addButton("Template laden", QDialogButtonBox.ActionRole)
+        btn_build = button_box.addButton("Sync Build starten", QDialogButtonBox.AcceptRole)
+        btn_close = button_box.addButton(QDialogButtonBox.Close)
+        root.addWidget(button_box)
+
+        def load_template() -> None:
+            try:
+                template = self._build_agent_system_template(
+                    system_name_edit.text().strip() or "agent_system",
+                    route_prefix_edit.text().strip() or "/create agents",
+                )
+                payload_editor.setPlainText(json.dumps(template, ensure_ascii=False, indent=2))
+                exec_section = dict(template.get("section_execution") or {})
+                if not persist_path_edit.text().strip():
+                    persist_path_edit.setText(str(exec_section.get("persist_path") or ""))
+                write_file_box.setChecked(bool(exec_section.get("write_file")))
+                result_view.setPlainText("Template geladen.")
+            except Exception as exc:
+                result_view.setPlainText(f"Template konnte nicht geladen werden:\n{type(exc).__name__}: {exc}")
+
+        def run_build_sync() -> None:
+            raw_text = payload_editor.toPlainText().strip()
+            if not raw_text:
+                result_view.setPlainText("Builder Dict ist leer. Bitte Template laden oder JSON einfuegen.")
+                return
+
+            try:
+                payload = json.loads(raw_text)
+            except Exception as exc:
+                result_view.setPlainText(f"Ungueltiges JSON:\n{type(exc).__name__}: {exc}")
+                return
+
+            if not isinstance(payload, dict):
+                result_view.setPlainText("Builder Dict muss ein JSON-Objekt sein.")
+                return
+
+            request_payload, execution_payload = self._resolve_builder_request_from_sections(payload)
+            system_name = str(
+                request_payload.get("system_name")
+                or system_name_edit.text().strip()
+                or "agent_system"
+            ).strip() or "agent_system"
+            request_payload.setdefault("system_name", system_name)
+            request_payload.setdefault(
+                "route_prefix",
+                str(route_prefix_edit.text().strip() or "/create agents").strip() or "/create agents",
+            )
+
+            write_file = bool(
+                execution_payload.get("write_file")
+                if "write_file" in execution_payload
+                else write_file_box.isChecked()
+            )
+            persist_path = str(
+                execution_payload.get("persist_path")
+                or persist_path_edit.text().strip()
+                or ""
+            ).strip()
+            resolved_persist_path = persist_path or None
+
+            dialog.setCursor(Qt.WaitCursor)
+            btn_build.setEnabled(False)
+            try:
+                result = self._run_agent_system_builder_sync(
+                    system_name=system_name,
+                    request_payload=request_payload,
+                    write_file=write_file,
+                    persist_path=resolved_persist_path,
+                )
+                result_view.setPlainText(json.dumps(result, ensure_ascii=False, indent=2))
+                validation = dict(result.get("validation") or {}) if isinstance(result, dict) else {}
+                is_valid = bool(validation.get("valid", True))
+                self._append_operator_log(
+                    f"Agent builder completed: system={system_name} valid={is_valid} write_file={write_file}"
+                )
+            except Exception as exc:
+                result_view.setPlainText(f"Sync Build fehlgeschlagen:\n{type(exc).__name__}: {exc}")
+                self._append_operator_log(
+                    f"Agent builder failed: system={system_name} error={type(exc).__name__}: {exc}"
+                )
+            finally:
+                dialog.unsetCursor()
+                btn_build.setEnabled(True)
+
+        btn_template.clicked.connect(load_template)
+        btn_build.clicked.connect(run_build_sync)
+        btn_close.clicked.connect(dialog.reject)
+
+        load_template()
+        dialog.exec()
+
+    def _render_operator_status_row(self, title: str, chip_html: str, detail: str, note: str = "") -> str:
+        note_html = (
+            f"<br><span style=\"color:{self.scheme['col8']};\">{html.escape(note)}</span>"
+            if note else ""
+        )
+        return (
+            f"<li><b>{html.escape(title)}:</b> {chip_html} {html.escape(detail)}{note_html}</li>"
+        )
+
+    def _trace_entry_agent_label(self, trace_entry: dict[str, Any]) -> str:
+        return str(trace_entry.get("agent_label") or trace_entry.get("assistant_name") or "").strip()
+
+    def _trace_entry_workflow_name(self, trace_entry: dict[str, Any]) -> str:
+        return str(trace_entry.get("workflow_name") or "").strip()
+
+    def _trace_entry_tool_names(self, trace_entry: dict[str, Any]) -> list[str]:
+        tool_names: list[str] = []
+        direct_tool = str(trace_entry.get("tool_name") or "").strip()
+        if direct_tool:
+            tool_names.append(direct_tool)
+        for tool_call in trace_entry.get("tool_calls") or []:
+            if not isinstance(tool_call, dict):
+                continue
+            function_object = tool_call.get("function") if isinstance(tool_call.get("function"), dict) else {}
+            tool_name = str(function_object.get("name") or tool_call.get("name") or "").strip()
+            if tool_name:
+                tool_names.append(tool_name)
+        return sorted({name for name in tool_names if name})
+
+    def _trace_entry_handoff_value(self, trace_entry: dict[str, Any]) -> str:
+        handoff = trace_entry.get("handoff") if isinstance(trace_entry.get("handoff"), dict) else {}
+        source_agent = str(handoff.get("source_agent") or "").strip() or "unknown"
+        target_agent = str(handoff.get("target_agent") or "").strip()
+        if not target_agent:
+            return ""
+        protocol = str(handoff.get("protocol") or "").strip()
+        suffix = f" [{protocol}]" if protocol else ""
+        return f"{source_agent}->{target_agent}{suffix}"
+
+    def _filtered_trace_entries(self, snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+        selected_agent = self.trace_agent_selector.currentText().strip()
+        selected_workflow = self.trace_workflow_selector.currentText().strip()
+        selected_tool = self.trace_tool_selector.currentText().strip()
+        selected_handoff = self.trace_handoff_selector.currentText().strip()
+
+        filtered_entries: list[dict[str, Any]] = []
+        for trace_entry in snapshot.get("trace") or []:
+            if not isinstance(trace_entry, dict):
+                continue
+            agent_label = self._trace_entry_agent_label(trace_entry)
+            workflow_name = self._trace_entry_workflow_name(trace_entry)
+            tool_names = self._trace_entry_tool_names(trace_entry)
+            handoff_value = self._trace_entry_handoff_value(trace_entry)
+
+            if selected_agent and selected_agent != "All agents" and agent_label != selected_agent:
+                continue
+            if selected_workflow and selected_workflow != "All workflows" and workflow_name != selected_workflow:
+                continue
+            if selected_tool and selected_tool != "All tools" and selected_tool not in tool_names:
+                continue
+            if selected_handoff:
+                if selected_handoff == "All handoffs":
+                    pass
+                elif selected_handoff == "Handoff only":
+                    if not handoff_value:
+                        continue
+                elif handoff_value != selected_handoff:
+                    continue
+            filtered_entries.append(trace_entry)
+        return filtered_entries
+
+    def _refresh_monitoring_views(self) -> None:
+        monitoring_snapshot = dict(self._last_snapshot.get("monitoring") or {})
+        if monitoring_snapshot:
+            self._render_monitoring_snapshot(monitoring_snapshot)
+
+    def _render_monitor_trace_block(self, label: str, value: Any) -> str:
+        if value in (None, "", {}, []):
+            return ""
+        if isinstance(value, str):
+            body = html.escape(value)
+        else:
+            body = html.escape(json.dumps(value, ensure_ascii=False, indent=2, default=str))
+        return f"<h5>{html.escape(label)}</h5><pre>{body}</pre>"
+
+    def _render_monitor_trace_entry(self, trace_entry: dict[str, Any]) -> str:
+        meta_parts = [
+            f"kind={html.escape(str(trace_entry.get('trace_kind') or 'message'))}",
+            f"role={html.escape(str(trace_entry.get('role') or 'n/a'))}",
+            f"agent={html.escape(str(trace_entry.get('agent_label') or trace_entry.get('assistant_name') or 'n/a'))}",
+            f"workflow={html.escape(str(trace_entry.get('workflow_name') or 'n/a'))}",
+        ]
+        if trace_entry.get("tool_name"):
+            meta_parts.append(f"tool={html.escape(str(trace_entry.get('tool_name')))}")
+        if trace_entry.get("tool_call_id"):
+            meta_parts.append(f"tool_call_id={html.escape(str(trace_entry.get('tool_call_id')))}")
+        return "".join(
+            [
+                f"<h4>{html.escape(str(trace_entry.get('timestamp') or 'n/a'))}</h4>",
+                f"<p><b>{html.escape(str(trace_entry.get('summary') or 'trace'))}</b><br><span style=\"color:{self.scheme['col8']};\">{' | '.join(meta_parts)}</span></p>",
+                self._render_monitor_trace_block("content", trace_entry.get("content")),
+                self._render_monitor_trace_block("tool_calls", trace_entry.get("tool_calls")),
+                self._render_monitor_trace_block("handoff", trace_entry.get("handoff")),
+                self._render_monitor_trace_block("workflow_payload", trace_entry.get("workflow_payload")),
+                self._render_monitor_trace_block("workflow", trace_entry.get("workflow")),
+                self._render_monitor_trace_block("workflow_snapshot", trace_entry.get("workflow_snapshot")),
+                self._render_monitor_trace_block("data", trace_entry.get("data")),
+            ]
+        )
+
     def update_scheme(self, accent: dict[str, str], base: dict[str, str]) -> None:
         self._accent = accent
         self._base = base
         self.scheme = _build_scheme(accent, base)
+        handle_idle, handle_hover, handle_pressed = _splitter_handle_palette(self.scheme)
         self.setStyleSheet(
             f"""
             QFrame#controlHero, QFrame#controlMetricCard {{
                 background: {self.scheme['col5']};
                 border: 1px solid {self.scheme['col10']};
                 border-radius: 14px;
+            }}
+            QFrame#controlBuilderContainer {{
+                background: {self.scheme['col7']};
+                border: none;
             }}
             QLabel#controlTitle {{
                 color: {self.scheme['col6']};
@@ -2707,11 +4555,15 @@ class ControlPlaneWidget(QWidget):
                 min-width: 28px;
             }}
             QTextBrowser#controlBrowser QScrollBar::handle:vertical:hover,
-            QTextBrowser#controlBrowser QScrollBar::handle:horizontal:hover {{
+            QTextBrowser#controlBrowser QScrollBar::handle:horizontal:hover,
+            QTextBrowser#controlBrowser QScrollBar::handle:hover:vertical,
+            QTextBrowser#controlBrowser QScrollBar::handle:hover:horizontal {{
                 background: {self.scheme['col10']};
             }}
             QTextBrowser#controlBrowser QScrollBar::handle:vertical:pressed,
-            QTextBrowser#controlBrowser QScrollBar::handle:horizontal:pressed {{
+            QTextBrowser#controlBrowser QScrollBar::handle:horizontal:pressed,
+            QTextBrowser#controlBrowser QScrollBar::handle:pressed:vertical,
+            QTextBrowser#controlBrowser QScrollBar::handle:pressed:horizontal {{
                 background: {self.scheme['col2']};
             }}
             QTextBrowser#controlBrowser QScrollBar::add-line,
@@ -2724,20 +4576,26 @@ class ControlPlaneWidget(QWidget):
                 height: 0px;
             }}
             QSplitter#controlViewportSplitter::handle {{
-                background: {self.scheme['col10']};
+                background: {handle_idle};
                 margin: 2px 0;
-                border-radius: 4px;
+                border-radius: 6px;
             }}
             QSplitter#controlViewportSplitter::handle:hover {{
-                background: {self.scheme['col2']};
+                background: {handle_hover};
+            }}
+            QSplitter#controlViewportSplitter::handle:pressed {{
+                background: {handle_pressed};
             }}
             QSplitter#controlPrimarySplitter::handle {{
-                background: {self.scheme['col10']};
+                background: {handle_idle};
                 margin: 2px 0;
-                border-radius: 4px;
+                border-radius: 6px;
             }}
             QSplitter#controlPrimarySplitter::handle:hover {{
-                background: {self.scheme['col2']};
+                background: {handle_hover};
+            }}
+            QSplitter#controlPrimarySplitter::handle:pressed {{
+                background: {handle_pressed};
             }}
             QComboBox#controlSelector {{
                 background: {self.scheme['col9']};
@@ -2779,6 +4637,8 @@ class ControlPlaneWidget(QWidget):
             configuration_snapshot = self._load_configuration_snapshot()
             monitoring_snapshot = self._load_monitoring_snapshot()
             operator_snapshot = self._load_operator_snapshot()
+            self._populate_trace_filter_selectors(monitoring_snapshot)
+            self._populate_operator_filter_selectors(operator_snapshot)
             self._render_configuration_snapshot(configuration_snapshot)
             self._render_monitoring_snapshot(monitoring_snapshot)
             self._render_operator_snapshot(operator_snapshot)
@@ -2807,6 +4667,17 @@ class ControlPlaneWidget(QWidget):
             self.monitor_timeline_view.setHtml(
                 "<h3>Timeline unavailable</h3><p>Runtime event projection could not be loaded.</p>"
             )
+            self.monitor_trace_view.setHtml(
+                "<h3>Trace unavailable</h3><p>Detailed chat/tool/handoff projection could not be loaded.</p>"
+            )
+            self.trace_agent_selector.clear()
+            self.trace_workflow_selector.clear()
+            self.trace_tool_selector.clear()
+            self.trace_handoff_selector.clear()
+            self.operator_status_selector.clear()
+            self.operator_audit_selector.clear()
+            self.operator_group_selector.clear()
+            self.operator_source_selector.clear()
             self.operator_summary_view.setHtml(f"<h3>Operations unavailable</h3><p>{error_text}</p>")
             self._last_snapshot = {
                 "configuration": {"agent_count": 0, "workflow_count": 0},
@@ -2906,84 +4777,28 @@ class ControlPlaneWidget(QWidget):
     def _load_monitoring_snapshot(self) -> dict[str, Any]:
         try:
             if __package__:
-                from .desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
-                from .runtime_view import load_runtime_view  # type: ignore
+                from .control_plane_runtime import load_desktop_monitoring_snapshot  # type: ignore
             else:
-                from alde.desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
-                from alde.runtime_view import load_runtime_view  # type: ignore
+                from alde.control_plane_runtime import load_desktop_monitoring_snapshot  # type: ignore
         except ImportError as exc:
             msg = str(exc)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
-                from runtime_view import load_runtime_view  # type: ignore
+                from control_plane_runtime import load_desktop_monitoring_snapshot  # type: ignore
             else:
                 raise
 
-        runtime_view = load_runtime_view(event_limit=40)
-        local_monitoring = DESKTOP_AGENT_RUN_FACADE_SERVICE.load_monitoring_snapshot(limit=8)
-        sessions = runtime_view.get("sessions") or []
-        metrics = runtime_view.get("metrics") or {}
-        events = runtime_view.get("events") or []
-        latest_session = sessions[-1] if sessions else {}
-        runtime_session_count = int(runtime_view.get("session_count") or 0)
-        runtime_event_count = int(runtime_view.get("event_count") or 0)
-        runtime_failure_count = int(metrics.get("failure_count") or 0)
-        local_run_count = int(local_monitoring.get("run_count") or 0)
-        local_active_count = int(local_monitoring.get("active_count") or 0)
-        local_failure_count = int(local_monitoring.get("failure_count") or 0)
-        signal_count = runtime_event_count + local_run_count
-        source_count = int(runtime_session_count > 0 or runtime_event_count > 0) + int(local_run_count > 0)
-        connected_sources = []
-        if runtime_session_count > 0 or runtime_event_count > 0:
-            connected_sources.append("workflow projection")
-        if local_run_count > 0:
-            connected_sources.append("desktop runtime")
-
-        alerts: list[str] = []
-        failure_count = runtime_failure_count + local_failure_count
-        if not sessions and local_run_count <= 0 and runtime_event_count <= 0:
-            alerts.append("No projected runtime sessions yet. Execute a workflow to populate observability.")
-        elif not sessions and (local_run_count > 0 or runtime_event_count > 0):
-            alerts.append("Workflow projection is currently idle, but the monitor is receiving desktop runtime signals.")
-        if runtime_failure_count > 0:
-            alerts.append(f"{runtime_failure_count} failed runtime outcomes recorded in the current projection.")
-        average_latency_ms = float(metrics.get("average_latency_ms") or 0.0)
-        if average_latency_ms >= 1500:
-            alerts.append(f"Average latency is elevated at {average_latency_ms:.0f} ms.")
-        if local_active_count > 0:
-            alerts.append(f"{local_active_count} local desktop runs are still queued or running.")
-        if local_failure_count > 0:
-            alerts.append(f"{local_failure_count} local desktop runs ended in failure.")
-
-        return {
-            "session_count": runtime_session_count,
-            "event_count": runtime_event_count,
-            "success_count": int(metrics.get("success_count") or 0),
-            "failure_count": failure_count,
-            "average_latency_ms": average_latency_ms,
-            "alerts": alerts,
-            "latest_session": latest_session,
-            "events": list(events[-12:]),
-            "local_run_count": local_run_count,
-            "local_active_count": local_active_count,
-            "local_failure_count": local_failure_count,
-            "local_latest_run": local_monitoring.get("latest_run"),
-            "local_recent_runs": list(local_monitoring.get("recent_runs") or []),
-            "signal_count": signal_count,
-            "source_count": source_count,
-            "connected_sources": connected_sources,
-        }
+        return load_desktop_monitoring_snapshot(event_limit=40, trace_limit=80)
 
     def _load_agent_drilldown_snapshot(self, agent_label: str) -> dict[str, Any]:
         try:
             if __package__:
-                from .webapp.services import get_workflow_status_view  # type: ignore
+                from .control_plane_runtime import get_workflow_status_view  # type: ignore
             else:
-                from alde.webapp.services import get_workflow_status_view  # type: ignore
+                from alde.control_plane_runtime import get_workflow_status_view  # type: ignore
         except ImportError as exc:
             msg = str(exc)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from webapp.services import get_workflow_status_view  # type: ignore
+                from control_plane_runtime import get_workflow_status_view  # type: ignore
             else:
                 raise
 
@@ -2994,97 +4809,38 @@ class ControlPlaneWidget(QWidget):
     def _load_workflow_drilldown_snapshot(self, workflow_name: str) -> dict[str, Any]:
         try:
             if __package__:
-                from .agents_factory import get_latest_workflow_status, get_workflow_history_entries  # type: ignore
-                from .webapp.services import _enrich_workflow_status_entry, get_workflow_validation_report  # type: ignore
+                from .control_plane_runtime import get_workflow_status_view  # type: ignore
             else:
-                from alde.agents_factory import get_latest_workflow_status, get_workflow_history_entries  # type: ignore
-                from alde.webapp.services import _enrich_workflow_status_entry, get_workflow_validation_report  # type: ignore
+                from alde.control_plane_runtime import get_workflow_status_view  # type: ignore
         except ImportError as exc:
             msg = str(exc)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from agents_factory import get_latest_workflow_status, get_workflow_history_entries  # type: ignore
-                from webapp.services import _enrich_workflow_status_entry, get_workflow_validation_report  # type: ignore
+                from control_plane_runtime import get_workflow_status_view  # type: ignore
             else:
                 raise
 
-        latest = _enrich_workflow_status_entry(get_latest_workflow_status(workflow_name=workflow_name))
-        items = [
-            _enrich_workflow_status_entry(item)
-            for item in get_workflow_history_entries(workflow_name=workflow_name, limit=8)
-        ]
-        return {
-            "workflow_name": workflow_name,
-            "latest": latest,
-            "items": items,
-            "validation": get_workflow_validation_report(),
-        }
+        detail = get_workflow_status_view(workflow_name=workflow_name, limit=8)
+        detail["workflow_name"] = workflow_name
+        return detail
 
     def _load_operator_snapshot(self) -> dict[str, Any]:
         try:
             if __package__:
-                from .desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
-                from .tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
-                from .webapp.jobs import get_queue_health  # type: ignore
-                from .webapp.services import get_operator_activity_view, get_workflow_validation_report  # type: ignore
+                from .control_plane_runtime import load_operator_status_snapshot  # type: ignore
             else:
-                from alde.desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
-                from alde.tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
-                from alde.webapp.jobs import get_queue_health  # type: ignore
-                from alde.webapp.services import get_operator_activity_view, get_workflow_validation_report  # type: ignore
+                from alde.control_plane_runtime import load_operator_status_snapshot  # type: ignore
         except ImportError as exc:
             msg = str(exc)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from desktop_runtime import DESKTOP_AGENT_RUN_FACADE_SERVICE  # type: ignore
-                from tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
-                from webapp.jobs import get_queue_health  # type: ignore
-                from webapp.services import get_operator_activity_view, get_workflow_validation_report  # type: ignore
+                from control_plane_runtime import load_operator_status_snapshot  # type: ignore
             else:
                 raise
 
-        queue_backend, queue_healthy = get_queue_health()
-        local_monitoring = DESKTOP_AGENT_RUN_FACADE_SERVICE.load_monitoring_snapshot(limit=5)
-        local_queue_health = DESKTOP_AGENT_RUN_FACADE_SERVICE.load_queue_health()
-        local_activity_items = DESKTOP_AGENT_RUN_FACADE_SERVICE.load_activity_view(limit=8)
-        webapp_activity_view = get_operator_activity_view(limit=8)
-        dispatcher_db_path = _default_dispatcher_db_path()
-        dispatcher_error = DOCUMENT_DISPATCH_SERVICE.check_dispatcher_access(
-            resolved_db_path=dispatcher_db_path
-        )
-        validation = get_workflow_validation_report()
-        mcp_config_path = Path(__file__).with_name("mcp_servers.json")
         previous_operations = dict(self._last_snapshot.get("operations") or {})
-        mcp_probe = dict(previous_operations.get("mcp_probe") or {})
-        if not mcp_probe:
-            mcp_probe = {
-                "ok": None,
-                "returncode": None,
-                "stdout": "",
-                "stderr": "probe not executed yet" if mcp_config_path.is_file() else "mcp_servers.json not found",
-            }
-
-        activity_items = sorted(
-            [*local_activity_items, *(webapp_activity_view.get("items") or [])],
-            key=lambda item: str(item.get("timestamp") or ""),
-            reverse=True,
-        )[:12]
-
-        return {
-            "queue_backend": queue_backend,
-            "queue_healthy": bool(queue_healthy),
-            "dispatcher_db_path": dispatcher_db_path,
-            "dispatcher_healthy": dispatcher_error is None,
-            "dispatcher_error": dispatcher_error,
-            "workflow_validation": validation,
-            "mcp_config_path": str(mcp_config_path),
-            "mcp_config_present": mcp_config_path.is_file(),
-            "mcp_probe": mcp_probe,
-            "local_queue_backend": str(local_queue_health.get("backend") or "inmemory"),
-            "local_queue_healthy": bool(local_queue_health.get("healthy", True)),
-            "local_runner_alive": bool(local_queue_health.get("runner_alive", False)),
-            "local_pending_count": int(local_queue_health.get("pending_count") or 0),
-            "local_recent_runs": list(local_monitoring.get("recent_runs") or []),
-            "activity_items": activity_items,
-        }
+        return load_operator_status_snapshot(
+            mcp_probe=dict(previous_operations.get("mcp_probe") or {}),
+            recent_action_entries=list(self._operator_log_entries),
+        )
 
     def _render_configuration_snapshot(self, snapshot: dict[str, Any]) -> None:
         self._set_metric_value("agents", snapshot.get("agent_count", 0))
@@ -3135,13 +4891,25 @@ class ControlPlaneWidget(QWidget):
         )
 
     def _render_monitoring_snapshot(self, snapshot: dict[str, Any]) -> None:
-        self._set_metric_value("sessions", snapshot.get("signal_count", 0))
+        self._set_metric_value("sessions", snapshot.get("session_count", 0))
         self._set_metric_value("failures", snapshot.get("failure_count", 0))
 
         latest_session = snapshot.get("latest_session") or {}
         latest_state = (latest_session.get("latest_workflow_state") or {}) if isinstance(latest_session, dict) else {}
         latest_handoff = (latest_session.get("latest_handoff") or {}) if isinstance(latest_session, dict) else {}
-        connected_sources = ", ".join(snapshot.get("connected_sources") or []) or "none"
+        filtered_trace_entries = self._filtered_trace_entries(snapshot)
+        active_trace_filters = [
+            selector.currentText().strip()
+            for selector in (
+                self.trace_agent_selector,
+                self.trace_workflow_selector,
+                self.trace_tool_selector,
+                self.trace_handoff_selector,
+            )
+            if selector.currentText().strip()
+            and selector.currentText().strip() not in {"All agents", "All workflows", "All tools", "All handoffs"}
+        ]
+        active_filter_text = ", ".join(active_trace_filters) if active_trace_filters else "none"
         alerts_html = "".join(
             f"<li>{html.escape(str(alert))}</li>" for alert in (snapshot.get("alerts") or [])
         )
@@ -3149,20 +4917,20 @@ class ControlPlaneWidget(QWidget):
             "".join(
                 [
                     "<h3>Runtime Monitoring</h3>",
-                    f"<p><b>Connected sources:</b> {html.escape(connected_sources)} | <b>signals:</b> {snapshot.get('signal_count', 0)}</p>",
-                    f"<p><b>Projected sessions:</b> {snapshot.get('session_count', 0)} | <b>runtime events:</b> {snapshot.get('event_count', 0)}</p>",
+                    f"<p><b>Projected sessions:</b> {snapshot.get('session_count', 0)} | <b>events:</b> {snapshot.get('event_count', 0)}</p>",
+                    f"<p><b>Detailed trace entries:</b> {snapshot.get('trace_count', 0)} total | <b>visible:</b> {len(filtered_trace_entries)} | <b>filters:</b> {html.escape(active_filter_text)}</p>",
+                    f"<p><b>Control-plane health:</b> {html.escape('ready' if bool(snapshot.get('healthy')) else 'attention required')} | <b>Queue:</b> {html.escape(str(snapshot.get('queue_backend') or 'n/a'))} ({'ok' if bool(snapshot.get('queue_healthy')) else 'degraded'}) | <b>Active sessions:</b> {int(snapshot.get('active_session_count') or 0)} | <b>Validation issues:</b> {int(snapshot.get('validation_issue_count') or 0)}</p>",
                     f"<p><b>Success:</b> {snapshot.get('success_count', 0)} | <b>Failures:</b> {snapshot.get('failure_count', 0)} | <b>Avg latency:</b> {snapshot.get('average_latency_ms', 0.0):.0f} ms</p>",
-                    f"<p><b>Local desktop runs:</b> {snapshot.get('local_run_count', 0)} total | <b>active:</b> {snapshot.get('local_active_count', 0)} | <b>failed:</b> {snapshot.get('local_failure_count', 0)}</p>",
                     f"<p><b>Latest workflow state:</b> {html.escape(str(latest_state.get('summary') or 'n/a'))}</p>",
                     f"<p><b>Latest handoff:</b> {html.escape(str(latest_handoff.get('summary') or 'n/a'))}</p>",
-                    f"<p><b>Latest local run:</b> {html.escape(str(((snapshot.get('local_latest_run') or {}).get('status') or 'n/a')))} | {html.escape(str(((snapshot.get('local_latest_run') or {}).get('target_agent') or 'n/a')))}</p>",
-                    "<p><b>Drill-downs:</b> Use the selectors below to inspect the latest workflow state per agent and per workflow definition.</p>",
+                    "<p><b>Drill-downs:</b> Use the selectors below to inspect the latest workflow state per agent and per workflow definition. Use Export Runtime for the full JSON trace.</p>",
                     "<h4>Alerts</h4>",
                     f"<ul>{alerts_html or '<li>No active alerts in the current projection.</li>'}</ul>",
                 ]
             )
         )
 
+        timeline_rows: list[str] = []
         timeline_rows: list[str] = []
         for event_object in reversed(snapshot.get("events") or []):
             timeline_rows.append(
@@ -3174,63 +4942,75 @@ class ControlPlaneWidget(QWidget):
                     ]
                 )
             )
-        local_run_rows = []
-        for run_object in snapshot.get("local_recent_runs") or []:
-            local_run_rows.append(
-                "".join(
-                    [
-                        f"<p><b>{html.escape(str(run_object.get('updated_at') or 'n/a'))}</b><br>",
-                        f"local {html.escape(str(run_object.get('status') or 'unknown'))}: ",
-                        f"{html.escape(str(run_object.get('target_agent') or 'n/a'))} / {html.escape(str(run_object.get('request_kind') or 'chat'))}<br>",
-                        f"<span style=\"color:{self.scheme['col8']};\">",
-                        f"{html.escape(str(run_object.get('prompt_preview') or ''))}",
-                        "</span></p>",
-                    ]
-                )
-            )
         self.monitor_timeline_view.setHtml(
-            "<h3>Recent Event Timeline</h3>"
-            + "".join(timeline_rows or ["<p>No runtime events available.</p>"])
-            + "<h4>Local Desktop Runs</h4>"
-            + "".join(local_run_rows or ["<p>No local desktop runs recorded.</p>"])
+            "<h3>Recent Event Timeline</h3>" + "".join(timeline_rows or ["<p>No runtime events available.</p>"])
+        )
+
+        trace_rows = [
+            self._render_monitor_trace_entry(trace_entry)
+            for trace_entry in reversed(filtered_trace_entries)
+            if isinstance(trace_entry, dict)
+        ]
+        self.monitor_trace_view.setHtml(
+            "<h3>Trace Detail</h3>"
+            "<p>Normalized runtime trace across chat messages, tool calls, tool results, handoffs, and workflow payloads.</p>"
+            + "".join(trace_rows or ["<p>No trace entries match the active filters.</p>"])
         )
 
     def _render_operator_snapshot(self, snapshot: dict[str, Any]) -> None:
-        validation = snapshot.get("workflow_validation") or {}
-        mcp_probe = snapshot.get("mcp_probe") or {}
+        service_rows = [row for row in (snapshot.get("service_rows") or []) if isinstance(row, dict)]
+        audit_summary = dict(snapshot.get("audit_summary") or snapshot.get("recent_item_summary") or {})
+        status_counts = dict(audit_summary.get("status_counts") or {})
+        audit_type_counts = dict(audit_summary.get("audit_type_counts") or {})
+        action_group_counts = dict(audit_summary.get("action_group_counts") or {})
+        source_counts = dict(audit_summary.get("source_counts") or {})
+        validation_error_items = [str(item) for item in (snapshot.get("validation_errors") or []) if str(item)]
         validation_errors = "".join(
             f"<li>{html.escape(str(item))}</li>"
-            for item in (validation.get("errors") or [])[:8]
+            for item in validation_error_items
         )
-        dispatcher_detail = html.escape(str(snapshot.get("dispatcher_error") or "Dispatcher projection ready"))
-        mcp_stdout = html.escape(str(mcp_probe.get("stdout") or ""))
-        mcp_stderr = html.escape(str(mcp_probe.get("stderr") or ""))
-        if mcp_probe.get("ok") is None:
-            mcp_status = self._render_status_chip("not-run", "#7a6f4b")
-        elif bool(mcp_probe.get("ok")):
-            mcp_status = self._render_status_chip("pass", self.scheme["col1"])
-        else:
-            mcp_status = self._render_status_chip("fail", "#b04848")
+        status_rows_html: list[str] = []
+        for row in service_rows:
+            state = str(row.get("state") or "unknown").strip().lower()
+            if state == "pass":
+                chip_html = self._render_status_chip("pass", self.scheme["col1"])
+            elif state == "not-run":
+                chip_html = self._render_status_chip("not-run", "#7a6f4b")
+            elif state == "fail":
+                chip_html = self._render_status_chip("fail", "#b04848")
+            else:
+                chip_html = self._render_status_chip(state or "unknown", self.scheme["col8"])
+            status_rows_html.append(
+                self._render_operator_status_row(
+                    str(row.get("title") or "service"),
+                    chip_html,
+                    str(row.get("detail") or "n/a"),
+                    str(row.get("note") or ""),
+                )
+            )
+
+        attention_html = "".join(
+            f"<li>{html.escape(str(item))}</li>" for item in (snapshot.get("alerts") or [])[:6]
+        )
+        recent_actions = [item for item in (snapshot.get("recent_actions") or []) if isinstance(item, dict)]
+        latest_action = recent_actions[0] if recent_actions else {}
+        audit_types_text = ", ".join(f"{key}={value}" for key, value in list(audit_type_counts.items())[:4])
+        action_groups_text = ", ".join(f"{key}={value}" for key, value in list(action_group_counts.items())[:4])
+        sources_text = ", ".join(f"{key}={value}" for key, value in list(source_counts.items())[:3])
         self.operator_summary_view.setHtml(
             "".join(
                 [
                     "<h3>Operator Status</h3>",
-                    f"<p><b>Queue backend:</b> {html.escape(str(snapshot.get('queue_backend') or 'n/a'))} {self._render_bool_chip(bool(snapshot.get('queue_healthy')))}</p>",
-                    f"<p><b>Local runner:</b> {html.escape(str(snapshot.get('local_queue_backend') or 'inmemory'))} {self._render_bool_chip(bool(snapshot.get('local_queue_healthy')))} | pending={int(snapshot.get('local_pending_count') or 0)} | thread_alive={html.escape(str(bool(snapshot.get('local_runner_alive'))))}</p>",
-                    f"<p><b>Dispatcher DB:</b> {html.escape(str(snapshot.get('dispatcher_db_path') or 'n/a'))}<br>{self._render_bool_chip(bool(snapshot.get('dispatcher_healthy')))} {dispatcher_detail}</p>",
-                    f"<p><b>MCP config:</b> {html.escape(str(snapshot.get('mcp_config_path') or 'n/a'))} {self._render_bool_chip(bool(snapshot.get('mcp_config_present')))}</p>",
-                    f"<p><b>MCP probe:</b> {mcp_status}<br>{mcp_stdout or mcp_stderr or 'No MCP probe output available.'}</p>",
-                    f"<p><b>Workflow validation:</b> {self._render_bool_chip(bool(validation.get('valid')))}</p>",
+                    "<p>Focused view of queue health, dispatcher readiness, MCP availability, and workflow validation.</p>",
+                    f"<p><b>Control-plane health:</b> {html.escape('ready' if bool(snapshot.get('healthy')) else 'attention required')} | <b>Healthy checks:</b> {int(snapshot.get('healthy_service_count') or 0)}/{int(snapshot.get('service_count') or 0)} | <b>Queue:</b> {html.escape(str(snapshot.get('queue_backend') or 'n/a'))} ({'ok' if bool(snapshot.get('queue_healthy')) else 'degraded'}) | <b>Validation issues:</b> {int(snapshot.get('validation_issue_count') or 0)} | <b>Alerts:</b> {int(snapshot.get('attention_count') or 0)}</p>",
+                    f"<p><b>Recent actions:</b> {int(snapshot.get('recent_item_count') or 0)} | <b>Pass:</b> {int(status_counts.get('pass') or 0)} | <b>Fail:</b> {int(status_counts.get('fail') or 0)} | <b>Latest:</b> {html.escape(str(latest_action.get('summary') or 'n/a'))}</p>",
+                    f"<p><b>Audit types:</b> {html.escape(audit_types_text or 'n/a')} | <b>Groups:</b> {html.escape(action_groups_text or 'n/a')} | <b>Sources:</b> {html.escape(sources_text or 'n/a')}</p>",
+                    "<h4>Service Status</h4>",
+                    f"<ul>{''.join(status_rows_html) or '<li>No operator checks projected.</li>'}</ul>",
+                    "<h4>Attention</h4>",
+                    f"<ul>{attention_html or '<li>No immediate operator action required.</li>'}</ul>",
                     "<h4>Validation Errors</h4>",
                     f"<ul>{validation_errors or '<li>No active workflow validation errors.</li>'}</ul>",
-                    "<h4>Recent Local Runs</h4>",
-                    "<ul>"
-                    + "".join(
-                        f"<li>{html.escape(str(item.get('updated_at') or 'n/a'))} | {html.escape(str(item.get('status') or 'unknown'))} | {html.escape(str(item.get('target_agent') or 'n/a'))}</li>"
-                        for item in (snapshot.get('local_recent_runs') or [])[:5]
-                    )
-                    + ("" if (snapshot.get('local_recent_runs') or []) else "<li>No local desktop runs recorded.</li>")
-                    + "</ul>",
                 ]
             )
         )
@@ -3262,6 +5042,108 @@ class ControlPlaneWidget(QWidget):
 
         del agent_blocker
         del workflow_blocker
+
+    def _populate_trace_filter_selectors(self, monitoring_snapshot: dict[str, Any]) -> None:
+        filter_options = dict(monitoring_snapshot.get("trace_filter_options") or {})
+        current_agent = self.trace_agent_selector.currentText().strip()
+        current_workflow = self.trace_workflow_selector.currentText().strip()
+        current_tool = self.trace_tool_selector.currentText().strip()
+        current_handoff = self.trace_handoff_selector.currentText().strip()
+
+        trace_agent_options = ["All agents"] + [str(item) for item in filter_options.get("agents") or [] if str(item)]
+        trace_workflow_options = ["All workflows"] + [str(item) for item in filter_options.get("workflows") or [] if str(item)]
+        trace_tool_options = ["All tools"] + [str(item) for item in filter_options.get("tools") or [] if str(item)]
+        trace_handoff_options = ["All handoffs", "Handoff only"] + [str(item) for item in filter_options.get("handoffs") or [] if str(item)]
+
+        agent_blocker = QtCore.QSignalBlocker(self.trace_agent_selector)
+        workflow_blocker = QtCore.QSignalBlocker(self.trace_workflow_selector)
+        tool_blocker = QtCore.QSignalBlocker(self.trace_tool_selector)
+        handoff_blocker = QtCore.QSignalBlocker(self.trace_handoff_selector)
+
+        self.trace_agent_selector.clear()
+        self.trace_workflow_selector.clear()
+        self.trace_tool_selector.clear()
+        self.trace_handoff_selector.clear()
+
+        self.trace_agent_selector.addItems(trace_agent_options)
+        self.trace_workflow_selector.addItems(trace_workflow_options)
+        self.trace_tool_selector.addItems(trace_tool_options)
+        self.trace_handoff_selector.addItems(trace_handoff_options)
+
+        self.trace_agent_selector.setCurrentText(current_agent if current_agent in trace_agent_options else "All agents")
+        self.trace_workflow_selector.setCurrentText(current_workflow if current_workflow in trace_workflow_options else "All workflows")
+        self.trace_tool_selector.setCurrentText(current_tool if current_tool in trace_tool_options else "All tools")
+        self.trace_handoff_selector.setCurrentText(current_handoff if current_handoff in trace_handoff_options else "All handoffs")
+
+        del agent_blocker
+        del workflow_blocker
+        del tool_blocker
+        del handoff_blocker
+
+    def _populate_operator_filter_selectors(self, operator_snapshot: dict[str, Any]) -> None:
+        filter_options = dict(operator_snapshot.get("recent_action_filters") or operator_snapshot.get("recent_item_filters") or {})
+        current_status = self.operator_status_selector.currentText().strip() or str(self._operator_filter_preferences.get("status") or "")
+        current_audit = self.operator_audit_selector.currentText().strip() or str(self._operator_filter_preferences.get("audit_type") or "")
+        current_group = self.operator_group_selector.currentText().strip() or str(self._operator_filter_preferences.get("action_group") or "")
+        current_source = self.operator_source_selector.currentText().strip() or str(self._operator_filter_preferences.get("source") or "")
+
+        status_options = ["All statuses"] + [str(item) for item in filter_options.get("statuses") or [] if str(item)]
+        audit_options = ["All action types"] + [str(item) for item in filter_options.get("audit_types") or [] if str(item)]
+        group_options = ["All action groups"] + [str(item) for item in filter_options.get("action_groups") or [] if str(item)]
+        source_options = ["All sources"] + [str(item) for item in filter_options.get("sources") or [] if str(item)]
+
+        status_blocker = QtCore.QSignalBlocker(self.operator_status_selector)
+        audit_blocker = QtCore.QSignalBlocker(self.operator_audit_selector)
+        group_blocker = QtCore.QSignalBlocker(self.operator_group_selector)
+        source_blocker = QtCore.QSignalBlocker(self.operator_source_selector)
+
+        self.operator_status_selector.clear()
+        self.operator_audit_selector.clear()
+        self.operator_group_selector.clear()
+        self.operator_source_selector.clear()
+
+        self.operator_status_selector.addItems(status_options)
+        self.operator_audit_selector.addItems(audit_options)
+        self.operator_group_selector.addItems(group_options)
+        self.operator_source_selector.addItems(source_options)
+
+        self.operator_status_selector.setCurrentText(current_status if current_status in status_options else "All statuses")
+        self.operator_audit_selector.setCurrentText(current_audit if current_audit in audit_options else "All action types")
+        self.operator_group_selector.setCurrentText(current_group if current_group in group_options else "All action groups")
+        self.operator_source_selector.setCurrentText(current_source if current_source in source_options else "All sources")
+        self._operator_filter_preferences = self._current_operator_filter_preferences()
+        self._save_operator_filter_preferences()
+
+        del status_blocker
+        del audit_blocker
+        del group_blocker
+        del source_blocker
+
+    def _filtered_operator_actions(self, snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+        selected_status = self.operator_status_selector.currentText().strip()
+        selected_audit = self.operator_audit_selector.currentText().strip()
+        selected_group = self.operator_group_selector.currentText().strip()
+        selected_source = self.operator_source_selector.currentText().strip()
+
+        filtered_entries: list[dict[str, Any]] = []
+        for action_entry in snapshot.get("recent_actions") or []:
+            if not isinstance(action_entry, dict):
+                continue
+            action_status = str(action_entry.get("status") or "").strip()
+            audit_type = str(action_entry.get("audit_type") or "").strip()
+            action_group = str(action_entry.get("action_group") or "").strip()
+            source = str(action_entry.get("source") or "").strip()
+
+            if selected_status and selected_status != "All statuses" and action_status != selected_status:
+                continue
+            if selected_audit and selected_audit != "All action types" and audit_type != selected_audit:
+                continue
+            if selected_group and selected_group != "All action groups" and action_group != selected_group:
+                continue
+            if selected_source and selected_source != "All sources" and source != selected_source:
+                continue
+            filtered_entries.append(action_entry)
+        return filtered_entries
 
     def _refresh_drilldown_views(self) -> None:
         agent_label = self.agent_selector.currentText().strip()
@@ -3541,13 +5423,13 @@ class ControlPlaneWidget(QWidget):
         try:
             try:
                 if __package__:
-                    from .webapp.jobs import get_queue_health  # type: ignore
+                    from .control_plane_runtime import get_queue_health  # type: ignore
                 else:
-                    from alde.webapp.jobs import get_queue_health  # type: ignore
+                    from alde.control_plane_runtime import get_queue_health  # type: ignore
             except ImportError as exc:
                 msg = str(exc)
                 if "attempted relative import" in msg or "no known parent package" in msg:
-                    from webapp.jobs import get_queue_health  # type: ignore
+                    from control_plane_runtime import get_queue_health  # type: ignore
                 else:
                     raise
 
@@ -3555,8 +5437,7 @@ class ControlPlaneWidget(QWidget):
             self._append_operator_log(
                 f"Queue probe: backend={queue_backend} healthy={queue_healthy}"
             )
-            operations = dict(self._last_snapshot.get("operations") or {})
-            operations.update({"queue_backend": queue_backend, "queue_healthy": bool(queue_healthy)})
+            operations = self._load_operator_snapshot()
             self._last_snapshot["operations"] = operations
             self._render_operator_snapshot(operations)
         except Exception as exc:
@@ -3589,7 +5470,9 @@ class ControlPlaneWidget(QWidget):
                 }
             )
             self._last_snapshot["operations"] = operations
-            self._render_operator_snapshot(operations)
+            refreshed_operations = self._load_operator_snapshot()
+            self._last_snapshot["operations"] = refreshed_operations
+            self._render_operator_snapshot(refreshed_operations)
             if dispatcher_error is None:
                 self._append_operator_log(f"Dispatcher probe passed: {dispatcher_db_path}")
             else:
@@ -3609,7 +5492,9 @@ class ControlPlaneWidget(QWidget):
                 }
             )
             self._last_snapshot["operations"] = operations
-            self._render_operator_snapshot(operations)
+            refreshed_operations = self._load_operator_snapshot()
+            self._last_snapshot["operations"] = refreshed_operations
+            self._render_operator_snapshot(refreshed_operations)
             backup_text = f" backup={result.get('backup_path')}" if result.get("backup_path") else ""
             self._append_operator_log(f"Dispatcher repair completed:{backup_text}")
         except Exception as exc:
@@ -3659,7 +5544,9 @@ class ControlPlaneWidget(QWidget):
             operations = dict(self._last_snapshot.get("operations") or {})
             operations["mcp_probe"] = probe
             self._last_snapshot["operations"] = operations
-            self._render_operator_snapshot(operations)
+            refreshed_operations = self._load_operator_snapshot()
+            self._last_snapshot["operations"] = refreshed_operations
+            self._render_operator_snapshot(refreshed_operations)
             if probe.get("ok"):
                 self._append_operator_log("MCP probe passed.")
             else:
@@ -3696,53 +5583,94 @@ class ControlPlaneWidget(QWidget):
     def _export_runtime_snapshot_report(self) -> None:
         try:
             if __package__:
-                from .runtime_view import export_runtime_view  # type: ignore
+                from .control_plane_runtime import export_control_plane_snapshot  # type: ignore
             else:
-                from alde.runtime_view import export_runtime_view  # type: ignore
+                from alde.control_plane_runtime import export_control_plane_snapshot  # type: ignore
         except ImportError as exc:
             msg = str(exc)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from runtime_view import export_runtime_view  # type: ignore
+                from control_plane_runtime import export_control_plane_snapshot  # type: ignore
             else:
                 raise
 
         try:
-            export_path = export_runtime_view(event_limit=80)
-            self._append_operator_log(f"Runtime snapshot exported to {export_path}")
-            QMessageBox.information(self, "Runtime Snapshot", f"Runtime snapshot exported to:\n{export_path}")
+            operations_snapshot = dict(self._last_snapshot.get("operations") or {})
+            export_path = export_control_plane_snapshot(
+                event_limit=80,
+                trace_limit=400,
+                mcp_probe=operations_snapshot.get("mcp_probe") if isinstance(operations_snapshot.get("mcp_probe"), dict) else None,
+                recent_action_entries=list(self._operator_log_entries),
+            )
+            self._append_operator_log(f"Control-plane snapshot exported to {export_path}")
+            QMessageBox.information(self, "Control-Plane Snapshot", f"Control-plane snapshot exported to:\n{export_path}")
         except Exception as exc:
             self._append_operator_log(f"Runtime export failed: {type(exc).__name__}: {exc}")
-            QMessageBox.warning(self, "Runtime Snapshot", f"Export failed:\n{type(exc).__name__}: {exc}")
+            QMessageBox.warning(self, "Control-Plane Snapshot", f"Export failed:\n{type(exc).__name__}: {exc}")
 
     def _append_operator_log(self, message: str) -> None:
-        timestamp = datetime.now().strftime("%H:%M:%S")
-        self._operator_log_entries.append(f"{timestamp} | {message}")
+        timestamp = datetime.now().astimezone().isoformat(timespec="seconds")
+        lowered_message = message.lower()
+        if any(token in lowered_message for token in ("failed", "error", "missing", "unreachable", "degraded", "locked")):
+            status = "fail"
+        elif any(token in lowered_message for token in ("completed", "passed", "refreshed", "ready", "healthy")):
+            status = "pass"
+        else:
+            status = "info"
+        title = message.split(":", 1)[0].strip() or "operator.action"
+        self._operator_log_entries.append(
+            {
+                "timestamp": timestamp,
+                "title": title,
+                "summary": message,
+                "source": "desktop_operator",
+                "status": status,
+            }
+        )
         self._operator_log_entries = self._operator_log_entries[-12:]
+        try:
+            operations_snapshot = self._load_operator_snapshot()
+            self._last_snapshot["operations"] = operations_snapshot
+            self._populate_operator_filter_selectors(operations_snapshot)
+            self._render_operator_snapshot(operations_snapshot)
+        except Exception:
+            pass
         self._render_operator_log()
 
     def _render_operator_log(self) -> None:
-        action_rows = "".join(
-            f"<li>{html.escape(str(item))}</li>" for item in reversed(self._operator_log_entries)
-        )
-        activity_items = []
-        if isinstance(self._last_snapshot, dict):
-            activity_items = list(((self._last_snapshot.get("operations") or {}).get("activity_items") or []))
-        activity_rows = "".join(
+        operations_snapshot = dict(self._last_snapshot.get("operations") or {})
+        recent_actions = [item for item in (operations_snapshot.get("recent_actions") or []) if isinstance(item, dict)]
+        filtered_actions = self._filtered_operator_actions(operations_snapshot) if operations_snapshot else []
+        active_filter_parts = [
+            f"status={self.operator_status_selector.currentText().strip() or 'All statuses'}",
+            f"type={self.operator_audit_selector.currentText().strip() or 'All action types'}",
+            f"group={self.operator_group_selector.currentText().strip() or 'All action groups'}",
+            f"source={self.operator_source_selector.currentText().strip() or 'All sources'}",
+        ]
+        rows = "".join(
             "".join(
                 [
-                    f"<li><b>{html.escape(str(item.get('timestamp') or 'n/a'))}</b> ",
-                    f"[{html.escape(str(item.get('source') or 'ops'))}] ",
-                    f"{html.escape(str(item.get('title') or 'event'))}<br>",
-                    f"<span style=\"color:{self.scheme['col8']};\">{html.escape(str(item.get('summary') or ''))}</span></li>",
+                    f"<li><b>{html.escape(str(item.get('timestamp') or 'n/a'))}</b><br>",
+                    f"{html.escape(str(item.get('title') or 'operator.action'))}<br>",
+                    f"<span style=\"color:{self.scheme['col8']};\">{html.escape(str(item.get('summary') or ''))} | group={html.escape(str(item.get('action_group') or 'operator'))} | audit={html.escape(str(item.get('audit_type') or 'action'))} | source={html.escape(str(item.get('source') or 'desktop_operator'))} | status={html.escape(str(item.get('status') or 'info'))}</span></li>",
                 ]
             )
-            for item in activity_items
+            for item in filtered_actions
         )
+        if not rows:
+            if recent_actions:
+                rows = "<li>No operator actions match the active filters.</li>"
+            else:
+                rows = "".join(
+                    f"<li>{html.escape(str(item))}</li>" for item in reversed(self._operator_log_entries)
+                )
         self.operator_log_view.setHtml(
-            "<h3>Operator Actions</h3>"
-            + (f"<ul>{action_rows}</ul>" if action_rows else "<p>No operator actions executed yet.</p>")
-            + "<h4>Unified Activity Feed</h4>"
-            + (f"<ul>{activity_rows}</ul>" if activity_rows else "<p>No desktop or webapp activity recorded yet.</p>")
+            "<h3>Recent Operator Actions</h3>"
+            + f"<p><b>Visible:</b> {len(filtered_actions) if recent_actions else len(self._operator_log_entries)} / <b>Total:</b> {len(recent_actions) if recent_actions else len(self._operator_log_entries)} | {' | '.join(html.escape(part) for part in active_filter_parts)}</p>"
+            + (
+                f"<ul>{rows}</ul>"
+                if rows
+                else "<p>Probe, repair, and export results appear here.</p>"
+            )
         )
 
     def _render_status_chip(self, label: str, color: str) -> str:
@@ -3768,7 +5696,7 @@ class MainAIEditor(QMainWindow):
     ORG_NAME: Final = "ai.bentu"
 
     APP_NAME: Final = "AI-Editor"
-    _SCHEMA:  Final = 1
+    _SCHEMA:  Final = 2
 
     # ---------------------------------------------------------------- init --
 
@@ -3839,6 +5767,33 @@ class MainAIEditor(QMainWindow):
             background:{_build_scheme(self._accent, self._base)['col7']};
                                 /* ← remove remaining frame   */
         """)
+
+    def _editor_surface_enabled(self) -> bool:
+        return _env_truthy("AI_IDE_ENABLE_EDITOR_SURFACE", "0")
+
+    def _terminal_surface_enabled(self) -> bool:
+        return _env_truthy("AI_IDE_ENABLE_TERMINAL_SURFACE", "0")
+
+    def _configure_workspace_actions(self) -> None:
+        editor_enabled = self._editor_surface_enabled()
+        terminal_enabled = self._terminal_surface_enabled()
+
+        for action in (
+            self.act_new_tab,
+            self.act_close_tab,
+            self.act_save_tab,
+            self.act_save_tab_as,
+            self.act_open,
+            self.act_toggle_tabdock,
+            self.act_clone_tabdock,
+        ):
+            action.setEnabled(editor_enabled)
+
+        self.act_toggle_console.setEnabled(terminal_enabled)
+        if not editor_enabled:
+            self.act_toggle_tabdock.setChecked(False)
+        if not terminal_enabled:
+            self.act_toggle_console.setChecked(False)
     # ================================================= seitliche Widgets ===
 
     def _create_side_widgets(self):
@@ -3878,7 +5833,6 @@ class MainAIEditor(QMainWindow):
             self.chat_dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
             self.chat_dock.setAllowedAreas(Qt.LeftDockWidgetArea | Qt.RightDockWidgetArea)
             self.chat_dock.setWidget(QWidget())
-        self.addDockWidget(Qt.RightDockWidgetArea, self.chat_dock)
         chat_widget = self.chat_dock.widget()
         if isinstance(chat_widget, AIWidget):
             placeholder_color = chat_widget.prompt_edit.palette().color(QPalette.PlaceholderText)
@@ -3927,50 +5881,27 @@ class MainAIEditor(QMainWindow):
     # ================================================= zentraler Splitter ==
     
     def _create_central_splitters(self):
-
-        # ----------- rechter vertikaler Splitter -------------------------
-
-        self.right_split = QSplitter(Qt.Vertical, self)
-
-        disable_console = _env_truthy("AI_IDE_DISABLE_CONSOLE", "0")
-        disable_tabs = _env_truthy("AI_IDE_DISABLE_TABS", "0")
-        disable_control_plane = _env_truthy("AI_IDE_DISABLE_CONTROL_PLANE", "0")
-
-        if not disable_control_plane:
-            self._strip_dock_decoration(self.control_plane_dock)
-            self.right_split.addWidget(self.control_plane_dock)
-
-        if not disable_console:
-            self._create_console_dock()      # unten
-        else:
-            self.console_dock = QDockWidget("Console", self)
-            self.console_dock.setObjectName("ConsoleDock")
-            self.console_widget = QTextEdit("Console disabled (AI_IDE_DISABLE_CONSOLE=1)")
-            self.console_dock.setWidget(self.console_widget)
-            self._strip_dock_decoration(self.console_dock)
-            self.right_split.addWidget(self.console_dock)
-
-        if not disable_control_plane and hasattr(self, "console_dock"):
-            self.console_dock.hide()
-
-        if not disable_tabs:
-            self._add_initial_tab_dock()     # oben
-        else:
-            tabs_placeholder = QTextEdit("Tabs disabled (AI_IDE_DISABLE_TABS=1)")
-            self.right_split.addWidget(tabs_placeholder)
-
-        self.right_split.setStretchFactor(0, 4)
-        self.right_split.setStretchFactor(1, 2)
-        self.right_split.setStretchFactor(2, 1)
-
-        # ----------- linker horizontaler Splitter ------------------------
-
+        self._strip_dock_decoration(self.files_dock)
+        self._strip_dock_decoration(self.chat_dock)
+        self._strip_dock_decoration(self.control_plane_dock)
         self.main_split = QSplitter(Qt.Horizontal, self)
+        self.main_split.setObjectName("mainHorizontalSplitter")
+        self.main_split.setChildrenCollapsible(False)
+        self.main_split.setHandleWidth(7)
+        self.main_split.setOpaqueResize(True)
         self.main_split.addWidget(self.files_dock)       # links
-        self.main_split.addWidget(self.right_split)      # rechts
-        self.main_split.setSizes([250, 1000])
+        self.main_split.addWidget(self.chat_dock)        # mitte
+        self.main_split.addWidget(self.control_plane_dock)  # rechts
+        self.main_split.setStretchFactor(0, 1)
+        self.main_split.setStretchFactor(1, 3)
+        self.main_split.setStretchFactor(2, 2)
+        self.main_split.setSizes([280, 760, 460])
+        self._apply_main_splitter_style()
 
         self.setCentralWidget(self.main_split)
+
+        self._create_console_dock()
+        self.console_dock.hide()
 
     # ----------------------------------------------------------------------
     
@@ -3980,19 +5911,43 @@ class MainAIEditor(QMainWindow):
 
         This method initializes a QDockWidget labeled "Console", sets its object name,
         creates a QTextEdit widget for displaying console output, and adds it to the dock.
-        It also removes the dock's default decorations and adds the dock to the right split area
-        of the main window.
+        It also removes the dock's default decorations. The dock stays detached from the
+        active workspace layout while the terminal surface is temporarily disabled.
 
         Side Effects:
             - Modifies self.console_dock and self.console_widget attributes.
-            - Updates the right_split layout by adding the console dock widget.
         """
         self.console_dock = QDockWidget("Console", self)
         self.console_dock.setObjectName("ConsoleDock")
-        self.console_widget = QTextEdit("Console / Output")
+        self.console_widget = QTextEdit("Console temporarily disabled")
+        self.console_widget.setReadOnly(True)
         self.console_dock.setWidget(self.console_widget)
         self._strip_dock_decoration(self.console_dock)
-        self.right_split.addWidget(self.console_dock)
+
+    def _apply_main_splitter_style(self) -> None:
+        splitter = getattr(self, "main_split", None)
+        if splitter is None:
+            return
+
+        scheme = _build_scheme(self._accent, self._base)
+        handle_idle, _, _ = _splitter_handle_palette(scheme)
+        handle_hover = str(scheme.get("col2") or scheme.get("col1") or "#6280ff")
+        handle_pressed = str(scheme.get("col2") or scheme.get("col1") or "#6280ff")
+        splitter.setStyleSheet(
+            f"""
+            QSplitter#mainHorizontalSplitter::handle {{
+                background: {handle_idle};
+                margin: 2px 0;
+                border-radius: 6px;
+            }}
+            QSplitter#mainHorizontalSplitter::handle:hover {{
+                background: {handle_hover};
+            }}
+            QSplitter#mainHorizontalSplitter::handle:pressed {{
+                background: {handle_pressed};
+            }}
+            """
+        )
 
     # ----------------------------------------------------------------------
     """ URGENTLY SET FOCUS ON DOCS AND TABS """             """TODO File operations musst be processes on focused tab & doc
@@ -4042,13 +5997,13 @@ class MainAIEditor(QMainWindow):
             )
 
         self.act_toggle_accent = QAction(
-            _icon("reload_.svg"), 
-            "", self, 
+            _draw_circle_icon(),
+            "Color Scheme", self,
             triggered = self.
             _toggle_accent
             )
-        
-        self.act_close_tab.setToolTip("change lite color")
+
+        self.act_toggle_accent.setToolTip("Farbschema wechseln")
 
         # ---------- NEU: Chat-Toggle --------------- # <– 10.07.2025 ---------
 
@@ -4062,7 +6017,7 @@ class MainAIEditor(QMainWindow):
         self.act_toggle_chat.setToolTip("AI-Chat anzeigen/ausblenden")
 
         self.act_toggle_control_plane = QAction(
-            sty.standardIcon(QStyle.SP_FileDialogDetailedView),
+            _icon("menu_24.svg"),
             "Control Plane",
             self,
             checkable=True,
@@ -4072,7 +6027,7 @@ class MainAIEditor(QMainWindow):
         self.act_toggle_control_plane.toggled.connect(self.control_plane_dock.setVisible)
 
         self.act_refresh_control_plane = QAction(
-            sty.standardIcon(QStyle.SP_BrowserReload),
+            _icon("reload_.svg"),
             "Refresh Control Plane",
             self,
             triggered=self._refresh_control_plane,
@@ -4085,14 +6040,14 @@ class MainAIEditor(QMainWindow):
         # ---------- Right-Dock Toggle (for right side-toolbar) --------------
         # Uses panel-style icons instead of the chat glyph.
         self.act_toggle_right_dock = QAction(
-            _icon("open_in_new_dock.svg"),
-            "Right Dock",
+            _icon("right_panel_close_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg"),
+            "Monitor",
             self,
             checkable=True,
             checked=True,
         )
-        self.act_toggle_right_dock.setToolTip("Right-Dock anzeigen/ausblenden")
-        self.act_toggle_right_dock.toggled.connect(self.chat_dock.setVisible)
+        self.act_toggle_right_dock.setToolTip("Monitor anzeigen/ausblenden")
+        self.act_toggle_right_dock.toggled.connect(self.control_plane_dock.setVisible)
 
         # Greyscale toggle ----------------------------------------------------
         self.act_grey = QAction(
@@ -4107,7 +6062,7 @@ class MainAIEditor(QMainWindow):
         
         # ---- project-overview / explorer ---------------------------------
         self.act_toggle_explorer = QAction(
-             _icon("left_panel_open_.svg"),                # Symbols/explorer.svg
+               _icon("explorer.svg"),
              "Explorer", self,
              checkable=True, checked=True
              )
@@ -4186,6 +6141,8 @@ class MainAIEditor(QMainWindow):
         self.act_clone_tabdock.triggered.connect(
             self._clone_tab_dock)
 
+        self._configure_workspace_actions()
+
     # <– changes 10.07.2025
     # ================================================= toolbars ===========
 
@@ -4208,22 +6165,10 @@ class MainAIEditor(QMainWindow):
                                       base.height() + 3))
 
         self.addToolBar(Qt.TopToolBarArea, self.tb_top)
-        self.tb_top.addActions([ 
+        self.tb_top.addActions([
             self.act_toggle_explorer,
-            self.act_new_tab,
-            self.act_close_tab,
-            self.act_save_tab,
-            self.act_open,
-            self.act_toggle_accent,
             self.act_toggle_chat,
-            self.act_toggle_control_plane,
-            self.act_clone_tabdock,
-            self.act_refresh_control_plane,
-            self.act_toggle_console,
-            self.act_save_tab,
-            self.act_save_tab_as
-            ]
-            )
+        ])
 
         # ---------------- seitliche Toolbars ------------------------------- 
 
@@ -4236,6 +6181,17 @@ class MainAIEditor(QMainWindow):
 
         for bar in (self.tb_left, self.tb_right):
             bar.setIconSize(self.tb_top.iconSize())
+            bar.setToolButtonStyle(Qt.ToolButtonIconOnly)
+            bar.setMovable(False)
+            bar.setFloatable(False)
+            bar.setStyleSheet(
+                "QToolButton {"
+                " min-width: 34px;"
+                " min-height: 34px;"
+                " padding: 0px;"
+                " margin: 0px;"
+                " }"
+            )
             self.addToolBar(Qt.LeftToolBarArea if bar is self.tb_left
                             else Qt.RightToolBarArea, bar)
 
@@ -4244,10 +6200,12 @@ class MainAIEditor(QMainWindow):
             self.tb_left.addSeparator()
             self.tb_left.addAction(self.act_toggle_explorer)
 
-        # Right toolbar: Right-Dock open/close
-        if hasattr(self, "act_toggle_right_dock"):
+        # Right toolbar: Agentic Control Plane toggle + refresh
+        if hasattr(self, "act_toggle_control_plane"):
             self.tb_right.addSeparator()
-            self.tb_right.addAction(self.act_toggle_right_dock)
+            self.tb_right.addAction(self.act_toggle_control_plane)
+        if hasattr(self, "act_refresh_control_plane"):
+            self.tb_right.addAction(self.act_refresh_control_plane)
 
     # ─────────────────────────  menu bar  ────────────────────────────────────
     
@@ -4265,6 +6223,9 @@ class MainAIEditor(QMainWindow):
         act_save_as  = QAction("Speichern unter…", self, shortcut=QKeySequence("Ctrl+Shift+S"), triggered=self._file_save_as_tab_via_tabs)
         act_reopen   = QAction("Geschlossenen Tab wiederherstellen", self, shortcut=QKeySequence("Ctrl+Shift+T"), triggered=self._file_reopen_closed_tab)
         act_set_enc  = QAction("Encoding setzen…", self, triggered=self._file_set_encoding)
+        editor_enabled = self._editor_surface_enabled()
+        for action in (act_open_txt, act_open_enc, act_new, act_save, act_save_as, act_reopen, act_set_enc):
+            action.setEnabled(editor_enabled)
 
         # Recent submenu: rebuild on show
         self._file_recent_menu = filem.addMenu("Zuletzt geöffnet")
@@ -4294,11 +6255,15 @@ class MainAIEditor(QMainWindow):
              self.act_toggle_chat,                        # <– 10.07.2025 
              self.act_toggle_control_plane,
              self.act_toggle_explorer,
-             self.act_toggle_tabdock,
-             self.act_toggle_console,
+             self.act_toggle_accent,
              self.menu_visible_action,
              self.act_grey
             ]
+
+        if self._editor_surface_enabled():
+            action_list.insert(3, self.act_toggle_tabdock)
+        if self._terminal_surface_enabled():
+            action_list.insert(4, self.act_toggle_console)
         
         def _addActions(act: QAction, last: bool = False) -> None:
             for act in action_list:
@@ -4311,9 +6276,10 @@ class MainAIEditor(QMainWindow):
         # -------------- TOOLS ------------------------------------------------
         
         tools = mbar.addMenu("Tools")
-        tools.addAction(self.act_clone_tabdock)
-        tools.addSeparator()
         tools.addAction(self.act_refresh_control_plane)
+        if self._editor_surface_enabled():
+            tools.addSeparator()
+            tools.addAction(self.act_clone_tabdock)
    
     # ================================================= status =============
     
@@ -4322,14 +6288,22 @@ class MainAIEditor(QMainWindow):
         st.showMessage("Ready")
         self._st_agents = QLabel("0 agents")
         self._st_workflows = QLabel("0 workflows")
-        self._st_sessions = QLabel("0 signals")
+        self._st_sessions = QLabel("0 sessions")
         self._st_runtime = QLabel("runtime n/a")
+        self._st_enc = QLabel("UTF-8")
+        for label in (
+            self._st_agents,
+            self._st_workflows,
+            self._st_sessions,
+            self._st_runtime,
+            self._st_enc,
+        ):
+            label.setStyleSheet("font-size: 12px;")
         st.addPermanentWidget(self._st_agents)
         st.addPermanentWidget(self._st_workflows)
         st.addPermanentWidget(self._st_sessions)
         st.addPermanentWidget(self._st_runtime)
         # permanenter Encoding-Indikator
-        self._st_enc = QLabel("UTF-8")
         st.addPermanentWidget(self._st_enc)
         self.setStatusBar(st)
         self._update_control_plane_status(getattr(getattr(self, "control_plane_widget", None), "_last_snapshot", {}))
@@ -4348,12 +6322,16 @@ class MainAIEditor(QMainWindow):
         self.control_plane_dock.visibilityChanged.connect(
             self.act_toggle_control_plane.setChecked
         )
+        self.files_dock.visibilityChanged.connect(lambda _v: self._rebalance_workspace_columns())
+        self.chat_dock.visibilityChanged.connect(lambda _v: self._rebalance_workspace_columns())
+        self.control_plane_dock.visibilityChanged.connect(lambda _v: self._rebalance_workspace_columns())
 
         if hasattr(self, "act_toggle_right_dock"):
-            self.chat_dock.visibilityChanged.connect(self.act_toggle_right_dock.setChecked)
-            self.chat_dock.visibilityChanged.connect(self._update_right_dock_icon)
+            self.control_plane_dock.visibilityChanged.connect(self.act_toggle_right_dock.setChecked)
+            self.control_plane_dock.visibilityChanged.connect(self._update_right_dock_icon)
             # Initialize icon state
-            self._update_right_dock_icon(self.chat_dock.isVisible())
+            self._update_right_dock_icon(self.control_plane_dock.isVisible())
+        self._rebalance_workspace_columns()
 
     @Slot()
     def _refresh_control_plane(self) -> None:
@@ -4371,32 +6349,19 @@ class MainAIEditor(QMainWindow):
         if hasattr(self, "_st_workflows"):
             self._st_workflows.setText(f"{int((configuration_snapshot or {}).get('workflow_count') or 0)} workflows")
         if hasattr(self, "_st_sessions"):
-            self._st_sessions.setText(f"{int((monitoring_snapshot or {}).get('signal_count') or 0)} signals")
+            self._st_sessions.setText(f"{int((monitoring_snapshot or {}).get('session_count') or 0)} sessions")
         if hasattr(self, "_st_runtime"):
             failure_count = int((monitoring_snapshot or {}).get("failure_count") or 0)
-            local_failure_count = int((monitoring_snapshot or {}).get("local_failure_count") or 0)
-            local_active_count = int((monitoring_snapshot or {}).get("local_active_count") or 0)
-            source_count = int((monitoring_snapshot or {}).get("source_count") or 0)
-            if source_count <= 0:
-                runtime_text = "monitor idle"
-            elif failure_count == 0 and local_failure_count == 0 and local_active_count == 0:
-                runtime_text = "monitor linked"
-            elif failure_count == 0 and local_failure_count == 0:
-                runtime_text = f"{local_active_count} local active"
-            else:
-                runtime_text = f"{failure_count} failures"
+            runtime_text = "runtime healthy" if failure_count == 0 else f"{failure_count} failures"
             self._st_runtime.setText(runtime_text)
 
     def _update_right_dock_icon(self, visible: bool) -> None:
-        """Update the right-toolbar icon depending on dock visibility."""
+        """Update the right-toolbar icon depending on monitor visibility."""
         if not hasattr(self, "act_toggle_right_dock"):
             return
-        icon_name = (
-            "right_panel_close_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg"
-            if visible
-            else "open_in_new_dock.svg"
+        self.act_toggle_right_dock.setIcon(
+            _icon("right_panel_close_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg")
         )
-        self.act_toggle_right_dock.setIcon(_icon(icon_name))
 
     def _update_tabdock_toggle_state(self) -> None:
         """
@@ -4409,6 +6374,26 @@ class MainAIEditor(QMainWindow):
         prev = act.blockSignals(True)
         act.setChecked(state)
         act.blockSignals(prev)
+
+    def _rebalance_workspace_columns(self) -> None:
+        splitter = getattr(self, "main_split", None)
+        if splitter is None:
+            return
+
+        column_specs = [
+            (getattr(self, "files_dock", None), 280),
+            (getattr(self, "chat_dock", None), 760),
+            (getattr(self, "control_plane_dock", None), 460),
+        ]
+        sizes: list[int] = []
+        visible_found = False
+        for widget, preferred_width in column_specs:
+            is_visible = bool(widget is not None and widget.isVisible())
+            visible_found = visible_found or is_visible
+            sizes.append(preferred_width if is_visible else 0)
+        if not visible_found:
+            sizes = [280, 760, 460]
+        splitter.setSizes(sizes)
 
     # ------------------------------------------------ tab-dock clone ------
 
@@ -4497,7 +6482,6 @@ class MainAIEditor(QMainWindow):
         return w
     
     # -------------------------------------------------file open -------------
-
 
     # <– 10.07.2025
     # ─── RE-WRITE of MainAIEditor._open_file() ────────────────────────────────
@@ -4846,6 +6830,7 @@ class MainAIEditor(QMainWindow):
     def _toggle_accent(self):
         self._accent = SCHEME_GREEN if self._accent is SCHEME_BLUE else SCHEME_BLUE
         _apply_style(self, _build_scheme(self._accent, self._base))
+        self._apply_main_splitter_style()
         self._sync_explorer_scheme()
         self._sync_control_plane_scheme()
 
@@ -4853,6 +6838,7 @@ class MainAIEditor(QMainWindow):
     def _toggle_grey(self, on: bool):
         self._base = SCHEME_GREY if on else SCHEME_DARK
         _apply_style(self, _build_scheme(self._accent, self._base))
+        self._apply_main_splitter_style()
         self._sync_explorer_scheme()
         self._sync_control_plane_scheme()
 
@@ -4901,6 +6887,7 @@ class MainAIEditor(QMainWindow):
         self._accent = SCHEME_GREEN if s.value("accent") == "green" else SCHEME_BLUE
         self._base   = SCHEME_GREY  if s.value("base")   == "grey"  else SCHEME_DARK
         _apply_style(self, _build_scheme(self._accent, self._base))
+        self._apply_main_splitter_style()
         self._sync_explorer_scheme()
         
         self.chat_dock.setVisible(s.value("showChat", True,  bool))
@@ -4908,15 +6895,15 @@ class MainAIEditor(QMainWindow):
 
         
         self.files_dock.setVisible(s.value("showExplorer", True,  bool))
-        self.console_dock.setVisible(s.value("showConsole",  False,  bool))
-        tab_on = s.value("showTabDock", True, bool)
+        self.console_dock.setVisible(False)
+        tab_on = False
         for d in self._tab_docks:
-            d.setVisible(tab_on)
+            d.setVisible(False)
 
         # Tabs rekonstruieren (optional)
 
         opened = s.value("openTabs", [])
-        if opened:
+        if self._editor_surface_enabled() and opened:
             self._tab_docks.clear()
             self._clone_tab_dock(set_current=False)
             tabs: EditorTabs = self._tab_docks[0].widget()
@@ -4941,13 +6928,16 @@ class MainAIEditor(QMainWindow):
         s.setValue("accent", "green" if self._accent is SCHEME_GREEN else "blue")
         s.setValue("base",   "grey"  if self._base   is SCHEME_GREY  else "dark")
         s.setValue("showExplorer", self.files_dock.isVisible())
-        s.setValue("showConsole",  self.console_dock.isVisible())
+        s.setValue("showConsole",  False)
         s.setValue("showChat", self.chat_dock.isVisible())   
         s.setValue("showControlPlane", self.control_plane_dock.isVisible())
-        s.setValue("showTabDock",  all(d.isVisible() for d in self._tab_docks))
+        s.setValue("showTabDock",  False)
 
-        tabs: EditorTabs = self._tab_docks[0].widget()
-        s.setValue("openTabs", [tabs.tabText(i) for i in range(tabs.count())])
+        if self._editor_surface_enabled() and self._tab_docks:
+            tabs: EditorTabs = self._tab_docks[0].widget()
+            s.setValue("openTabs", [tabs.tabText(i) for i in range(tabs.count())])
+        else:
+            s.setValue("openTabs", [])
 
         # Force write to disk (helps if the process crashes later).
         try:
@@ -5023,23 +7013,20 @@ def main() -> None:
     # This avoids starting a Qt event loop and is safe for terminal testing.
     #
     # Usage:
-    #   AI_IDE_ONE_SHOT_PROMPT='@_xplaner_xrouter ...' python alde/ai_ide_v1756.py
+    #   AI_IDE_ONE_SHOT_PROMPT='@_data_dispatcher ...' python alde/ai_ide_v1756.py
     # ------------------------------------------------------------------
     one_shot = os.getenv("AI_IDE_ONE_SHOT_PROMPT", "").strip()
     if one_shot:
         try:
+            # Import locally to keep Qt startup out of the path.
+            try:
+                from .agents_ccompletion import ChatCom  # type: ignore
+            except Exception:
+                from agents_ccompletion import ChatCom  # type: ignore
+
             model_name = os.getenv("AI_IDE_MODEL", "").strip() or "gpt-4.1-mini-2025-04-14"
-            run = DESKTOP_AGENT_RUN_FACADE_SERVICE.run_object_sync(
-                request_kind="chat",
-                target_agent="_xplaner_xrouter",
-                prompt=one_shot,
-                attachments=[],
-                model_name=model_name,
-                metadata={"source": "one_shot"},
-            )
-            if run.error:
-                raise RuntimeError(run.error)
-            print(str(run.output or ""))
+            reply = ChatCom(_model=model_name, _input_text=one_shot).get_response()
+            print(str(reply))
         except Exception as exc:
             print(f"[ONE_SHOT_ERROR] {exc}")
             raise

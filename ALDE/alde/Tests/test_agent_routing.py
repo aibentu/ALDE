@@ -289,7 +289,8 @@ class TestAgentRouting(unittest.TestCase):
             and entry.get("role") == "assistant"
         ]
         self.assertTrue(workflow_entries)
-        self.assertEqual(workflow_entries[-1]["data"]["workflow"].get("phase"), "tool_call_start")
+        self.assertEqual(workflow_entries[-1]["content"], "saved document")
+        self.assertEqual(workflow_entries[-1]["data"]["workflow"].get("phase"), "assistant_response")
 
     def test_only_xplaner_retains_router_workflow(self) -> None:
         self.assertEqual(get_agent_workflow_config("_xplaner_xrouter").get("name"), "xplaner_xrouter_router")
@@ -345,6 +346,17 @@ class TestAgentRouting(unittest.TestCase):
         self.assertEqual(route["job_name"], "agent_system_planning")
         self.assertEqual(route["user_question"], "build a qa system with planner and worker")
 
+    def test_available_job_names_include_runtime_default_jobs(self) -> None:
+        job_names = agents_config.get_available_job_names()
+
+        self.assertIn("interactive_planning", job_names)
+        self.assertIn("generic_execution", job_names)
+
+    def test_job_config_drives_default_object_projection(self) -> None:
+        job_config = agents_config.get_job_config("cover_letter_writer")
+
+        self.assertEqual(job_config.get("default_object_name"), "cover_letters")
+
     def test_worker_route_to_agent_is_denied(self) -> None:
         result, route = agents_factory.execute_route_to_agent(
             {"target_agent": "_xplaner_xrouter", "user_question": "continue this thread"},
@@ -361,7 +373,8 @@ class TestAgentRouting(unittest.TestCase):
         )
 
         self.assertEqual(contract["protocol"], "agent_handoff_v1")
-        self.assertEqual(contract["handoff_schema"], "xplaner_to_xworker_structured")
+        self.assertEqual(contract["handoff_schema"], "xplaner_to_xworker")
+        self.assertEqual(contract["handoff_id"], "structured")
         self.assertEqual(contract["workflow_name"], "xworker_leaf")
 
     def test_route_to_agent_normalizes_structured_agent_handoff(self) -> None:
@@ -390,7 +403,21 @@ class TestAgentRouting(unittest.TestCase):
         self.assertEqual(handoff_context["protocol"], "agent_handoff_v1")
         self.assertEqual(handoff_context["target_agent"], "_xworker")
         self.assertEqual(handoff_context["metadata"]["correlation_id"], "corr-1")
-        self.assertEqual(route["handoff_context"]["contract"]["handoff_schema"], "xplaner_to_xworker_structured")
+        self.assertEqual(route["handoff_context"]["contract"]["handoff_schema"], "xplaner_to_xworker")
+        self.assertEqual(route["handoff_context"]["contract"]["handoff_id"], "cover_letter_writer")
+        self.assertEqual(route["handoff_context"]["contract"]["job_name"], "cover_letter_writer")
+
+    def test_route_to_agent_rejects_missing_job_name_for_xworker(self) -> None:
+        result, route = agents_factory.execute_route_to_agent(
+            {
+                "target_agent": "_xworker",
+                "user_question": "continue this thread",
+            },
+            source_agent_label="_xplaner_xrouter",
+        )
+
+        self.assertEqual(result, "Invalid route_to_agent payload for _xworker: missing required job_name")
+        self.assertIsNone(route)
 
     def test_dispatch_documents_returns_tool_result_without_followup_when_no_handoff_exists(self) -> None:
         history = agents_factory.get_history()

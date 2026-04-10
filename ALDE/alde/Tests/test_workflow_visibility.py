@@ -11,7 +11,7 @@ if str(PKG_ROOT) not in sys.path:
 
 import alde.agents_factory as agents_factory
 import alde.chat_completion as chat_mod
-from alde.agents_config import get_agent_workflow_config, get_batch_workflow_config, validate_all_workflows, validate_batch_workflow_config, validate_workflow_config
+from alde.agents_config import get_agent_workflow_config, get_batch_workflow_config, get_handoff_route_contract, validate_all_job_configs, validate_all_workflows, validate_batch_workflow_config, validate_runtime_contracts, validate_workflow_config
 
 
 class TestWorkflowVisibility(unittest.TestCase):
@@ -27,6 +27,34 @@ class TestWorkflowVisibility(unittest.TestCase):
         self.assertEqual(report["invalid_count"], 0)
         self.assertEqual(report["invalid_batch_workflow_count"], 0)
         self.assertEqual(report["mapping_errors"], [])
+
+    def test_validate_all_job_configs_reports_current_config_as_valid(self) -> None:
+        report = validate_all_job_configs()
+
+        self.assertTrue(report["valid"])
+        self.assertGreater(report["job_count"], 0)
+        self.assertEqual(report["invalid_count"], 0)
+
+    def test_validate_runtime_contracts_reports_current_config_as_valid(self) -> None:
+        report = validate_runtime_contracts()
+
+        self.assertTrue(report["valid"])
+        self.assertGreater(report["workflow_count"], 0)
+        self.assertGreater(report["job_count"], 0)
+        self.assertGreater(report["agent_count"], 0)
+        self.assertEqual(report["errors"], [])
+
+    def test_parser_jobs_resolve_generic_handoff_variant_by_job_name(self) -> None:
+        handoff_contract = get_handoff_route_contract(
+            "_xplaner_xrouter",
+            "_xworker",
+            handoff_metadata={"job_name": "applicant_profile_parser"},
+        )
+
+        self.assertEqual(handoff_contract["protocol"], "agent_handoff_v1")
+        self.assertEqual(handoff_contract["workflow_name"], "xworker_generic_parser_leaf")
+        self.assertEqual(handoff_contract["job_name"], "applicant_profile_parser")
+        self.assertIn("applicant_profile_parser", (handoff_contract.get("schema") or {}).get("job_names") or [])
 
     def test_batch_cover_letter_workflow_is_declared_and_valid(self) -> None:
         workflow = get_batch_workflow_config("cover_letter_batch_generation")

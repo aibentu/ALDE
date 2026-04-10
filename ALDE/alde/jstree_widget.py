@@ -346,7 +346,10 @@ class JsonTreeWidgetWithToolbar(QWidget):
         self._toolbar_style_template = """
             QFrame#JsonTreeToolbar {{
                 background: {bg};
-                border-bottom: 1px solid #303030;
+                border: 1px solid #303030;
+                border-bottom: none;
+                border-top-left-radius: 14px;
+                border-top-right-radius: 14px;
             }}
             QToolButton {{
                 background: {bg};
@@ -488,7 +491,7 @@ class JsonTreeWidgetWithToolbar(QWidget):
     
     def _apply_wrapper_style(self) -> None:
         self.setStyleSheet(
-            f"QWidget#JsonTreeWidgetWithToolbar {{ background: {self._bg_color}; }}"
+            f"QWidget#JsonTreeWidgetWithToolbar {{ background: transparent; border-radius: 14px; }}"
         )
 
     def _apply_toolbar_style(self, toolbar: QFrame) -> None:
@@ -576,6 +579,12 @@ class JsonTreeWidget(QTreeWidget):
                    background-color:{bg_color};
                    color:{text_color};
                    font-family:'Fira Code', monospace;
+                   border: 1px solid #303030;
+                   border-top: none;
+                   border-bottom-left-radius: 14px;
+                   border-bottom-right-radius: 14px;
+                   padding: 4px 0px 6px 0px;
+                   outline: none;
                }}
                QTreeWidget::item, QTreeView::item {{
                    padding: 2px;

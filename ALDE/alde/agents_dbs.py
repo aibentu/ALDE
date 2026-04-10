@@ -917,7 +917,101 @@ class ObjectMappingService:
     def load_object_payload(self, *, object_name: str, result_payload: Mapping[str, Any]) -> dict[str, Any]:
         normalized_object_name = _normalize_document_object_name(object_name)
         object_payload = result_payload.get(normalized_object_name)
-        return dict(object_payload) if isinstance(object_payload, Mapping) else {}
+        if isinstance(object_payload, Mapping):
+            return dict(object_payload)
+        if normalized_object_name != "job_posting":
+            return {}
+        raw_text_payload = self.load_raw_text_document_payload(result_payload=result_payload)
+        entity_payload_list = self.load_explicit_entity_payload_list(result_payload=result_payload)
+        compatibility_payload: dict[str, Any] = {}
+        subject_payload = next(
+            (
+                entity_payload
+                for entity_payload in entity_payload_list
+                if str(entity_payload.get("entity_key") or "").strip() == "subject"
+                or str((entity_payload.get("metadata") or {}).get("role") if isinstance(entity_payload.get("metadata"), Mapping) else "").strip() == "subject"
+                or str(entity_payload.get("entity_type") or entity_payload.get("type_key") or "").strip() == "job_posting"
+            ),
+            {},
+        )
+        organization_payload = next(
+            (
+                entity_payload
+                for entity_payload in entity_payload_list
+                if str(entity_payload.get("entity_type") or entity_payload.get("type_key") or "").strip() == "organization"
+            ),
+            {},
+        )
+        location_payload = next(
+            (
+                entity_payload
+                for entity_payload in entity_payload_list
+                if str(entity_payload.get("entity_type") or entity_payload.get("type_key") or "").strip() == "location"
+            ),
+            {},
+        )
+        contact_payload = next(
+            (
+                entity_payload
+                for entity_payload in entity_payload_list
+                if str(entity_payload.get("entity_type") or entity_payload.get("type_key") or "").strip() == "person"
+            ),
+            {},
+        )
+        title = _first_non_empty_string(
+            [
+                subject_payload.get("canonical_name") if isinstance(subject_payload, Mapping) else None,
+                raw_text_payload.get("title"),
+            ],
+        )
+        if title:
+            compatibility_payload["job_title"] = title
+        company_name = _first_non_empty_string(
+            [organization_payload.get("canonical_name") if isinstance(organization_payload, Mapping) else None],
+        )
+        if company_name:
+            compatibility_payload["company_name"] = company_name
+        raw_text = _first_non_empty_string([raw_text_payload.get("raw_text"), raw_text_payload.get("text")])
+        if raw_text:
+            compatibility_payload["raw_text"] = raw_text
+        summary = _first_non_empty_string(
+            [
+                subject_payload.get("summary") if isinstance(subject_payload, Mapping) else None,
+                raw_text_payload.get("summary"),
+            ],
+        )
+        if summary:
+            compatibility_payload["summary"] = summary
+        metadata_payload = raw_text_payload.get("metadata") if isinstance(raw_text_payload.get("metadata"), Mapping) else {}
+        language_code = _first_non_empty_string([raw_text_payload.get("language"), metadata_payload.get("language")])
+        if metadata_payload or language_code:
+            compatibility_payload["metadata"] = dict(metadata_payload)
+            if language_code:
+                compatibility_payload["metadata"]["language"] = language_code
+        if company_name or location_payload:
+            compatibility_payload.setdefault("company_info", {})
+        if location_payload:
+            compatibility_payload["company_info"]["location"] = location_payload.get("canonical_name")
+        if contact_payload:
+            compatibility_payload.setdefault("application", {})
+            compatibility_payload["application"]["contact_person"] = contact_payload.get("canonical_name")
+        return compatibility_payload
+
+    def load_raw_text_document_payload(self, *, result_payload: Mapping[str, Any]) -> dict[str, Any]:
+        raw_text_payload = result_payload.get("raw_text_document")
+        return dict(raw_text_payload) if isinstance(raw_text_payload, Mapping) else {}
+
+    def load_explicit_entity_payload_list(self, *, result_payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+        entity_payload_list = result_payload.get("entity_objects")
+        if not isinstance(entity_payload_list, Sequence) or isinstance(entity_payload_list, (str, bytes, bytearray)):
+            return []
+        return [dict(entity_payload) for entity_payload in entity_payload_list if isinstance(entity_payload, Mapping)]
+
+    def load_explicit_relation_payload_list(self, *, result_payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+        relation_payload_list = result_payload.get("relation_objects")
+        if not isinstance(relation_payload_list, Sequence) or isinstance(relation_payload_list, (str, bytes, bytearray)):
+            return []
+        return [dict(relation_payload) for relation_payload in relation_payload_list if isinstance(relation_payload, Mapping)]
 
     def load_correlation_id(
         self,
@@ -981,9 +1075,12 @@ class ObjectMappingService:
         result_payload: Mapping[str, Any],
     ) -> str:
         normalized_object_name = _normalize_document_object_name(object_name)
+        raw_text_payload = self.load_raw_text_document_payload(result_payload=result_payload)
         if normalized_object_name == "job_posting":
             return _first_non_empty_string(
                 [
+                    raw_text_payload.get("raw_text"),
+                    raw_text_payload.get("text"),
                     object_payload.get("raw_text"),
                     (result_payload.get("parse") or {}).get("raw_text") if isinstance(result_payload.get("parse"), Mapping) else None,
                 ],
@@ -1001,8 +1098,17 @@ class ObjectMappingService:
         object_name: str,
         object_payload: Mapping[str, Any],
         correlation_id: str,
+        result_payload: Mapping[str, Any] | None = None,
     ) -> list[MappingBlockSeedObject]:
         normalized_object_name = _normalize_document_object_name(object_name)
+        raw_text_payload = self.load_raw_text_document_payload(result_payload=result_payload or {})
+        explicit_block_seed_objects = self._build_explicit_block_seed_objects(
+            object_name=normalized_object_name,
+            correlation_id=correlation_id,
+            raw_text_payload=raw_text_payload,
+        )
+        if explicit_block_seed_objects:
+            return explicit_block_seed_objects
         object_pattern = self.load_object_pattern(object_name=normalized_object_name)
         if object_pattern:
             return self._build_pattern_block_seed_objects(
@@ -1023,8 +1129,17 @@ class ObjectMappingService:
         object_name: str,
         object_payload: Mapping[str, Any],
         correlation_id: str,
+        result_payload: Mapping[str, Any] | None = None,
     ) -> list[MappingSeedEntityObject]:
         normalized_object_name = _normalize_document_object_name(object_name)
+        explicit_entity_candidate_objects = self._build_explicit_entity_candidate_objects(
+            object_name=normalized_object_name,
+            object_payload=object_payload,
+            correlation_id=correlation_id,
+            entity_payload_list=self.load_explicit_entity_payload_list(result_payload=result_payload or {}),
+        )
+        if explicit_entity_candidate_objects:
+            return explicit_entity_candidate_objects
         object_pattern = self.load_object_pattern(object_name=normalized_object_name)
         if object_pattern:
             return self._build_pattern_seed_entity_objects(
@@ -1123,6 +1238,7 @@ class ObjectMappingService:
             object_name=object_name,
             object_payload=object_payload,
             correlation_id=correlation_id,
+            result_payload=result_payload,
         )
         if not document_text:
             document_text = "\n\n".join(block_seed_object.content for block_seed_object in block_seed_objects if block_seed_object.content)
@@ -1130,6 +1246,7 @@ class ObjectMappingService:
             object_name=object_name,
             object_payload=object_payload,
             correlation_id=correlation_id,
+            result_payload=result_payload,
         )
         entity_objects = self.build_entity_objects(
             object_name=object_name,
@@ -1247,10 +1364,82 @@ class ObjectMappingService:
         entity_objects: Sequence[EntityObject],
         block_seed_objects: Sequence[MappingBlockSeedObject],
         timestamp: datetime,
+        result_payload: Mapping[str, Any] | None = None,
     ) -> list[EntityRelationObject]:
         entity_id_by_key: dict[str, str] = {}
         for entity_candidate_object, entity_object in zip(entity_candidate_objects, entity_objects):
             entity_id_by_key[entity_candidate_object.seed_key] = entity_object.id
+        explicit_relation_payload_list = self.load_explicit_relation_payload_list(result_payload=result_payload or {})
+        if explicit_relation_payload_list:
+            block_id_by_key = {block_seed_object.section_key: block_seed_object.block_id for block_seed_object in block_seed_objects}
+            relation_objects: list[EntityRelationObject] = []
+            for relation_payload in explicit_relation_payload_list:
+                source_entity_key = _first_non_empty_string(
+                    [
+                        relation_payload.get("source_entity_key"),
+                        relation_payload.get("source_seed_key"),
+                    ],
+                )
+                target_entity_key = _first_non_empty_string(
+                    [
+                        relation_payload.get("target_entity_key"),
+                        relation_payload.get("target_seed_key"),
+                    ],
+                )
+                relation_type = _first_non_empty_string([relation_payload.get("relation_type")])
+                if not source_entity_key or not target_entity_key or not relation_type:
+                    continue
+                source_entity_id = entity_id_by_key.get(source_entity_key)
+                target_entity_id = entity_id_by_key.get(target_entity_key)
+                if not source_entity_id or not target_entity_id:
+                    continue
+                relation_payload_value = f"{source_entity_id}|{relation_type}|{target_entity_id}"
+                relation_metadata = _deepcopy_object(
+                    relation_payload.get("metadata") if isinstance(relation_payload.get("metadata"), Mapping) else {},
+                )
+                source_field = _first_non_empty_string([relation_payload.get("source_field"), relation_metadata.get("source_field")])
+                if source_field:
+                    relation_metadata["source_field"] = source_field
+                relation_metadata.setdefault("mapped_from", "explicit_relation_model")
+                evidence_objects: list[RelationEvidenceObject] = []
+                block_id = block_id_by_key.get(str(relation_payload.get("section_key") or "").strip())
+                if block_id:
+                    evidence_objects.append(RelationEvidenceObject(block_id=block_id, created_at=timestamp))
+                for evidence_payload in relation_payload.get("evidence") or []:
+                    if not isinstance(evidence_payload, Mapping):
+                        continue
+                    evidence_block_id = _first_non_empty_string([evidence_payload.get("block_id")])
+                    if not evidence_block_id:
+                        continue
+                    evidence_objects.append(
+                        RelationEvidenceObject(
+                            block_id=evidence_block_id,
+                            evidence_role=str(evidence_payload.get("evidence_role") or "supporting"),
+                            created_at=timestamp,
+                        ),
+                    )
+                confidence = _first_number([relation_payload.get("confidence"), relation_payload.get("weight")]) or 0.95
+                weight = _first_number([relation_payload.get("weight"), relation_payload.get("confidence")]) or confidence
+                relation_objects.append(
+                    EntityRelationObject(
+                        id=f"rel:{_normalize_document_object_name(object_name)}:{_stable_sha256(relation_payload_value)[:16]}",
+                        tenant_id=namespace_object.tenant_id,
+                        namespace_id=namespace_object.id,
+                        source_entity_id=source_entity_id,
+                        target_entity_id=target_entity_id,
+                        relation_type=relation_type,
+                        direction=_first_non_empty_string([relation_payload.get("direction")]) or "directed",
+                        weight=weight,
+                        confidence=confidence,
+                        correlation_id=correlation_id,
+                        metadata=relation_metadata,
+                        evidence=evidence_objects,
+                        created_at=timestamp,
+                        updated_at=timestamp,
+                    ),
+                )
+            if relation_objects:
+                return relation_objects
         source_entity_id = entity_id_by_key.get("subject")
         if not source_entity_id:
             return []
@@ -1346,11 +1535,13 @@ class ObjectMappingService:
             object_name=normalized_object_name,
             object_payload=object_payload,
             correlation_id=correlation_id,
+            result_payload=result_payload,
         )
         entity_candidate_objects = self.build_entity_candidate_objects(
             object_name=normalized_object_name,
             object_payload=object_payload,
             correlation_id=correlation_id,
+            result_payload=result_payload,
         )
         entity_objects = self.build_entity_objects(
             object_name=normalized_object_name,
@@ -1368,6 +1559,7 @@ class ObjectMappingService:
             entity_objects=entity_objects,
             block_seed_objects=block_seed_objects,
             timestamp=timestamp,
+            result_payload=result_payload,
         )
         self._knowledge_service.store_namespace_object(namespace_object)
         self._knowledge_service.store_document_object(document_object)
@@ -1462,6 +1654,55 @@ class ObjectMappingService:
             correlation_id=correlation_id,
         )
 
+    def _build_explicit_block_seed_objects(
+        self,
+        *,
+        object_name: str,
+        correlation_id: str,
+        raw_text_payload: Mapping[str, Any],
+    ) -> list[MappingBlockSeedObject]:
+        if not raw_text_payload:
+            return []
+        seed_object_list: list[MappingBlockSeedObject] = []
+        section_payload_list = raw_text_payload.get("sections")
+        if isinstance(section_payload_list, Sequence) and not isinstance(section_payload_list, (str, bytes, bytearray)):
+            for section_payload in section_payload_list:
+                if not isinstance(section_payload, Mapping):
+                    continue
+                section_text = _first_non_empty_string([section_payload.get("text"), section_payload.get("content")])
+                if not section_text:
+                    continue
+                section_key = _first_non_empty_string([section_payload.get("section_key")]) or f"section_{len(seed_object_list) + 1}"
+                section_metadata = _deepcopy_object(section_payload.get("metadata") if isinstance(section_payload.get("metadata"), Mapping) else {})
+                section_metadata.setdefault("section_type", section_key)
+                seed_object_list.append(
+                    MappingBlockSeedObject(
+                        section_key=section_key,
+                        block_id=f"blk:{correlation_id}:{len(seed_object_list) + 1}",
+                        block_no=len(seed_object_list) + 1,
+                        heading=_first_non_empty_string([section_payload.get("heading"), raw_text_payload.get("title")]) or object_name.replace("_", " ").title(),
+                        content=section_text,
+                        block_kind=_first_non_empty_string([section_payload.get("block_kind")]) or "section",
+                        metadata=section_metadata,
+                    ),
+                )
+        if seed_object_list:
+            return seed_object_list
+        raw_text = _first_non_empty_string([raw_text_payload.get("raw_text"), raw_text_payload.get("text")])
+        if not raw_text:
+            return []
+        return [
+            MappingBlockSeedObject(
+                section_key="document",
+                block_id=f"blk:{correlation_id}:1",
+                block_no=1,
+                heading=_first_non_empty_string([raw_text_payload.get("title")]) or object_name.replace("_", " ").title(),
+                content=raw_text,
+                block_kind="document",
+                metadata={"section_type": "document"},
+            ),
+        ]
+
     def _build_pattern_seed_entity_objects(
         self,
         *,
@@ -1539,6 +1780,80 @@ class ObjectMappingService:
                         metadata={"source_field": entity_pattern.get("source_field")},
                     ),
                 )
+        unique_seed_object_list: list[MappingSeedEntityObject] = []
+        seen_seed_key_set: set[str] = set()
+        for seed_object in seed_object_list:
+            if seed_object.seed_key in seen_seed_key_set:
+                continue
+            seen_seed_key_set.add(seed_object.seed_key)
+            unique_seed_object_list.append(seed_object)
+        return unique_seed_object_list
+
+    def _build_explicit_entity_candidate_objects(
+        self,
+        *,
+        object_name: str,
+        object_payload: Mapping[str, Any],
+        correlation_id: str,
+        entity_payload_list: Sequence[Mapping[str, Any]],
+    ) -> list[MappingSeedEntityObject]:
+        if not entity_payload_list:
+            return []
+        seed_object_list: list[MappingSeedEntityObject] = []
+        for entity_payload in entity_payload_list:
+            type_key = _first_non_empty_string([entity_payload.get("entity_type"), entity_payload.get("type_key")]) or object_name
+            canonical_name = _first_non_empty_string(
+                [
+                    entity_payload.get("canonical_name"),
+                    entity_payload.get("name"),
+                    entity_payload.get("title"),
+                    entity_payload.get("mention_text"),
+                ],
+            )
+            if not canonical_name:
+                continue
+            entity_metadata = _deepcopy_object(entity_payload.get("metadata") if isinstance(entity_payload.get("metadata"), Mapping) else {})
+            source_field = _first_non_empty_string([entity_payload.get("source_field"), entity_metadata.get("source_field")])
+            if source_field:
+                entity_metadata["source_field"] = source_field
+            entity_metadata.setdefault("mapped_from", "explicit_entity_model")
+            seed_key = _first_non_empty_string([entity_payload.get("entity_key"), entity_payload.get("seed_key")]) or f"{type_key}:{_slugify_object_name(canonical_name)}"
+            seed_object_list.append(
+                MappingSeedEntityObject(
+                    seed_key=seed_key,
+                    type_key=type_key,
+                    canonical_name=canonical_name,
+                    section_key=_first_non_empty_string([entity_payload.get("section_key")]) or "primary",
+                    relation_type_key=_first_non_empty_string([entity_payload.get("relation_type"), entity_payload.get("relation_type_key")]),
+                    confidence=_first_number([entity_payload.get("confidence")]) or 0.95,
+                    mention_text=_first_non_empty_string([entity_payload.get("mention_text")]) or canonical_name,
+                    summary=_first_non_empty_string([entity_payload.get("summary")]) or "",
+                    attributes=_deepcopy_object(entity_payload.get("attributes") if isinstance(entity_payload.get("attributes"), Mapping) else {}),
+                    aliases=_load_string_list(entity_payload.get("aliases")),
+                    metadata=entity_metadata,
+                ),
+            )
+        if not any(seed_object.seed_key == "subject" for seed_object in seed_object_list):
+            canonical_name = _first_non_empty_string(
+                [
+                    object_payload.get("job_title"),
+                    object_payload.get("title"),
+                    correlation_id,
+                ],
+            ) or correlation_id
+            seed_object_list.insert(
+                0,
+                MappingSeedEntityObject(
+                    seed_key="subject",
+                    type_key=object_name,
+                    canonical_name=canonical_name,
+                    section_key="primary",
+                    confidence=0.99,
+                    mention_text=canonical_name,
+                    summary=f"Primary {object_name.replace('_', ' ')} entity mapped from parser result.",
+                    metadata={"mapped_from": "compatibility_subject"},
+                ),
+            )
         unique_seed_object_list: list[MappingSeedEntityObject] = []
         seen_seed_key_set: set[str] = set()
         for seed_object in seed_object_list:

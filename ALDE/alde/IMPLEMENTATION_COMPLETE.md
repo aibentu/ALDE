@@ -27,13 +27,21 @@ Only two manifest agents are active in the runtime:
 - interactive routing starts at `_xplaner_xrouter`
 - forced cover-letter generation also routes to `_xworker`
 - deterministic ingest and dispatch actions can execute directly on `_xworker`
+- local desktop execution is the maintained operator path and persists run state to `ALDE/AppData/desktop_runs.json`
+
+## Frontend Plan
+
+- the former webapp frontend is currently not part of this repository
+- the next frontend milestone is a dedicated ALDE WebApp only after the desktop UI, runtime, storage, and config layers are stable
+- until then, desktop/local runtime remains the reference operator surface
 
 ## Current References
 
 Use these files for the maintained runtime description:
 
 - `QUICKSTART.md`
-- `webapp/README.md`
+- `desktop_runtime.py`
+- `runtime_core.py`
 - `agents_pconfig.py`
 - `agents_config.py`
 

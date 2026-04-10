@@ -827,7 +827,8 @@ class ChatHistory(VectorStore):
         _sys: bool = None,
         _tool_calls: list | None = None,
         _tool_call_id: str | None = None,
-        _name_tool: str | None = None  # Renamed to avoid conflict with _name
+        _name_tool: str | None = None,  # Renamed to avoid conflict with _name
+        _tool_response_required: bool = True,
 ) ->     None:
         # ... (existing normalization code) ...
         """Log a message or State to the history with detailed metadata."""
@@ -916,7 +917,8 @@ class ChatHistory(VectorStore):
             'sys': None,
             'tool_calls': serialized_tool_calls,
             'tool_call_id': _tool_call_id,
-            'name': _name_tool  # For tool messages
+            'name': _name_tool,  # For tool messages
+            'tool_response_required': bool(_tool_response_required),
         }                             # instruction for the assistant      
                                               # if the assistant did'n exist already a name ,
                                           # assitants are derivates of real existing modell
@@ -1022,6 +1024,7 @@ class ChatHistory(VectorStore):
                         # Tool outputs can be massive (vector results, JSON dumps). Hard-cap them.
                         "content": _truncate_text(entry.get("content", ""), max_chars=8000),
                         "tool_call_id": tid,
+                        "tool_response_required": bool(entry.get("tool_response_required", True)),
                         **({"name": tool_name} if tool_name else {}),
                     }
             # If callers pass 0/None, treat it as "recent history".
@@ -1068,6 +1071,9 @@ class ChatHistory(VectorStore):
                 for tc in tool_calls:
                     tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
                     if tc_id and tc_id in tool_responses:
+                        response_message = tool_responses[tc_id]
+                        if not bool(response_message.get("tool_response_required", True)):
+                            continue
                         # Serialize tool_call
                         if isinstance(tc, dict):
                             valid_tool_calls.append(tc)
@@ -1082,7 +1088,7 @@ class ChatHistory(VectorStore):
                                     "arguments": getattr(tc.function, "arguments", "{}") if hasattr(tc, "function") else "{}"
                                 }
                             })
-                        pending_tool_responses.append(tool_responses[tc_id])
+                        pending_tool_responses.append(response_message)
                 
                 if valid_tool_calls:
                     msg["tool_calls"] = valid_tool_calls
@@ -1090,6 +1096,9 @@ class ChatHistory(VectorStore):
                     # Immediately add the tool responses after assistant message
                     filtered.extend(pending_tool_responses)
                     continue  # Skip the normal append
+
+                if not str(msg.get("content") or "").strip() or str(msg.get("content") or "").strip() == "[tool calls executed]":
+                    continue
             
             # Skip role filter
             if msg.get("role") == f_role:
@@ -1311,21 +1320,37 @@ class ChatCom(ChatCompletion,ChatHistory):
         # custom, inconsistent schema. Keep the list small to reduce model confusion.
         try:
             from .tools import UNIFIED_TOOLS  # type: ignore
-        except Exception:
-            from tools import UNIFIED_TOOLS  # type: ignore
+        except ImportError as e:
+            msg = str(e)
+            if "no known parent package" in msg or "attempted relative import" in msg:
+                from alde.tools import UNIFIED_TOOLS  # type: ignore
+            else:
+                raise
         try:
             from .agents_factory import get_agent_runtime_tools, get_agent_tools  # type: ignore
-        except Exception:
-            from agents_factory import get_agent_runtime_tools, get_agent_tools  # type: ignore
+        except ImportError as e:
+            msg = str(e)
+            if "no known parent package" in msg or "attempted relative import" in msg:
+                from alde.agents_factory import get_agent_runtime_tools, get_agent_tools  # type: ignore
+            else:
+                raise
         try:
             from . import agents_registry as agents_registry  # type: ignore
-        except Exception:
-            import agents_registry as agents_registry  # type: ignore
+        except ImportError as e:
+            msg = str(e)
+            if "no known parent package" in msg or "attempted relative import" in msg:
+                from alde import agents_registry as agents_registry  # type: ignore
+            else:
+                raise
 
         try:
             from .agents_config import get_agent_config, resolve_forced_route  # type: ignore
-        except Exception:
-            from agents_config import get_agent_config, resolve_forced_route  # type: ignore
+        except ImportError as e:
+            msg = str(e)
+            if "no known parent package" in msg or "attempted relative import" in msg:
+                from alde.agents_config import get_agent_config, resolve_forced_route  # type: ignore
+            else:
+                raise
 
         _agent_cfg = get_agent_config("_xplaner_xrouter") or agents_registry.AGENTS_REGISTRY.get("_xplaner_xrouter") or {
             "model": "gpt-4.1-mini-2025-04-14",
@@ -1366,8 +1391,12 @@ class ChatCom(ChatCompletion,ChatHistory):
         try:
             try:
                 from .tools import execute_deterministic_action_request, resolve_configured_request_payload  # type: ignore
-            except Exception:
-                from tools import execute_deterministic_action_request, resolve_configured_request_payload  # type: ignore
+            except ImportError as e:
+                msg = str(e)
+                if "no known parent package" in msg or "attempted relative import" in msg:
+                    from alde.tools import execute_deterministic_action_request, resolve_configured_request_payload  # type: ignore
+                else:
+                    raise
             self._deterministic_action_result = execute_deterministic_action_request(self._input_text)
             if self._deterministic_action_result is not None:
                 parsed_request = None
@@ -1629,8 +1658,12 @@ class ChatCom(ChatCompletion,ChatHistory):
                 try:
                     try:
                         from . import agents_factory as _agents_factory  # type: ignore
-                    except Exception:
-                        import agents_factory as _agents_factory  # type: ignore
+                    except ImportError as e:
+                        msg = str(e)
+                        if "no known parent package" in msg or "attempted relative import" in msg:
+                            from alde import agents_factory as _agents_factory  # type: ignore
+                        else:
+                            raise
 
                     return _agents_factory.execute_forced_route(
                         dict(getattr(self, "_forced_route") or {}),
@@ -1646,8 +1679,12 @@ class ChatCom(ChatCompletion,ChatHistory):
                 print(f'Tool calls: {tool_calls}')
                 try:
                     from .  import agents_factory  as _agents_factory  # type: ignore
-                except Exception:
-                    import agents_factory as _agents_factory  # type: ignore
+                except ImportError as e:
+                    msg = str(e)
+                    if "no known parent package" in msg or "attempted relative import" in msg:
+                        from alde import agents_factory as _agents_factory  # type: ignore
+                    else:
+                        raise
 
                 final_result = _agents_factory._handle_tool_calls(
                     self.assistant_msg,

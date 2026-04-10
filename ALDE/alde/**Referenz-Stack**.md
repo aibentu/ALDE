@@ -97,7 +97,7 @@ Wenn du willst, kann ich dir als Nächstes direkt eines davon ausarbeiten:
 3. ein Architekturdiagramm für dieses offene Multi-Agent-System in Mermaid
 
 flowchart TB
-    UI[Qt UI / Web UI / CLI]
+   UI[Qt Desktop UI / Future Web UI / CLI]
     MCPClient[Editor Agent / MCP Client]
     Coordinator[ALDE Coordinator]
     WorkflowAPI[Workflow State API]

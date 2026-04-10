@@ -16,11 +16,11 @@ from datetime import datetime
 from pyexpat import model
 
 try:
-    from .agents_config import build_agent_handoff, get_agent_config, get_agent_workflow_config, get_handoff_route_contract, normalize_agent_label, normalize_tool_name, prepare_incoming_handoff, validate_handoff_for_target  # type: ignore
+    from .agents_config import build_agent_handoff, get_agent_config, get_agent_workflow_config, get_default_job_name, get_handoff_route_contract, get_job_config, get_specialized_system_prompt, normalize_agent_label, normalize_tool_name, prepare_incoming_handoff, validate_handoff_for_target  # type: ignore
 except ImportError as e:
     msg = str(e)
     if "no known parent package" in msg or "attempted relative import" in msg:
-        from alde.agents_config import build_agent_handoff, get_agent_config, get_agent_workflow_config, get_handoff_route_contract, normalize_agent_label, normalize_tool_name, prepare_incoming_handoff, validate_handoff_for_target  # type: ignore
+        from alde.agents_config import build_agent_handoff, get_agent_config, get_agent_workflow_config, get_default_job_name, get_handoff_route_contract, get_job_config, get_specialized_system_prompt, normalize_agent_label, normalize_tool_name, prepare_incoming_handoff, validate_handoff_for_target  # type: ignore
     else:
         raise
 
@@ -54,7 +54,7 @@ try:
 except ImportError as e:
     msg = str(e)
     if "no known parent package" in msg or "attempted relative import" in msg:
-        from tools import (  # type: ignore
+        from alde.tools import (  # type: ignore
             UNIFIED_TOOLS,
             function_dispatcher,
             get_agent_tools,
@@ -81,7 +81,7 @@ try:
 except ImportError as e:
     msg = str(e)
     if "no known parent package" in msg or "attempted relative import" in msg:
-        from get_path import GetPath  # type: ignore
+        from alde.get_path import GetPath  # type: ignore
     else:
         raise
 
@@ -100,8 +100,12 @@ model = _MODEL
 # NOTE: This must be a real dict at runtime; tool-call dispatch reads from it.
 try:
     from . import agents_registry as _agents_registry  # type: ignore
-except Exception:
-    import agents_registry as _agents_registry  # type: ignore
+except ImportError as e:
+    msg = str(e)
+    if "no known parent package" in msg or "attempted relative import" in msg:
+        from alde import agents_registry as _agents_registry  # type: ignore
+    else:
+        raise
 AGENTS_REGISTRY: dict[str, dict] = getattr(_agents_registry, "AGENTS_REGISTRY", {}) or {}
 
 # Defer importing ChatHistory to runtime to avoid circular imports
@@ -861,6 +865,7 @@ class WorkflowHistoryLogService:
         event_kind: str,
         event_name: str,
         payload: dict[str, Any] | None,
+        tool_response_required: bool = True,
     ) -> None:
         history._log(
             _role='tool',
@@ -870,6 +875,7 @@ class WorkflowHistoryLogService:
             _name=agent_label,
             _tool_call_id=tool_call_id,
             _name_tool=tool_name,
+            _tool_response_required=tool_response_required,
             _data=_workflow_history_data(
                 workflow_session,
                 phase='tool_result',
@@ -1491,6 +1497,11 @@ TOOL_REGISTRY_BOOTSTRAP_SERVICE = ToolRegistryBootstrapService()
 # Default Logging Callbacks - bound to each tool
 # ============================================================================
 class ToolExecutionCallbackService:
+    RAW_VECTOR_SEARCH_TOOL_NAMES = {'memorydb', 'vectordb', 'vectordb_tool', 'VectorDB'}
+
+    def is_raw_vector_search_tool(self, tool_name: str) -> bool:
+        return str(tool_name or '').strip() in self.RAW_VECTOR_SEARCH_TOOL_NAMES
+
     def log_object_call(self, tool_name: str, args: dict[str, Any]) -> None:
         print(f"TOOL CALL: {tool_name} with args: {list(args.keys())}")
 
@@ -1499,6 +1510,9 @@ class ToolExecutionCallbackService:
             preview = result if isinstance(result, str) else str(result)
         except Exception:
             preview = "[unprintable result]"
+        if self.is_raw_vector_search_tool(tool_name):
+            print(f"TOOL RESULT: {tool_name} [payload omitted]")
+            return
         print(f"TOOL RESULT: {tool_name} -> {preview[:100]}...")
         # Do not log tool role directly into history here to avoid invalid
         # message sequences for OpenAI (tool messages must follow assistant
@@ -1563,6 +1577,170 @@ class VectorSearchDispatcher:
 VECTOR_SEARCH_DISPATCHER = VectorSearchDispatcher()
 
 
+class AgentExecutionSelectionService:
+    VALID_SELECTION_MODES = {"job_name", "tool_name"}
+
+    def load_selection_policy(self, agent_config: dict[str, Any] | None) -> dict[str, str]:
+        config = dict(agent_config or {})
+        policy = dict(config.get("skill_profile_loading") or {})
+        selection_mode = str(policy.get("mode") or "job_name").strip() or "job_name"
+        if selection_mode not in self.VALID_SELECTION_MODES:
+            selection_mode = "job_name"
+
+        fallback_selection_mode = str(policy.get("fallback_selection_mode") or "").strip()
+        if fallback_selection_mode and fallback_selection_mode not in self.VALID_SELECTION_MODES:
+            fallback_selection_mode = ""
+
+        fallback_skill_profile = str(
+            policy.get("fallback_skill_profile")
+            or config.get("skill_profile")
+            or ""
+        ).strip()
+
+        return {
+            "selection_mode": selection_mode,
+            "fallback_selection_mode": fallback_selection_mode,
+            "fallback_skill_profile": fallback_skill_profile,
+        }
+
+    def load_job_name(self, routing_request: dict[str, Any] | None) -> str:
+        return ROUTING_HANDOFF_VIEW_SERVICE.load_job_name(routing_request)
+
+    def load_tool_name(self, routing_request: dict[str, Any] | None) -> str:
+        return ROUTING_HANDOFF_VIEW_SERVICE.load_tool_name(routing_request)
+
+    def load_selection_value(self, routing_request: dict[str, Any] | None, selection_mode: str) -> str:
+        if selection_mode == "tool_name":
+            return self.load_tool_name(routing_request)
+        return self.load_job_name(routing_request)
+
+    def load_skill_profile_name(
+        self,
+        agent_config: dict[str, Any] | None,
+        routing_request: dict[str, Any] | None,
+    ) -> str:
+        config = dict(agent_config or {})
+        selection_policy = self.load_selection_policy(config)
+
+        selection_mode = selection_policy.get("selection_mode") or "job_name"
+        selected_value = self.load_selection_value(routing_request, selection_mode)
+        selection_map_name = "tool_skill_profiles" if selection_mode == "tool_name" else "job_skill_profiles"
+        selection_map = dict(config.get(selection_map_name) or {})
+        resolved_skill_profile = str(selection_map.get(selected_value) or "").strip() if selected_value else ""
+
+        fallback_selection_mode = selection_policy.get("fallback_selection_mode") or ""
+        if not resolved_skill_profile and fallback_selection_mode:
+            fallback_value = self.load_selection_value(routing_request, fallback_selection_mode)
+            fallback_map_name = "tool_skill_profiles" if fallback_selection_mode == "tool_name" else "job_skill_profiles"
+            fallback_map = dict(config.get(fallback_map_name) or {})
+            resolved_skill_profile = str(fallback_map.get(fallback_value) or "").strip() if fallback_value else ""
+
+        if resolved_skill_profile:
+            return resolved_skill_profile
+        return str(selection_policy.get("fallback_skill_profile") or config.get("skill_profile") or "").strip()
+
+    def load_requested_tool_names(
+        self,
+        agent_label: str,
+        routing_request: dict[str, Any] | None,
+        explicit_tools: list[Any] | None = None,
+    ) -> list[str]:
+        requested_tool_names: list[str] = []
+        if isinstance(explicit_tools, list):
+            for raw_value in explicit_tools:
+                if not isinstance(raw_value, str):
+                    continue
+                normalized_tool_name = normalize_tool_name(raw_value)
+                if normalized_tool_name:
+                    requested_tool_names.append(normalized_tool_name)
+
+        if not requested_tool_names:
+            selected_tool_name = self.load_tool_name(routing_request)
+            if selected_tool_name:
+                requested_tool_names.append(normalize_tool_name(selected_tool_name))
+
+        unique_tool_names: list[str] = []
+        seen_tool_names: set[str] = set()
+        for tool_name in requested_tool_names:
+            normalized_tool_name = normalize_tool_name(tool_name)
+            if not normalized_tool_name or normalized_tool_name in seen_tool_names:
+                continue
+            unique_tool_names.append(normalized_tool_name)
+            seen_tool_names.add(normalized_tool_name)
+
+        if not unique_tool_names:
+            return []
+
+        allowed_tool_names = _get_allowed_tool_names(agent_label)
+        disallowed_tool_names = [tool_name for tool_name in unique_tool_names if tool_name not in allowed_tool_names]
+        if disallowed_tool_names:
+            raise ValueError(
+                "explicit tools are not allowed for {agent}: {tools}".format(
+                    agent=agent_label,
+                    tools=", ".join(disallowed_tool_names),
+                )
+            )
+        return unique_tool_names
+
+    def load_tool_definitions(
+        self,
+        agent_label: str,
+        routing_request: dict[str, Any] | None,
+        explicit_tools: list[Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        requested_tool_names = self.load_requested_tool_names(
+            agent_label,
+            routing_request,
+            explicit_tools=explicit_tools,
+        )
+        if not requested_tool_names:
+            return get_agent_runtime_tools(agent_label)
+        return get_agent_tools(requested_tool_names)
+
+    def load_system_text(
+        self,
+        agent_label: str,
+        agent_config: dict[str, Any] | None,
+        routing_request: dict[str, Any] | None,
+    ) -> str:
+        config = dict(agent_config or {})
+        resolved_system_text = str(config.get("system") or "")
+        selected_job_name = self.load_job_name(routing_request)
+        if normalize_agent_label(agent_label) == "_xworker" and selected_job_name:
+            specialized_system_text = get_specialized_system_prompt("xworker", selected_job_name)
+            if specialized_system_text:
+                return specialized_system_text
+        return resolved_system_text
+
+    def load_runtime_metadata(
+        self,
+        agent_label: str,
+        agent_config: dict[str, Any] | None,
+        routing_request: dict[str, Any] | None,
+        explicit_tools: list[Any] | None = None,
+    ) -> dict[str, Any]:
+        runtime_metadata = _agent_runtime_metadata(agent_label)
+        selection_policy = self.load_selection_policy(agent_config)
+        runtime_metadata.update(
+            {
+                "selection_mode": selection_policy.get("selection_mode") or "job_name",
+                "fallback_selection_mode": selection_policy.get("fallback_selection_mode") or "",
+                "skill_profile": self.load_skill_profile_name(agent_config, routing_request),
+                "job_name": self.load_job_name(routing_request),
+                "tool_name": self.load_tool_name(routing_request),
+                "explicit_tools": self.load_requested_tool_names(
+                    agent_label,
+                    routing_request,
+                    explicit_tools=explicit_tools,
+                ),
+            }
+        )
+        return runtime_metadata
+
+
+AGENT_EXECUTION_SELECTION_SERVICE = AgentExecutionSelectionService()
+
+
 class AgentRoutingDispatcher:
     def resolve_object_name(self, args: dict[str, Any]) -> str:
         agent_response = args.get('agent_response')
@@ -1588,6 +1766,27 @@ class AgentRoutingDispatcher:
         handoff_payload = args.get('handoff_payload')
         handoff_protocol = str(args.get('handoff_protocol') or args.get('protocol') or '').strip() or None
         handoff_metadata = args.get('handoff_metadata') if isinstance(args.get('handoff_metadata'), dict) else None
+        nested_job_name = None
+        nested_tool_name = None
+        if isinstance(agent_response, dict):
+            nested_job_name = str(agent_response.get('job_name') or '').strip() or None
+            output_payload = agent_response.get('output') if isinstance(agent_response.get('output'), dict) else {}
+            nested_tool_name = str(agent_response.get('tool_name') or output_payload.get('tool_name') or '').strip() or None
+        if nested_job_name is None and isinstance(handoff_payload, dict):
+            nested_job_name = str(handoff_payload.get('job_name') or '').strip() or None
+        if nested_tool_name is None and isinstance(handoff_payload, dict):
+            output_payload = handoff_payload.get('output') if isinstance(handoff_payload.get('output'), dict) else {}
+            nested_tool_name = str(handoff_payload.get('tool_name') or output_payload.get('tool_name') or '').strip() or None
+        job_name = str(args.get('job_name') or '').strip() or nested_job_name or None
+        explicit_tools = [
+            str(value).strip()
+            for value in (args.get('tools') or [])
+            if isinstance(value, str) and str(value).strip()
+        ] if isinstance(args.get('tools'), list) else []
+        tool_name = normalize_tool_name(
+            str(args.get('tool_name') or nested_tool_name or (explicit_tools[0] if len(explicit_tools) == 1 else '')).strip()
+        ) if str(args.get('tool_name') or nested_tool_name or (explicit_tools[0] if len(explicit_tools) == 1 else '')).strip() else None
+        handoff_id = str(args.get('handoff_id') or '').strip() or None
         target = object_name
 
         denied_result = AGENT_ROUTING_REQUEST_SERVICE.load_denied_result(
@@ -1597,6 +1796,14 @@ class AgentRoutingDispatcher:
         if denied_result:
             _default_on_result('route_to_agent', denied_result, tool_call_id)
             return denied_result, None
+
+        if target == '_xworker' and not job_name and tool_name:
+            job_name = str(get_default_job_name(target) or '').strip() or 'generic_execution'
+
+        if target == '_xworker' and not job_name and not tool_name:
+            result = "Invalid route_to_agent payload for _xworker: missing required job_name or tool_name"
+            _default_on_result('route_to_agent', result, tool_call_id)
+            return result, None
 
         user_question = AGENT_ROUTING_REQUEST_SERVICE.load_user_question(
             args,
@@ -1617,6 +1824,10 @@ class AgentRoutingDispatcher:
                 handoff_payload=handoff_payload,
                 handoff_protocol=handoff_protocol,
                 handoff_metadata=handoff_metadata,
+                job_name=job_name,
+                tool_name=tool_name,
+                tools=explicit_tools,
+                handoff_id=handoff_id,
                 source_agent_label=source_agent_label,
             )
         except Exception as exc:
@@ -1679,11 +1890,32 @@ class AgentRoutingRequestService:
         handoff_payload: Any,
         handoff_protocol: str | None,
         handoff_metadata: dict[str, Any] | None,
+        job_name: str | None,
+        tool_name: str | None,
+        tools: list[str] | None,
+        handoff_id: str | None,
         source_agent_label: str | None,
     ) -> dict[str, Any]:
         source_config = _get_runtime_agent_config(source_agent_label)
         source_handoff_policy = dict(source_config.get("handoff_policy") or {})
-        handoff_contract = get_handoff_route_contract(source_agent_label, target, protocol=handoff_protocol)
+        resolved_handoff_metadata = dict(handoff_metadata or {})
+        if job_name and not str(resolved_handoff_metadata.get("job_name") or "").strip():
+            resolved_handoff_metadata["job_name"] = job_name
+        if tool_name and not str(resolved_handoff_metadata.get("tool_name") or "").strip():
+            resolved_handoff_metadata["tool_name"] = normalize_tool_name(tool_name)
+        if tools and "tools" not in resolved_handoff_metadata:
+            resolved_handoff_metadata["tools"] = [normalize_tool_name(value) for value in tools if str(value).strip()]
+        if handoff_id and not str(resolved_handoff_metadata.get("handoff_id") or "").strip():
+            resolved_handoff_metadata["handoff_id"] = handoff_id
+
+        initial_handoff_payload = agent_response if isinstance(agent_response, dict) else handoff_payload if isinstance(handoff_payload, dict) else None
+        handoff_contract = get_handoff_route_contract(
+            source_agent_label,
+            target,
+            protocol=handoff_protocol,
+            handoff_payload=initial_handoff_payload,
+            handoff_metadata=resolved_handoff_metadata,
+        )
         resolved_protocol = handoff_protocol or str(handoff_contract.get("protocol") or "").strip() or (
             "agent_handoff_v1"
             if agent_response is not None or handoff_payload is not None
@@ -1697,7 +1929,7 @@ class AgentRoutingRequestService:
             message_text=user_question,
             agent_response=agent_response,
             handoff_payload=handoff_payload,
-            handoff_metadata=handoff_metadata,
+            handoff_metadata=resolved_handoff_metadata,
         )
 
         handoff_report = validate_handoff_for_target(
@@ -1719,7 +1951,22 @@ class AgentRoutingRequestService:
             source_agent_label=source_agent_label,
         )
         target_config = _get_runtime_agent_config(target)
-        messages: list[dict[str, Any]] = [{"role": "system", "content": target_config.get("system", "") }]
+        routing_request_view = {
+            "agent_label": target,
+            "handoff": handoff,
+            "handoff_context": prepared_handoff,
+        }
+        resolved_system_text = AGENT_EXECUTION_SELECTION_SERVICE.load_system_text(
+            target,
+            target_config,
+            routing_request_view,
+        )
+        resolved_tools = AGENT_EXECUTION_SELECTION_SERVICE.load_tool_definitions(
+            target,
+            routing_request_view,
+            explicit_tools=tools,
+        )
+        messages: list[dict[str, Any]] = [{"role": "system", "content": resolved_system_text }]
         if prepared_handoff.get("system_context"):
             messages.append({"role": "system", "content": str(prepared_handoff.get("system_context") or "")})
         messages.append({
@@ -1730,13 +1977,18 @@ class AgentRoutingRequestService:
         return {
             'messages': messages,
             'agent_label': target,
-            'tools': get_agent_runtime_tools(target),
+            'tools': resolved_tools,
             'model': target_config.get("model") or model,
             'include_history': bool(target_history_policy.get("include_routed_history")),
             'history_depth': int(target_history_policy.get("routed_history_depth") or 0),
             'handoff': handoff,
             'handoff_context': prepared_handoff,
-            'runtime': _agent_runtime_metadata(target),
+            'runtime': AGENT_EXECUTION_SELECTION_SERVICE.load_runtime_metadata(
+                target,
+                target_config,
+                routing_request_view,
+                explicit_tools=tools,
+            ),
         }
 
 
@@ -1863,6 +2115,22 @@ class RoutingHandoffViewService:
                 return candidate.strip()
         return ""
 
+    def load_tool_name(self, routing_request: dict[str, Any] | None) -> str:
+        metadata = self.load_metadata(routing_request)
+        handoff_payload = self.load_payload(routing_request)
+        output_payload = handoff_payload.get("output") if isinstance(handoff_payload.get("output"), dict) else {}
+        for candidate in (
+            metadata.get("tool_name"),
+            metadata.get("tool"),
+            output_payload.get("tool_name"),
+            output_payload.get("tool"),
+            handoff_payload.get("tool_name"),
+            handoff_payload.get("tool"),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return normalize_tool_name(candidate.strip())
+        return ""
+
     def load_object_name(self, routing_request: dict[str, Any] | None) -> str:
         metadata = self.load_metadata(routing_request)
         handoff_payload = self.load_payload(routing_request)
@@ -1879,14 +2147,10 @@ class RoutingHandoffViewService:
         if isinstance(metadata.get("profiles_db_path"), str) and str(metadata.get("profiles_db_path") or "").strip():
             return "profiles"
         job_name = self.load_job_name(routing_request)
-        job_object_map = {
-            "applicant_profile_parser": "profiles",
-            "job_posting_parser": "job_postings",
-            "cover_letter_writer": "cover_letters",
-            "agent_system_builder": "agent_system_configs",
-        }
-        if job_name in job_object_map:
-            return job_object_map[job_name]
+        job_config = get_job_config(job_name)
+        default_object_name = str(job_config.get("default_object_name") or "").strip()
+        if default_object_name:
+            return default_object_name
         if isinstance(output_payload.get("job_posting_result"), dict) or isinstance(output_payload.get("job_posting"), dict):
             return "job_postings"
         if isinstance(output_payload.get("profile_result"), dict) or isinstance(output_payload.get("profile"), dict):
@@ -2258,11 +2522,62 @@ class RoutingDocumentArtifactObject:
             return os.path.join(os.path.dirname(os.path.abspath(os.path.expanduser(file_path))), "Cover_letters")
         return os.path.join(os.path.expanduser("~"), "Cover_letters")
 
-    def load_doc_id(self, *, correlation_id: str | None = None) -> str:
-        job_posting_result = self.output_payload.get("job_posting_result") if isinstance(self.output_payload.get("job_posting_result"), dict) else {}
+    def load_job_posting_result(self) -> dict[str, Any]:
+        job_posting_result = self.output_payload.get("job_posting_result")
+        return job_posting_result if isinstance(job_posting_result, dict) else {}
+
+    def load_job_posting_entity_name(
+        self,
+        *,
+        entity_key: str | None = None,
+        entity_type: str | None = None,
+        role: str | None = None,
+    ) -> str:
+        job_posting_result = self.load_job_posting_result()
+        entity_payloads = job_posting_result.get("entity_objects")
+        if not isinstance(entity_payloads, list):
+            return ""
+        for entity_payload in entity_payloads:
+            if not isinstance(entity_payload, dict):
+                continue
+            metadata = entity_payload.get("metadata") if isinstance(entity_payload.get("metadata"), dict) else {}
+            if entity_key and str(entity_payload.get("entity_key") or entity_payload.get("seed_key") or "").strip() != entity_key:
+                continue
+            if entity_type and str(entity_payload.get("entity_type") or entity_payload.get("type_key") or "").strip() != entity_type:
+                continue
+            if role and str(metadata.get("role") or "").strip() != role:
+                continue
+            for candidate in (
+                entity_payload.get("canonical_name"),
+                entity_payload.get("name"),
+                entity_payload.get("title"),
+                entity_payload.get("mention_text"),
+            ):
+                if isinstance(candidate, str) and candidate.strip():
+                    return candidate.strip()
+        return ""
+
+    def load_job_posting_identity(self) -> tuple[str, str]:
+        job_posting_result = self.load_job_posting_result()
         job_posting = job_posting_result.get("job_posting") if isinstance(job_posting_result.get("job_posting"), dict) else {}
-        title = str(job_posting.get("job_title") or "").strip()
-        company = str(job_posting.get("company_name") or "").strip()
+        raw_text_document = job_posting_result.get("raw_text_document") if isinstance(job_posting_result.get("raw_text_document"), dict) else {}
+        title = str(
+            job_posting.get("job_title")
+            or self.load_job_posting_entity_name(entity_key="subject")
+            or self.load_job_posting_entity_name(entity_type="job_posting")
+            or self.load_job_posting_entity_name(role="subject")
+            or raw_text_document.get("title")
+            or ""
+        ).strip()
+        company = str(
+            job_posting.get("company_name")
+            or self.load_job_posting_entity_name(entity_type="organization")
+            or ""
+        ).strip()
+        return title, company
+
+    def load_doc_id(self, *, correlation_id: str | None = None) -> str:
+        title, company = self.load_job_posting_identity()
         if title or company:
             return "_".join(part for part in (title, company) if part)
         if correlation_id:
@@ -2593,6 +2908,7 @@ class ToolCallExecutionService:
         routing_request: dict[str, Any] | None = None
         tool_results: list[str] = []
         terminal_tool_result: str | None = None
+        terminal_tool_name: str | None = None
 
         WORKFLOW_HISTORY_LOG_SERVICE.log_tool_call_start(
             history,
@@ -2603,6 +2919,9 @@ class ToolCallExecutionService:
 
         for tool_call in agent_msg.tool_calls:
             tool_name = tool_call.function.name
+            tool_spec = get_tool_spec(tool_name)
+            tool_response_required = bool(getattr(tool_spec, 'tool_response_required', True))
+            direct_final_result = bool(getattr(tool_spec, 'final_result', False))
             try:
                 args = json.loads(tool_call.function.arguments or "{}")
             except Exception:
@@ -2676,6 +2995,10 @@ class ToolCallExecutionService:
 
             if workflow_session and workflow_session.get("terminal"):
                 terminal_tool_result = tool_content
+                terminal_tool_name = normalize_tool_name(str(tool_name))
+            elif direct_final_result and request is None:
+                terminal_tool_result = tool_content
+                terminal_tool_name = normalize_tool_name(str(tool_name))
 
             WORKFLOW_HISTORY_LOG_SERVICE.log_tool_result(
                 history,
@@ -2687,6 +3010,7 @@ class ToolCallExecutionService:
                 event_kind=workflow_history_event_kind,
                 event_name=workflow_history_event_name,
                 payload=workflow_history_payload,
+                tool_response_required=tool_response_required,
             )
             if isinstance(request, dict) and request.get('messages') is not None:
                 routing_request = request
@@ -2696,6 +3020,7 @@ class ToolCallExecutionService:
             'routing_request': routing_request,
             'tool_results': tool_results,
             'terminal_tool_result': terminal_tool_result,
+            'terminal_tool_name': terminal_tool_name,
         }
 
 
@@ -2703,6 +3028,29 @@ TOOL_CALL_EXECUTION_SERVICE = ToolCallExecutionService()
 
 
 class ToolCallFollowupService:
+    def ensure_object_followup_messages(
+        self,
+        *,
+        followup_messages: list[dict[str, Any]],
+        tool_results: list[str],
+    ) -> list[dict[str, Any]]:
+        has_non_system_message = any(
+            isinstance(message, dict) and str(message.get('role') or '').strip().lower() != 'system'
+            for message in followup_messages
+        )
+        if has_non_system_message:
+            return followup_messages
+
+        raw_tool_results = "\n".join(
+            str(tool_result)
+            for tool_result in tool_results
+            if str(tool_result or '').strip()
+        ).strip()
+        if not raw_tool_results:
+            return followup_messages
+
+        return list(followup_messages) + [{"role": "user", "content": raw_tool_results}]
+
     def build_object_request(
         self,
         *,
@@ -2771,7 +3119,10 @@ class ToolCallFollowupService:
             routing_request=routing_request,
             agent_label=agent_label,
         )
-        followup_messages = list(request.get('messages') or [])
+        followup_messages = self.ensure_object_followup_messages(
+            followup_messages=list(request.get('messages') or []),
+            tool_results=tool_results,
+        )
         if not followup_messages:
             followup_messages = [{"role": "user", "content": ""}]
 
@@ -3023,9 +3374,22 @@ def _handle_tool_calls(agent_msg, depth: int = 0,
     routing_request = execution_result.get('routing_request')
     tool_results = list(execution_result.get('tool_results') or [])
     terminal_tool_result = execution_result.get('terminal_tool_result')
+    terminal_tool_name = execution_result.get('terminal_tool_name')
     agent_label = agent_label or '_xplaner_xrouter'
 
     if terminal_tool_result is not None:
+        WORKFLOW_HISTORY_LOG_SERVICE.log_assistant_response(
+            history,
+            text=str(terminal_tool_result),
+            response_agent_label=agent_label,
+            workflow_session=workflow_session,
+            event_name='tool_result_final',
+            payload={
+                'direct_tool_result': True,
+                'tool_name': terminal_tool_name,
+                'result': str(terminal_tool_result),
+            },
+        )
         return terminal_tool_result
 
     return TOOL_CALL_FOLLOWUP_SERVICE.execute_object_followup(
@@ -3037,36 +3401,4 @@ def _handle_tool_calls(agent_msg, depth: int = 0,
         agent_label=agent_label,
         workflow_session=workflow_session,
     )
-
-# ============================================================================
-# Main Entry Point
-# ============================================================================
-# if __name__ == '__main__':
-#    import sys
-
-        # Run triage agent with default prompt
-    user_msg = ""       
-    # Acquire history lazily to avoid circular import during module init
-    history = get_history()
-    history._log(_role='user', _content=user_msg, 
-                 _name='dispatcher_agent', _thread_name='chat', _obj='chat')
-    triage = ChatComE(_model=model, 
-                      _messages=TRIAGE_BOOTSTRAP_MESSAGES + [{"role":"user", "content":user_msg}], 
-                      tools=get_agent_tools(AGENTS_REGISTRY['triage_agent']['tools']), 
-                      tool_choice='auto')
-    rspn = triage._response()
-    if hasattr(rspn, 'choices') and len(rspn.choices) > 0:
-        msg = rspn.choices[0].message
-        history._log(_role='assistant', _content=msg.content or '', 
-                     _name='triage_agent', _thread_name='chat', _obj='chat', 
-                     _tool_calls=msg.tool_calls if hasattr(msg, 'tool_calls') else None)
-        result = _handle_tool_calls(msg, agent_label='triage_agent')
-        if result:
-            print("\n\n=== FINAL RESULT ===\n")
-            print(result)
-        else:
-            print('\n\n=== RESPONSE ===\n')
-            print(msg.content or 'No response')
-    else:
-        print('\n\n=== ERROR ===\n')
-        print(str(rspn))
+            

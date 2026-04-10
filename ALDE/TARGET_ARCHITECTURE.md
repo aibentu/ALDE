@@ -99,6 +99,7 @@ New phase-1 scaffolding modules:
 - `alde/event_store.py`
 - `alde/runtime_metrics.py`
 - `alde/runtime_view.py`
+- `alde/control_plane_runtime.py`
 
 Target responsibilities:
 
@@ -107,7 +108,47 @@ Target responsibilities:
 - optional normalized runtime event persistence for exports and offline processing
 - metric snapshots for latency, retries, handoffs, and rewards
 - exportable runtime view snapshots for inspection, reporting, and future UI binding
+- shared desktop control-plane projections for monitoring and operator status
+- bundle exports that keep runtime view, monitoring snapshot, and operator snapshot aligned as one contract
 - future policy canary and rollback support
+
+### Current Desktop Control-Plane Snapshot Contract
+
+The current desktop control-plane projection is intentionally shared before any future WebApp work.
+
+The authoritative projection module is `alde/control_plane_runtime.py`.
+
+Current exported snapshot surfaces:
+
+- `load_desktop_monitoring_snapshot(...)`
+- `load_operator_status_snapshot(...)`
+- `export_desktop_monitoring_snapshot(...)`
+- `export_operator_status_snapshot(...)`
+- `export_control_plane_snapshot(...)`
+
+Shared snapshot fields across monitoring and operator projections:
+
+- `snapshot_kind`
+- `healthy`
+- `alerts`
+- `attention_count`
+- `summary_metrics`
+- `recent_items`
+- `recent_item_count`
+- `recent_item_summary`
+- `recent_item_filters`
+- `detail_rows`
+
+The operator snapshot extends this baseline with `recent_actions`, `audit_summary`, and `recent_action_filters` so the UI can filter by status, audit type, action group, and source without recomputing projection logic locally.
+
+The bundle export produced by `export_control_plane_snapshot(...)` is the preferred file boundary for desktop reporting because it keeps:
+
+- raw runtime view projection
+- monitoring snapshot projection
+- operator snapshot projection
+- merged recent-item summary
+
+inside one generated artifact under `AppData/generated/`.
 
 ### Existing Runtime Truth Sources
 
@@ -160,6 +201,7 @@ This keeps ALDE on a path toward external orchestration and adaptive policy whil
 - `alde/event_store.py`
 - `alde/runtime_metrics.py`
 - `alde/runtime_view.py`
+- `alde/control_plane_runtime.py`
 
 ### Next integration points
 
@@ -167,6 +209,7 @@ This keeps ALDE on a path toward external orchestration and adaptive policy whil
 - project `ChatHistory` workflow and tool-call entries into normalized runtime objects
 - export periodic metric snapshots under `AppData/generated/`
 - export normalized runtime views under `AppData/generated/`
+- export shared control-plane bundle snapshots under `AppData/generated/`
 - add standalone JSONL exports only where external consumers need a stable file boundary
 
 ## Architectural Rules

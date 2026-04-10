@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
 from alde.policy_store import append_event
-from alde.runtime_view import export_runtime_view, load_runtime_view
+from alde.runtime_metrics import load_runtime_observability_snapshot
+from alde.runtime_view import export_control_plane_snapshot, export_runtime_view, load_desktop_monitoring_snapshot, load_operator_status_snapshot, load_runtime_trace, load_runtime_view
 
 
 class TestRuntimeView(unittest.TestCase):
@@ -115,6 +118,18 @@ class TestRuntimeView(unittest.TestCase):
             self.assertEqual(runtime_view["sessions"][0]["retry"]["requested_count"], 1)
             self.assertEqual(runtime_view["sessions"][0]["handoffs"]["count"], 1)
             self.assertEqual(runtime_view["sessions"][0]["latest_workflow_state"]["status"], "scheduled")
+            self.assertEqual(runtime_view["trace_count"], 2)
+            self.assertEqual(runtime_view["trace"][0]["trace_kind"], "assistant_tool_call")
+            self.assertEqual(runtime_view["trace"][0]["tool_calls"][0]["function"]["name"], "vectordb")
+            self.assertEqual(runtime_view["trace"][1]["trace_kind"], "tool_result")
+            self.assertEqual(runtime_view["trace"][1]["handoff"]["target_agent"], "_xworker")
+
+            trace_view = load_runtime_trace(
+                session_id="session-view",
+                history_entries=history_entries,
+            )
+            self.assertEqual(len(trace_view), 2)
+            self.assertEqual(trace_view[1]["workflow_payload"]["target_agent"], "_xworker")
 
             exported_path = export_runtime_view(
                 base_dir=temp_dir,
@@ -126,6 +141,217 @@ class TestRuntimeView(unittest.TestCase):
 
             self.assertEqual(exported_view["session_count"], 1)
             self.assertEqual(exported_view["sessions"][0]["handoffs"]["count"], 1)
+            self.assertEqual(len(exported_view["trace"]), 2)
+            self.assertEqual(exported_view["trace"][0]["tool_calls"][0]["function"]["name"], "vectordb")
+            self.assertEqual(exported_view["trace"][1]["handoff"]["protocol"], "agent_handoff_v1")
+
+            snapshot = load_runtime_observability_snapshot(
+                base_dir=temp_dir,
+                session_id="session-view",
+                history_entries=history_entries,
+            )
+
+            self.assertTrue(snapshot["healthy"])
+            self.assertEqual(snapshot["session_count"], 1)
+            self.assertEqual(snapshot["queue_backend"], "inmemory")
+            self.assertEqual(snapshot["latest_sessions"][0]["session_id"], "session-view")
+            self.assertIn("handoff", snapshot["metrics"]["event_family_counts"])
+            self.assertTrue(snapshot["validation"]["valid"])
+
+            monitoring_snapshot = load_desktop_monitoring_snapshot(
+                base_dir=temp_dir,
+                session_id="session-view",
+                history_entries=history_entries,
+            )
+
+            self.assertTrue(monitoring_snapshot["healthy"])
+            self.assertEqual(monitoring_snapshot["queue_backend"], "inmemory")
+            self.assertEqual(monitoring_snapshot["active_session_count"], 1)
+            self.assertEqual(monitoring_snapshot["latest_session"]["session_id"], "session-view")
+            self.assertEqual(monitoring_snapshot["validation_issue_count"], 0)
+            self.assertEqual(monitoring_snapshot["trace_filter_options"]["handoffs"][0], "_xplaner_xrouter->_xworker")
+            self.assertEqual(monitoring_snapshot["snapshot_kind"], "monitoring")
+            self.assertEqual(monitoring_snapshot["summary_metrics"]["session_count"], 1)
+            self.assertEqual(monitoring_snapshot["recent_item_count"], len(monitoring_snapshot["recent_items"]))
+            self.assertGreaterEqual(monitoring_snapshot["recent_item_count"], 4)
+            self.assertEqual(monitoring_snapshot["recent_items"][0]["source"], "runtime_monitoring")
+            self.assertIn("runtime_monitoring", monitoring_snapshot["recent_item_filters"]["action_groups"])
+
+            with patch(
+                "alde.control_plane_runtime.QUEUE_HEALTH_SERVICE.load_queue_health",
+                return_value=("inmemory", True),
+            ), patch(
+                "alde.control_plane_runtime.WORKFLOW_VALIDATION_SERVICE.load_report",
+                return_value={
+                    "valid": True,
+                    "errors": [],
+                    "valid_count": 4,
+                    "invalid_count": 0,
+                },
+            ), patch(
+                "alde.control_plane_runtime.OPERATOR_STATUS_SERVICE.load_dispatcher_status",
+                return_value={
+                    "dispatcher_db_path": "/tmp/dispatcher.json",
+                    "dispatcher_healthy": True,
+                    "dispatcher_error": None,
+                },
+            ), patch(
+                "alde.control_plane_runtime.OPERATOR_STATUS_SERVICE.load_mcp_config_path",
+                return_value=Path(temp_dir) / "mcp_servers.json",
+            ):
+                (Path(temp_dir) / "mcp_servers.json").write_text("{}", encoding="utf-8")
+                control_plane_path = export_control_plane_snapshot(
+                    base_dir=temp_dir,
+                    session_id="session-view",
+                    history_entries=history_entries,
+                    mcp_probe={
+                        "ok": True,
+                        "returncode": 0,
+                        "stdout": "probe ok",
+                        "stderr": "",
+                    },
+                    recent_action_entries=[
+                        {
+                            "timestamp": "2026-04-01T11:00:00+00:00",
+                            "title": "Queue probe",
+                            "summary": "Queue probe: backend=inmemory healthy=True",
+                            "source": "desktop_operator",
+                            "status": "pass",
+                        }
+                    ],
+                )
+
+            with open(control_plane_path, "r", encoding="utf-8") as exported_file:
+                control_plane_snapshot = json.load(exported_file)
+
+            self.assertEqual(control_plane_snapshot["snapshot_kind"], "control_plane_bundle")
+            self.assertEqual(control_plane_snapshot["monitoring"]["snapshot_kind"], "monitoring")
+            self.assertEqual(control_plane_snapshot["operator"]["snapshot_kind"], "operator")
+            self.assertIn("recent_item_filters", control_plane_snapshot)
+            self.assertEqual(control_plane_snapshot["operator"]["recent_actions"][0]["audit_type"], "probe")
+            self.assertEqual(control_plane_snapshot["operator"]["recent_actions"][0]["action_group"], "queue")
+
+    def test_operator_status_snapshot_projects_shared_control_plane_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mcp_config_path = Path(temp_dir) / "mcp_servers.json"
+            mcp_config_path.write_text("{}", encoding="utf-8")
+
+            with patch(
+                "alde.control_plane_runtime.QUEUE_HEALTH_SERVICE.load_queue_health",
+                return_value=("inmemory", True),
+            ), patch(
+                "alde.control_plane_runtime.WORKFLOW_VALIDATION_SERVICE.load_report",
+                return_value={
+                    "valid": True,
+                    "errors": [],
+                    "valid_count": 4,
+                    "invalid_count": 0,
+                },
+            ), patch(
+                "alde.control_plane_runtime.OPERATOR_STATUS_SERVICE.load_dispatcher_status",
+                return_value={
+                    "dispatcher_db_path": "/tmp/dispatcher.json",
+                    "dispatcher_healthy": True,
+                    "dispatcher_error": None,
+                },
+            ), patch(
+                "alde.control_plane_runtime.OPERATOR_STATUS_SERVICE.load_mcp_config_path",
+                return_value=mcp_config_path,
+            ):
+                snapshot = load_operator_status_snapshot(
+                    mcp_probe={
+                        "ok": True,
+                        "returncode": 0,
+                        "stdout": "probe ok",
+                        "stderr": "",
+                    },
+                    recent_action_entries=[
+                        {
+                            "timestamp": "2026-04-01T11:00:00+00:00",
+                            "title": "Queue probe",
+                            "summary": "Queue probe: backend=inmemory healthy=True",
+                            "source": "desktop_operator",
+                            "status": "pass",
+                        }
+                    ],
+                )
+
+            self.assertTrue(snapshot["healthy"])
+            self.assertEqual(snapshot["queue_backend"], "inmemory")
+            self.assertTrue(snapshot["dispatcher_healthy"])
+            self.assertEqual(snapshot["validation_issue_count"], 0)
+            self.assertTrue(snapshot["mcp_config_present"])
+            self.assertTrue(snapshot["mcp_probe"]["ok"])
+            self.assertEqual(snapshot["snapshot_kind"], "operator")
+            self.assertEqual(snapshot["service_count"], 4)
+            self.assertEqual(snapshot["healthy_service_count"], 4)
+            self.assertEqual(snapshot["attention_count"], 0)
+            self.assertEqual([row["title"] for row in snapshot["service_rows"]], ["Queue", "Dispatcher", "MCP", "Workflow Validation"])
+            self.assertEqual(snapshot["recent_item_count"], 1)
+            self.assertEqual(snapshot["recent_actions"][0]["title"], "Queue probe")
+            self.assertEqual(snapshot["recent_actions"][0]["status"], "pass")
+            self.assertEqual(snapshot["recent_actions"][0]["audit_type"], "probe")
+            self.assertEqual(snapshot["recent_actions"][0]["action_group"], "queue")
+            self.assertEqual(snapshot["audit_summary"]["status_counts"]["pass"], 1)
+            self.assertIn("probe", snapshot["recent_action_filters"]["audit_types"])
+            self.assertIn("queue", snapshot["recent_action_filters"]["action_groups"])
+
+    def test_operator_status_snapshot_projects_alerts_for_degraded_services(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            mcp_config_path = Path(temp_dir) / "mcp_servers.json"
+            mcp_config_path.write_text("{}", encoding="utf-8")
+
+            with patch(
+                "alde.control_plane_runtime.QUEUE_HEALTH_SERVICE.load_queue_health",
+                return_value=("rq", False),
+            ), patch(
+                "alde.control_plane_runtime.WORKFLOW_VALIDATION_SERVICE.load_report",
+                return_value={
+                    "valid": False,
+                    "errors": ["workflow-a: missing transition", "workflow-b: invalid tool"],
+                    "valid_count": 2,
+                    "invalid_count": 2,
+                },
+            ), patch(
+                "alde.control_plane_runtime.OPERATOR_STATUS_SERVICE.load_dispatcher_status",
+                return_value={
+                    "dispatcher_db_path": "/tmp/dispatcher.json",
+                    "dispatcher_healthy": False,
+                    "dispatcher_error": "dispatcher locked",
+                },
+            ), patch(
+                "alde.control_plane_runtime.OPERATOR_STATUS_SERVICE.load_mcp_config_path",
+                return_value=mcp_config_path,
+            ):
+                snapshot = load_operator_status_snapshot(
+                    mcp_probe={
+                        "ok": False,
+                        "returncode": 1,
+                        "stdout": "",
+                        "stderr": "probe failed",
+                    },
+                    recent_action_entries=[
+                        "10:00:00 | Queue probe failed: backend=rq healthy=False",
+                        "10:01:00 | Dispatcher repair completed: backup=/tmp/dispatcher.bak",
+                    ],
+                )
+
+            self.assertFalse(snapshot["healthy"])
+            self.assertEqual(snapshot["healthy_service_count"], 0)
+            self.assertGreaterEqual(snapshot["attention_count"], 4)
+            self.assertIn("Queue backend is unreachable.", snapshot["alerts"])
+            self.assertIn("dispatcher locked", snapshot["alerts"])
+            self.assertIn("probe failed", snapshot["alerts"])
+            self.assertIn("workflow-a: missing transition", snapshot["alerts"])
+            self.assertEqual(snapshot["service_rows"][0]["state"], "fail")
+            self.assertEqual(snapshot["service_rows"][2]["state"], "fail")
+            self.assertEqual(snapshot["recent_item_count"], 2)
+            self.assertEqual(snapshot["recent_actions"][0]["audit_type"], "repair")
+            self.assertEqual(snapshot["recent_actions"][0]["action_group"], "dispatcher")
+            self.assertEqual(snapshot["recent_actions"][0]["status"], "pass")
+            self.assertEqual(snapshot["recent_actions"][1]["status"], "fail")
+            self.assertIn("repair", snapshot["recent_action_filters"]["audit_types"])
+            self.assertIn("queue", snapshot["recent_action_filters"]["action_groups"])
 
 
 if __name__ == "__main__":

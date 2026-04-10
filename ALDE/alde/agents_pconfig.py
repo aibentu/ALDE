@@ -14,14 +14,19 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
             """
             === Agent: xplaner_xrouter ===
             Description: Primary planning and routing agent.
-            Goal: Clarify the user goal, select the correct job, and route work to xworker when execution is required.
+            Goal: Understand the user request, close requirement gaps, select the correct job_name or tool_name, and route only schema-ready execution briefs.
 
             Rules:
-            - Own user interaction, planning, and routing.
-            - Use direct tools only when the work is trivial and deterministic.
+            - Own user interaction, clarification, planning, and routing.
+            - Ask focused follow-up questions when the request is underspecified, ambiguous, or missing required inputs.
+            - Build a minimal explicit execution plan before delegating: goal, selected target_agent, selected job_name or tool_name, required inputs, and expected result.
+            - Use direct tools only when the work is trivial, deterministic, and does not need a worker specialization.
+            - If the user provides a concrete filesystem path and asks to read, open, or load it, call read_document directly instead of routing or querying memorydb or vectordb.
             - Route execution, parsing, writing, dispatching, and builder work to xworker.
-            - Select the worker job and job-specific skill profile explicitly.
-            - Never invent file contents, paths, tool results, or code behavior.
+            - Every route_to_agent call must include an explicit job_name or tool_name that matches the intended worker execution path.
+            - Prefer structured handoff payloads when downstream execution depends on schema-bound input.
+            - Do not delegate until the brief is specific enough for deterministic execution.
+            - Never invent file contents, paths, tool results, database state, or code behavior.
             """
         ),
         "task": {
@@ -38,11 +43,13 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
             """
             === Agent: xworker ===
             Description: Generic sub agent for all execution jobs.
-            Goal: Execute the routed job with the selected job-specific skill profile and return deterministic, source-grounded output.
+            Goal: Execute the routed job or tool-focused task with the selected skill profile and return deterministic, source-grounded output.
 
             Rules:
             - Execute only the job handed off by xplaner_xrouter or by an internal xworker handoff.
-            - Load the job-specific skill profile before acting.
+            - Resolve the skill profile from tool_name first when configured, then fall back to job_name.
+            - Respect explicit routed tool constraints when tools are provided as task options.
+            - When the request names a concrete filesystem path to read, open, or load, use read_document; memorydb and vectordb are retrieval tools, not direct file loaders.
             - Keep outputs stable, explicit, and task-bounded.
             - Do not invent unsupported claims or runtime results.
             - Route further only when the workflow explicitly requires an internal xworker handoff.
@@ -50,8 +57,10 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
         ),
         "task": {
             "mode": "xworker",
+            "tools": [],
             "job_skill_profile_policy": {
-                "selection_mode": "job_name",
+                "selection_mode": "tool_name",
+                "fallback_selection_mode": "job_name",
                 "fallback_skill_profile": "xworker_core",
             },
         },
@@ -221,13 +230,16 @@ JOB_PROMPT_CONFIGS: dict[str, dict[str, Any]] = {
             """
             === Job: job_posting_parser ===
             Description: Structured job-posting extraction job.
-            Goal: Convert dispatcher payloads for job-posting PDFs into a normalized JSON representation.
+            Goal: Convert dispatcher payloads for job-posting PDFs into a knowledge-ready JSON representation with raw-text, entity, and relational projections.
 
             Rules:
             - Determine whether the source is actually a job posting.
             - Do not score candidate fit or make downstream decisions.
             - Populate db_updates only as the desired state transition.
             - Keep salaries in the original currency.
+            - Preserve the original extracted source in raw_text_document.raw_text whenever available.
+            - Emit explicit entity_objects and relation_objects only when the source provides evidence for them.
+            - Keep job_posting as a flattened compatibility projection for existing storage and downstream consumers.
             - Return JSON only.
             """
         ),
@@ -241,7 +253,10 @@ JOB_PROMPT_CONFIGS: dict[str, dict[str, Any]] = {
             "extraction_guidance": [
                 "Use YYYY-MM-DD only when a date is unambiguous.",
                 "Deduplicate ordered lists with most important items first.",
-                "Put the full extracted text into job_posting.raw_text when available.",
+                "Put the full extracted text into raw_text_document.raw_text and mirror it into job_posting.raw_text when available.",
+                "Represent the posting as a primary subject entity in entity_objects, usually with entity_key 'subject'.",
+                "Use stable, reusable entity keys so relation_objects can reference them deterministically.",
+                "Emit only evidence-backed relation types such as offered_by, located_in, requires_skill, requires_language, or application_contact.",
                 "If the source is not a job posting, keep the schema stable and mark db_updates as failed.",
             ],
         },
@@ -252,6 +267,45 @@ JOB_PROMPT_CONFIGS: dict[str, dict[str, Any]] = {
             "link": {"thread_id": "...", "message_id": "..."},
             "file": {"path": "...", "name": "...", "content_sha256": "..."},
             "parse": {"is_job_posting": True, "language": "de", "extraction_quality": "high", "errors": [], "warnings": []},
+            "raw_text_document": {
+                "document_type": "job_posting",
+                "title": None,
+                "language": "de",
+                "raw_text": "",
+                "sections": [
+                    {
+                        "section_key": "header",
+                        "heading": "Object Header",
+                        "text": "",
+                        "metadata": {},
+                    }
+                ],
+                "metadata": {"content_sha256": None, "source": None},
+            },
+            "entity_objects": [
+                {
+                    "entity_key": "subject",
+                    "entity_type": "job_posting",
+                    "canonical_name": None,
+                    "mention_text": None,
+                    "section_key": "header",
+                    "summary": None,
+                    "confidence": 0.99,
+                    "aliases": [],
+                    "attributes": {},
+                    "metadata": {"role": "subject", "source_field": "job_posting.job_title"},
+                }
+            ],
+            "relation_objects": [
+                {
+                    "source_entity_key": "subject",
+                    "target_entity_key": "organization:example_gmbh",
+                    "relation_type": "offered_by",
+                    "section_key": "header",
+                    "confidence": 0.95,
+                    "metadata": {"source_field": "job_posting.company_name"},
+                }
+            ],
             "job_posting": {
                 "job_title": None,
                 "company_name": None,
@@ -410,10 +464,119 @@ JOB_PROMPT_CONFIGS: dict[str, dict[str, Any]] = {
 }
 
 
+JOB_CONFIGS: dict[str, dict[str, Any]] = {
+    "interactive_planning": {
+        "runtime_agent": "_xplaner_xrouter",
+        "skill_profile": "xplaner_xrouter_core",
+        "default_object_name": "documents",
+        "is_default_for_agent": True,
+    },
+    "agent_system_planning": {
+        "runtime_agent": "_xplaner_xrouter",
+        "skill_profile": "xplaner_xrouter_agent_system_planning",
+        "default_object_name": "documents",
+    },
+    "generic_execution": {
+        "runtime_agent": "_xworker",
+        "skill_profile": "xworker_core",
+        "default_object_name": "documents",
+        "is_default_for_agent": True,
+    },
+    "document_dispatch": {
+        "runtime_agent": "_xworker",
+        "skill_profile": "xworker_dispatch",
+        "default_object_name": "documents",
+    },
+    "generic_parser": {
+        "runtime_agent": "_xworker",
+        "skill_profile": "xworker_generic_parser",
+        "default_object_name": "documents",
+    },
+    "applicant_profile_parser": {
+        "runtime_agent": "_xworker",
+        "skill_profile": "xworker_profile_parser",
+        "default_object_name": "profiles",
+        "specialized_prompt": {"agent_type": "parser", "task_name": "applicant_profile"},
+    },
+    "job_posting_parser": {
+        "runtime_agent": "_xworker",
+        "skill_profile": "xworker_job_posting_parser",
+        "default_object_name": "job_postings",
+        "specialized_prompt": {"agent_type": "parser", "task_name": "job_posting"},
+    },
+    "generic_writer": {
+        "runtime_agent": "_xworker",
+        "skill_profile": "xworker_generic_writer",
+        "default_object_name": "documents",
+    },
+    "cover_letter_writer": {
+        "runtime_agent": "_xworker",
+        "skill_profile": "xworker_cover_letter_writer",
+        "default_object_name": "cover_letters",
+        "specialized_prompt": {"agent_type": "writer", "task_name": "cover_letter"},
+    },
+    "agent_system_builder": {
+        "runtime_agent": "_xworker",
+        "skill_profile": "xworker_agent_system_builder",
+        "default_object_name": "agent_system_configs",
+    },
+    "code_analysis": {
+        "runtime_agent": "_xworker",
+        "skill_profile": "xworker_code_analysis",
+        "default_object_name": "documents",
+    },
+}
+
+
+def _default_job_name_for_agent(agent_label: str) -> str:
+    for job_name, config in JOB_CONFIGS.items():
+        if str(config.get("runtime_agent") or "").strip() != str(agent_label or "").strip():
+            continue
+        if bool(config.get("is_default_for_agent")):
+            return job_name
+    return ""
+
+
+def _job_skill_profiles_for_agent(agent_label: str) -> dict[str, str]:
+    return {
+        job_name: str(config.get("skill_profile") or "")
+        for job_name, config in JOB_CONFIGS.items()
+        if str(config.get("runtime_agent") or "").strip() == str(agent_label or "").strip()
+        and str(config.get("skill_profile") or "").strip()
+    }
+
+
+def _tool_skill_profiles_for_agent(agent_label: str) -> dict[str, str]:
+    if str(agent_label or "").strip() != "_xworker":
+        return {}
+
+    return {
+        "memorydb": "xworker_core",
+        "vectordb": "xworker_core",
+        "build_agent_system_configs": "xworker_agent_system_builder",
+        "execute_action_request": "xworker_dispatch",
+        "upsert_object_record": "xworker_dispatch",
+        "ingest_object": "xworker_dispatch",
+        "store_object_result": "xworker_dispatch",
+        "batch_generate_documents": "xworker_cover_letter_writer",
+        "vdb_worker": "xworker_core",
+        "dispatch_documents": "xworker_dispatch",
+        "read_document": "xworker_core",
+        "list_documents": "xworker_core",
+        "write_document": "xworker_generic_writer",
+        "update_document": "xworker_core",
+        "delete_document": "xworker_core",
+        "md_to_pdf": "xworker_generic_writer",
+    }
+
+
 _SPECIALIZED_JOB_PROMPT_MAP: dict[tuple[str, str], str] = {
-    ("parser", "applicant_profile"): "applicant_profile_parser",
-    ("parser", "job_posting"): "job_posting_parser",
-    ("writer", "cover_letter"): "cover_letter_writer",
+    (str(prompt_ref.get("agent_type") or "").strip(), str(prompt_ref.get("task_name") or "").strip()): job_name
+    for job_name, config in JOB_CONFIGS.items()
+    for prompt_ref in [config.get("specialized_prompt") or {}]
+    if isinstance(prompt_ref, dict)
+    and str(prompt_ref.get("agent_type") or "").strip()
+    and str(prompt_ref.get("task_name") or "").strip()
 }
 
 
@@ -435,7 +598,7 @@ AGENT_RUNTIME_CONFIG: dict[str, dict[str, Any]] = {
         "model": "gpt-4o",
         "tools": ["memorydb", "vectordb", "route_to_agent", "execute_action_request", "upsert_object_record", "@dispatcher", "@doc_rw"],
         "defaults": {
-            "default_job_name": "interactive_planning",
+            "default_job_name": _default_job_name_for_agent("_xplaner_xrouter"),
             "default_skill_profile": "xplaner_xrouter_core",
         },
         "workflow": {"definition": "xplaner_xrouter_router"},
@@ -458,7 +621,7 @@ AGENT_RUNTIME_CONFIG: dict[str, dict[str, Any]] = {
             "@doc_rw",
         ],
         "defaults": {
-            "default_job_name": "generic_execution",
+            "default_job_name": _default_job_name_for_agent("_xworker"),
             "default_skill_profile": "xworker_core",
         },
         "workflow": {"definition": "xworker_leaf"},
@@ -535,7 +698,8 @@ HANDOFF_PROTOCOL_CONFIGS: dict[str, dict[str, Any]] = {
 
 
 HANDOFF_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
-    "xplaner_to_xworker_structured": {
+    "xplaner_to_xworker": {
+        "handoff_id": "structured",
         "protocol": "agent_handoff_v1",
         "description": "Generic xplaner_xrouter to xworker structured handoff.",
         "required_payload_any": ["output", "generated", "msg"],
@@ -545,8 +709,82 @@ HANDOFF_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
             "Treat the handoff payload as the authoritative execution brief.",
             "Load the selected job-specific skill profile before acting.",
         ],
+        "variants": {
+            "document_dispatch": {
+                "handoff_id": "dispatch_request",
+                "job_name": "document_dispatch",
+                "protocol": "message_text",
+                "description": "xplaner_xrouter request for the deterministic dispatch workflow.",
+                "required_message_text": True,
+                "workflow_name": "xworker_dispatch_chain",
+                "instructions": [
+                    "Treat the routed user message as the dispatch request.",
+                    "Execute the document_dispatch job deterministically and do not invent filesystem or DB state.",
+                ],
+            },
+            "generic_parser": {
+                "handoff_id": "parser_brief",
+                "description": "xplaner_xrouter brief for a parser-style xworker job.",
+                "job_names": [
+                    "generic_parser",
+                    "applicant_profile_parser",
+                    "job_posting_parser",
+                ],
+                "workflow_name": "xworker_generic_parser_leaf",
+                "result_postprocess": {
+                    "tool": "store_object_result",
+                    "source_agent": "target_agent",
+                },
+                "instructions": [
+                    "Treat the handoff payload as the primary parser input.",
+                    "Keep extraction source-grounded and preserve schema stability.",
+                    "Return the structured parser JSON so runtime persistence can store the parsed object result deterministically.",
+                ],
+            },
+            "generic_writer": {
+                "handoff_id": "writer_brief",
+                "description": "xplaner_xrouter brief for a writer-style xworker job.",
+                "job_names": [
+                    "generic_writer",
+                    "cover_letter_writer",
+                ],
+                "workflow_name": "xworker_generic_writer_leaf",
+                "instructions": [
+                    "Use the handoff payload as the writing brief.",
+                    "Do not add unsupported claims beyond the provided structured input.",
+                ],
+            },
+            "agent_system_builder": {
+                "handoff_id": "builder",
+                "job_name": "agent_system_builder",
+                "description": "xplaner_xrouter brief for the xworker builder job.",
+                "workflow_name": "xworker_builder_leaf",
+                "instructions": [
+                    "Treat the handoff payload as the approved build brief.",
+                    "Use the build_agent_system_configs tool to produce the canonical config bundle.",
+                ],
+            },
+            "cover_letter_writer": {
+                "handoff_id": "cover_letter_writer",
+                "job_name": "cover_letter_writer",
+                "description": "xplaner_xrouter brief for the cover-letter writer job with deterministic artifact persistence.",
+                "workflow_name": "xworker_cover_letter_writer_leaf",
+                "result_postprocess": {
+                    "tool": "persist_cover_letter_artifacts",
+                    "text_writer_tool": "write_document",
+                    "pdf_writer_tool": "md_to_pdf",
+                    "default_write_pdf": True,
+                },
+                "instructions": [
+                    "Use the handoff payload as the writing brief.",
+                    "Do not add unsupported claims beyond the provided structured input.",
+                    "Return the structured cover-letter JSON so runtime persistence can write markdown and PDF artifacts.",
+                ],
+            },
+        },
     },
-    "xworker_to_xworker_structured": {
+    "xworker_to_xworker": {
+        "handoff_id": "structured",
         "protocol": "agent_handoff_v1",
         "description": "Generic internal xworker handoff for chained worker jobs.",
         "required_payload_any": ["output", "generated", "msg"],
@@ -556,97 +794,34 @@ HANDOFF_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
             "Treat the handoff payload as the next worker-stage brief.",
             "Preserve correlation, job_name, and source-grounded inputs.",
         ],
-    },
-    "xplaner_to_xworker_dispatch_request": {
-        "protocol": "message_text",
-        "description": "xplaner_xrouter request for the deterministic dispatch workflow.",
-        "required_message_text": True,
-        "workflow_name": "xworker_dispatch_chain",
-        "instructions": [
-            "Treat the routed user message as the dispatch request.",
-            "Execute the document_dispatch job deterministically and do not invent filesystem or DB state.",
-        ],
-    },
-    "xplaner_to_xworker_parser_brief": {
-        "protocol": "agent_handoff_v1",
-        "description": "xplaner_xrouter brief for a parser-style xworker job.",
-        "required_payload_any": ["output", "generated", "msg"],
-        "preferred_payload_paths": ["output", "generated", "msg"],
-        "workflow_name": "xworker_generic_parser_leaf",
-        "result_postprocess": {
-            "tool": "store_object_result",
-            "source_agent": "target_agent",
+        "variants": {
+            "job_posting_parser": {
+                "handoff_id": "job_posting_parser",
+                "job_name": "job_posting_parser",
+                "description": "Internal xworker handoff for the job-posting parser job.",
+                "required_payload_paths": [
+                    "output.type",
+                    "output.correlation_id",
+                    "output.link.thread_id",
+                    "output.file.path",
+                    "output.file.content_sha256",
+                    "output.db.processing_state",
+                    "output.requested_actions",
+                ],
+                "required_metadata_paths": ["correlation_id", "dispatcher_message_id", "dispatcher_db_path", "obj_name", "obj_db_path"],
+                "preferred_payload_paths": ["output", "msg"],
+                "target_input_path": "output",
+                "workflow_name": "xworker_job_posting_parser_leaf",
+                "result_postprocess": {
+                    "tool": "upsert_object_record",
+                    "source_agent": "target_agent",
+                },
+                "instructions": [
+                    "Treat output as the authoritative dispatch payload.",
+                    "Use metadata.correlation_id to preserve workflow linkage.",
+                ],
+            },
         },
-        "instructions": [
-            "Treat the handoff payload as the primary parser input.",
-            "Keep extraction source-grounded and preserve schema stability.",
-            "Return the structured parser JSON so runtime persistence can store the parsed object result deterministically.",
-        ],
-    },
-    "xplaner_to_xworker_writer_brief": {
-        "protocol": "agent_handoff_v1",
-        "description": "xplaner_xrouter brief for a writer-style xworker job.",
-        "required_payload_any": ["output", "generated", "msg"],
-        "preferred_payload_paths": ["output", "generated", "msg"],
-        "workflow_name": "xworker_generic_writer_leaf",
-        "instructions": [
-            "Use the handoff payload as the writing brief.",
-            "Do not add unsupported claims beyond the provided structured input.",
-        ],
-    },
-    "xplaner_to_xworker_builder": {
-        "protocol": "agent_handoff_v1",
-        "description": "xplaner_xrouter brief for the xworker builder job.",
-        "required_payload_any": ["output", "generated", "msg"],
-        "preferred_payload_paths": ["output", "generated", "msg"],
-        "workflow_name": "xworker_builder_leaf",
-        "instructions": [
-            "Treat the handoff payload as the approved build brief.",
-            "Use the build_agent_system_configs tool to produce the canonical config bundle.",
-        ],
-    },
-    "xplaner_to_xworker_cover_letter_writer": {
-        "protocol": "agent_handoff_v1",
-        "description": "xplaner_xrouter brief for the cover-letter writer job with deterministic artifact persistence.",
-        "required_payload_any": ["output", "generated", "msg"],
-        "preferred_payload_paths": ["output", "generated", "msg"],
-        "workflow_name": "xworker_cover_letter_writer_leaf",
-        "result_postprocess": {
-            "tool": "persist_cover_letter_artifacts",
-            "text_writer_tool": "write_document",
-            "pdf_writer_tool": "md_to_pdf",
-            "default_write_pdf": True,
-        },
-        "instructions": [
-            "Use the handoff payload as the writing brief.",
-            "Do not add unsupported claims beyond the provided structured input.",
-            "Return the structured cover-letter JSON so runtime persistence can write markdown and PDF artifacts.",
-        ],
-    },
-    "xworker_to_xworker_job_posting_parser": {
-        "protocol": "agent_handoff_v1",
-        "description": "Internal xworker handoff for the job-posting parser job.",
-        "required_payload_paths": [
-            "output.type",
-            "output.correlation_id",
-            "output.link.thread_id",
-            "output.file.path",
-            "output.file.content_sha256",
-            "output.db.processing_state",
-            "output.requested_actions",
-        ],
-        "required_metadata_paths": ["correlation_id", "dispatcher_message_id", "dispatcher_db_path", "obj_name", "obj_db_path"],
-        "preferred_payload_paths": ["output", "msg"],
-        "target_input_path": "output",
-        "workflow_name": "xworker_job_posting_parser_leaf",
-        "result_postprocess": {
-            "tool": "upsert_object_record",
-            "source_agent": "target_agent",
-        },
-        "instructions": [
-            "Treat output as the authoritative dispatch payload.",
-            "Use metadata.correlation_id to preserve workflow linkage.",
-        ],
     },
 }
 
@@ -966,17 +1141,14 @@ AGENT_MANIFEST_OVERRIDES: dict[str, dict[str, Any]] = {
             "mode": "job_name",
             "fallback_skill_profile": "xplaner_xrouter_core",
         },
-        "job_skill_profiles": {
-            "interactive_planning": "xplaner_xrouter_core",
-            "agent_system_planning": "xplaner_xrouter_agent_system_planning",
-        },
+        "job_skill_profiles": _job_skill_profiles_for_agent("_xplaner_xrouter"),
         "handoff_policy": {
             "allowed_targets": ["_xworker"],
             "target_policies": {
                 "_xworker": {
                     "default_protocol": "agent_handoff_v1",
                     "accepted_protocols": ["message_text", "agent_handoff_v1"],
-                    "handoff_schema": "xplaner_to_xworker_structured",
+                    "handoff_schema": "xplaner_to_xworker",
                 },
             },
         },
@@ -985,31 +1157,23 @@ AGENT_MANIFEST_OVERRIDES: dict[str, dict[str, Any]] = {
         "role": "xworker",
         "skill_profile": "xworker_core",
         "skill_profile_loading": {
-            "mode": "job_name",
+            "mode": "tool_name",
+            "fallback_selection_mode": "job_name",
             "fallback_skill_profile": "xworker_core",
         },
-        "job_skill_profiles": {
-            "generic_execution": "xworker_core",
-            "document_dispatch": "xworker_dispatch",
-            "generic_parser": "xworker_generic_parser",
-            "applicant_profile_parser": "xworker_profile_parser",
-            "job_posting_parser": "xworker_job_posting_parser",
-            "generic_writer": "xworker_generic_writer",
-            "cover_letter_writer": "xworker_cover_letter_writer",
-            "agent_system_builder": "xworker_agent_system_builder",
-            "code_analysis": "xworker_code_analysis",
-        },
+        "job_skill_profiles": _job_skill_profiles_for_agent("_xworker"),
+        "tool_skill_profiles": _tool_skill_profiles_for_agent("_xworker"),
         "handoff_policy": {
             "allowed_sources": ["_xplaner_xrouter", "_xworker"],
             "allowed_targets": ["_xworker"],
             "source_policies": {
                 "_xplaner_xrouter": {
                     "accepted_protocols": ["message_text", "agent_handoff_v1"],
-                    "handoff_schema": "xplaner_to_xworker_structured",
+                    "handoff_schema": "xplaner_to_xworker",
                 },
                 "_xworker": {
                     "accepted_protocols": ["agent_handoff_v1"],
-                    "handoff_schema": "xworker_to_xworker_structured",
+                    "handoff_schema": "xworker_to_xworker",
                 },
             },
         },
@@ -1020,7 +1184,7 @@ AGENT_MANIFEST_OVERRIDES: dict[str, dict[str, Any]] = {
 TOOL_CONFIGS: list[dict[str, Any]] = [
     {
         "name": "memorydb",
-        "description": "Query the memory vector database (code snippets / notes).",
+        "description": "Query the memory vector database (indexed code snippets / notes). Do not use this to open a concrete file path from disk.",
         "parameters": [
             {"name": "query", "type": "string", "description": "Free-text query or identifier.", "required": True},
             {"name": "k", "type": "integer", "description": "Number of results.", "default": 3},
@@ -1039,7 +1203,7 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
     },
     {
         "name": "vectordb",
-        "description": "Query the vector databases.",
+        "description": "Query indexed vector databases for retrieval. Do not use this to open or load a concrete file path from disk.",
         "parameters": [
             {"name": "query", "type": "string", "description": "Free-text query or filename.", "required": True},
             {"name": "k", "type": "integer", "description": "Number of results.", "default": 3},
@@ -1082,7 +1246,9 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
     },
     {
         "name": "read_document",
-        "description": "Read the content of a document from disk.",
+        "description": "Read the content of a known file from disk. Use this when the request provides a concrete file path to open, read, or load.",
+        "final_result": True,
+        "tool_response_required": False,
         "parameters": [
             {"name": "file_path", "type": "string", "description": "The absolute path to the file to read.", "required": True},
         ],
@@ -1430,10 +1596,13 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
     },
     {
         "name": "route_to_agent",
-        "description": "Route the request to a specialized agent.",
+        "description": "Route the request to a specialized agent with an explicit job_name or tool_name so the runtime can select the correct handoff schema, worker specialization, and optional explicit tool set.",
         "implementation_name": None,
         "parameters": [
             {"name": "target_agent", "type": "string", "description": "The target agent to route to. Optional when handoff_payload.handoff_to or agent_response.handoff_to is provided.", "required": False, "enum_ref": "agent_labels"},
+            {"name": "job_name", "type": "string", "description": "Optional routing attribute. Use this for job-specialized xworker execution such as document_dispatch, applicant_profile_parser, job_posting_parser, cover_letter_writer, agent_system_builder, or generic_execution. Required when no tool_name is provided.", "required": False, "enum_ref": "job_names"},
+            {"name": "tool_name", "type": "string", "description": "Optional routing attribute for direct tool-focused xworker execution. When provided, the runtime may resolve the worker profile and default tool allowlist from this tool.", "required": False, "enum_ref": "tool_names"},
+            {"name": "tools", "type": "array", "description": "Optional explicit xworker tool allowlist. Provide concrete tool names such as ['read_document'] to restrict the routed worker call to those tools.", "required": False, "items": {"type": "string"}},
             {"name": "message_text", "type": "string", "description": "Plain-text handoff message to pass to the agent.", "required": False},
             {"name": "user_question", "type": "string", "description": "Legacy alias for message_text.", "required": False},
             {"name": "handoff_protocol", "type": "string", "description": "Optional handoff protocol. Supported: message_text, agent_handoff_v1.", "required": False},
@@ -1546,7 +1715,7 @@ FORCED_ROUTE_CONFIGS: dict[str, list[dict[str, Any]]] = {
             "route": {
                 "target_agent": "_xworker",
                 "handoff_protocol": "agent_handoff_v1",
-                "handoff_schema": "xplaner_to_xworker_cover_letter_writer",
+                "handoff_schema": "xplaner_to_xworker",
                 "agent_response": {
                     "agent_label": "_xplaner_xrouter",
                     "handoff_to": "_xworker",

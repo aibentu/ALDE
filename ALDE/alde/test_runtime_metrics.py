@@ -42,10 +42,13 @@ class TestRuntimeMetrics(unittest.TestCase):
             snapshot = load_runtime_metrics(base_dir=temp_dir, session_id="session-metrics")
 
             self.assertEqual(snapshot["event_count"], 3)
+            self.assertEqual(snapshot["session_count"], 1)
             self.assertEqual(snapshot["success_count"], 1)
             self.assertEqual(snapshot["failure_count"], 0)
             self.assertGreater(snapshot["average_latency_ms"], 0)
             self.assertEqual(snapshot["average_reward"], 1.0)
+            self.assertEqual(snapshot["event_family_counts"]["tool"], 1)
+            self.assertEqual(snapshot["event_status_counts"]["completed"], 2)
 
     def test_metrics_snapshot_uses_learning_events_and_history_projection(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -124,6 +127,8 @@ class TestRuntimeMetrics(unittest.TestCase):
             self.assertIn("tool_call", snapshot["event_type_counts"])
             self.assertIn("workflow_state", snapshot["event_type_counts"])
             self.assertIn("agent_handoff", snapshot["event_type_counts"])
+            self.assertIn("handoff", snapshot["event_family_counts"])
+            self.assertIn("requested", snapshot["event_status_counts"])
 
     def test_outcome_projection_inherits_query_session_context(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

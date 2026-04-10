@@ -15,6 +15,7 @@ if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
 
 import alde.agents_ccompletion as chat_mod
+import alde.agents_config as agents_config
 import alde.agents_factory as agents_factory
 import alde.tools as tools_mod
 
@@ -486,7 +487,7 @@ class TestWorkflowIntegration(unittest.TestCase):
         forced_route = dict(chat._forced_route)
         self.assertEqual(forced_route["target_agent"], "_xworker")
         self.assertEqual(forced_route["handoff_protocol"], "agent_handoff_v1")
-        self.assertEqual(forced_route["handoff_schema"], "xplaner_to_xworker_cover_letter_writer")
+        self.assertEqual(forced_route["handoff_schema"], "xplaner_to_xworker")
         self.assertEqual(forced_route["agent_response"]["handoff_to"], "_xworker")
         self.assertEqual(forced_route["agent_response"]["agent_label"], "_xplaner_xrouter")
         self.assertEqual(forced_route["agent_response"]["job_name"], "cover_letter_writer")
@@ -613,6 +614,75 @@ class TestWorkflowIntegration(unittest.TestCase):
         finally:
             os.unlink(job_postings_db_path)
 
+    def test_store_job_posting_result_tool_persists_explicit_job_posting_model(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            job_postings_db_path = tmp.name
+
+        try:
+            result = json.loads(
+                tools_mod.store_job_posting_result_tool(
+                    job_posting_result={
+                        "agent": "job_platform_ingest",
+                        "correlation_id": "platform:job-explicit-55",
+                        "parse": {"is_job_posting": True, "language": "de"},
+                        "raw_text_document": {
+                            "document_type": "job_posting",
+                            "title": "Platform Support Engineer",
+                            "language": "de",
+                            "raw_text": "Platform Support Engineer at Example Co with Python and SQL.",
+                            "sections": [
+                                {
+                                    "section_key": "header",
+                                    "heading": "Object Header",
+                                    "text": "Title: Platform Support Engineer\nOrganization: Example Co",
+                                }
+                            ],
+                        },
+                        "entity_objects": [
+                            {
+                                "entity_key": "subject",
+                                "entity_type": "job_posting",
+                                "canonical_name": "Platform Support Engineer",
+                                "metadata": {"role": "subject"},
+                            },
+                            {
+                                "entity_key": "organization:example_co",
+                                "entity_type": "organization",
+                                "canonical_name": "Example Co",
+                            },
+                            {
+                                "entity_key": "skill:python",
+                                "entity_type": "skill",
+                                "canonical_name": "Python",
+                            },
+                        ],
+                        "relation_objects": [
+                            {
+                                "source_entity_key": "subject",
+                                "target_entity_key": "organization:example_co",
+                                "relation_type": "offered_by",
+                                "section_key": "header",
+                            }
+                        ],
+                    },
+                    db_path=job_postings_db_path,
+                    source_agent="job_platform_ingest",
+                )
+            )
+
+            stored = tools_mod.DOCUMENT_REPOSITORY.get_document(
+                "platform:job-explicit-55",
+                db_path=job_postings_db_path,
+                obj_name="job_postings",
+            )
+            self.assertTrue(result["ok"])
+            self.assertEqual(stored["job_posting"]["job_title"], "Platform Support Engineer")
+            self.assertEqual(stored["job_posting"]["company_name"], "Example Co")
+            self.assertEqual(stored["raw_text_document"]["title"], "Platform Support Engineer")
+            self.assertEqual(stored["entity_objects"][2]["canonical_name"], "Python")
+        finally:
+            os.unlink(job_postings_db_path)
+
     def test_update_dispatcher_status_uses_mongo_backend_as_primary_store(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
             dispatcher_db_path = tmp.name
@@ -721,6 +791,123 @@ class TestWorkflowIntegration(unittest.TestCase):
         finally:
             os.unlink(pdf_path)
 
+    def test_read_document_tool_spec_marks_direct_final_result(self) -> None:
+        tool_spec = tools_mod.get_tool_spec("read_document")
+
+        self.assertIsNotNone(tool_spec)
+        self.assertTrue(tool_spec.final_result)
+        self.assertFalse(tool_spec.tool_response_required)
+
+    def test_xworker_prompt_config_supports_tool_name_selection_and_tools_task_option(self) -> None:
+        prompt_config = agents_config.get_prompt_config("_xworker")
+        task_config = prompt_config.get("task") or {}
+        selection_policy = task_config.get("job_skill_profile_policy") or {}
+
+        self.assertEqual(task_config.get("tools"), [])
+        self.assertEqual(selection_policy.get("selection_mode"), "tool_name")
+        self.assertEqual(selection_policy.get("fallback_selection_mode"), "job_name")
+        self.assertEqual(selection_policy.get("fallback_skill_profile"), "xworker_core")
+
+    def test_direct_file_read_guidance_prefers_read_document_over_retrieval(self) -> None:
+        router_prompt = agents_config.get_system_prompt("_xplaner_xrouter")
+        worker_prompt = agents_config.get_system_prompt("_xworker")
+        read_document_spec = tools_mod.get_tool_spec("read_document")
+        memorydb_spec = tools_mod.get_tool_spec("memorydb")
+        vectordb_spec = tools_mod.get_tool_spec("vectordb")
+
+        self.assertIn("concrete filesystem path", router_prompt)
+        self.assertIn("read_document", router_prompt)
+        self.assertIn("memorydb", router_prompt)
+        self.assertIn("vectordb", router_prompt)
+
+        self.assertIn("concrete filesystem path", worker_prompt)
+        self.assertIn("read_document", worker_prompt)
+        self.assertIn("memorydb", worker_prompt)
+        self.assertIn("vectordb", worker_prompt)
+
+        self.assertIsNotNone(read_document_spec)
+        self.assertIsNotNone(memorydb_spec)
+        self.assertIsNotNone(vectordb_spec)
+        self.assertIn("concrete file path", read_document_spec.description)
+        self.assertIn("Do not use this to open a concrete file path", memorydb_spec.description)
+        self.assertIn("Do not use this to open or load a concrete file path", vectordb_spec.description)
+
+    def test_route_to_agent_builds_xworker_request_from_tool_name_and_explicit_tools(self) -> None:
+        result_text, routing_request = agents_factory.execute_tool(
+            "route_to_agent",
+            {
+                "target_agent": "_xworker",
+                "tool_name": "read_document",
+                "tools": ["read_document"],
+                "message_text": "Please load /tmp/example.txt",
+            },
+            source_agent_label="_xplaner_xrouter",
+        )
+
+        self.assertEqual(result_text, "Routing to _xworker")
+        self.assertIsNotNone(routing_request)
+        routed_tool_names = [
+            tool_def["function"]["name"]
+            for tool_def in (routing_request.get("tools") or [])
+            if isinstance(tool_def, dict) and isinstance(tool_def.get("function"), dict)
+        ]
+
+        self.assertEqual(routed_tool_names, ["read_document"])
+        self.assertEqual(routing_request["handoff"]["metadata"]["tool_name"], "read_document")
+        self.assertEqual(routing_request["handoff"]["metadata"]["job_name"], "generic_execution")
+        self.assertEqual(routing_request["handoff"]["metadata"]["tools"], ["read_document"])
+        self.assertEqual(routing_request["runtime"]["selection_mode"], "tool_name")
+        self.assertEqual(routing_request["runtime"]["fallback_selection_mode"], "job_name")
+        self.assertEqual(routing_request["runtime"]["tool_name"], "read_document")
+        self.assertEqual(routing_request["runtime"]["job_name"], "generic_execution")
+        self.assertEqual(routing_request["runtime"]["explicit_tools"], ["read_document"])
+        self.assertEqual(routing_request["runtime"]["skill_profile"], "xworker_core")
+
+    def test_read_document_tool_result_is_returned_and_logged_as_final_assistant_result(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False, encoding="utf-8") as tmp:
+            file_path = tmp.name
+            tmp.write("Direkter Dokumentinhalt")
+
+        try:
+            tool_call = SimpleNamespace(
+                id="call_read_document",
+                function=SimpleNamespace(
+                    name="read_document",
+                    arguments=json.dumps({"file_path": file_path}, ensure_ascii=False),
+                ),
+            )
+
+            result = agents_factory._handle_tool_calls(
+                SimpleNamespace(content="", tool_calls=[tool_call]),
+                agent_label="",
+            )
+
+            self.assertEqual(result, "Direkter Dokumentinhalt")
+
+            assistant_entries = [
+                entry
+                for entry in chat_mod.ChatHistory._history_
+                if isinstance(entry, dict) and entry.get("role") == "assistant"
+            ]
+            tool_entries = [
+                entry
+                for entry in chat_mod.ChatHistory._history_
+                if isinstance(entry, dict) and entry.get("role") == "tool"
+            ]
+
+            self.assertTrue(assistant_entries)
+            self.assertEqual(assistant_entries[-1].get("content"), "Direkter Dokumentinhalt")
+            self.assertTrue(tool_entries)
+            self.assertFalse(tool_entries[-1].get("tool_response_required", True))
+
+            history = chat_mod.ChatHistory()
+            history._thread_iD = tool_entries[-1].get("thread-id")
+            inserted = history._insert(tool=True, f_depth=10)
+
+            self.assertEqual(inserted, [{"role": "assistant", "content": "Direkter Dokumentinhalt"}])
+        finally:
+            os.unlink(file_path)
+
     def test_run_retrieval_with_events_triggers_optional_mongodb_sync(self) -> None:
         retrieval_result = [
             {
@@ -745,6 +932,50 @@ class TestWorkflowIntegration(unittest.TestCase):
         self.assertEqual(mongo_sync.call_args.kwargs["query_event"]["query_text"], "Python RAG")
         self.assertEqual(mongo_sync.call_args.kwargs["outcome_event"]["result_count"], 1)
         self.assertEqual(mongo_sync.call_args.kwargs["retrieval_result"][0]["document_id"], "doc_job_0001")
+
+    def test_vector_search_logging_emits_raw_result_without_wrapper(self) -> None:
+        result_object = [{"rank": 1, "source": "knowledge.md", "content": "alpha"}]
+
+        with patch("builtins.print") as mocked_print:
+            agents_factory.TOOL_EXECUTION_CALLBACK_SERVICE.log_object_result("memorydb", result_object)
+
+        mocked_print.assert_called_once_with("TOOL RESULT: memorydb [payload omitted]")
+
+    def test_followup_uses_raw_tool_results_when_history_messages_are_empty(self) -> None:
+        captured_messages: dict[str, object] = {}
+
+        class _DummyChatComE:
+            def __init__(self, _model: str, _messages: list, tools: list[dict], tool_choice: str) -> None:
+                captured_messages["messages"] = list(_messages)
+
+            def _response(self):
+                message = SimpleNamespace(content="processed retrieval", tool_calls=None)
+                return SimpleNamespace(choices=[SimpleNamespace(message=message)])
+
+        history = agents_factory.get_history()
+        history._history_ = []
+        history._thread_iD = 777
+
+        with patch.object(
+            agents_factory.TOOL_CALL_FOLLOWUP_SERVICE,
+            "build_object_request",
+            return_value={"messages": [], "tools": [], "model": "gpt-4o-mini"},
+        ), patch("alde.chat_completion.ChatComE", _DummyChatComE):
+            result = agents_factory.TOOL_CALL_FOLLOWUP_SERVICE.execute_object_followup(
+                history=history,
+                routing_request=None,
+                tool_results=['[{"rank": 1, "source": "knowledge.md", "content": "alpha"}]'],
+                depth=0,
+                ChatCom=None,
+                agent_label="_xplaner_xrouter",
+                workflow_session=None,
+            )
+
+        self.assertEqual(
+            captured_messages["messages"],
+            [{"role": "user", "content": '[{"rank": 1, "source": "knowledge.md", "content": "alpha"}]'}],
+        )
+        self.assertEqual(result, "processed retrieval")
 
     def test_store_profile_result_tool_supports_direct_profile_storage(self) -> None:
         with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
@@ -1388,7 +1619,7 @@ class TestWorkflowIntegration(unittest.TestCase):
         routed = captured_execute_tool_calls[0][1]
         self.assertEqual(routed["target_agent"], "_xworker")
         self.assertEqual(routed["handoff_protocol"], "agent_handoff_v1")
-        self.assertEqual(routed["handoff_schema"], "xplaner_to_xworker_cover_letter_writer")
+        self.assertEqual(routed["handoff_schema"], "xplaner_to_xworker")
         self.assertEqual(routed["agent_response"]["handoff_to"], "_xworker")
         self.assertEqual(routed["agent_response"]["job_name"], "cover_letter_writer")
         self.assertEqual(routed["agent_response"]["output"]["profile_result"]["profile"]["profile_id"], "profile:test")
@@ -1514,10 +1745,109 @@ class TestWorkflowIntegration(unittest.TestCase):
         routed = captured_execute_tool_calls[0][1]
         self.assertEqual(routed["target_agent"], "_xworker")
         self.assertEqual(routed["handoff_protocol"], "agent_handoff_v1")
-        self.assertEqual(routed["handoff_schema"], "xplaner_to_xworker_cover_letter_writer")
+        self.assertEqual(routed["handoff_schema"], "xplaner_to_xworker")
         self.assertEqual(routed["agent_response"]["handoff_to"], "_xworker")
         self.assertEqual(routed["agent_response"]["job_name"], "cover_letter_writer")
         self.assertEqual(routed["agent_response"]["output"]["job_posting_result"]["correlation_id"], "sha-direct-1")
+
+    def test_ready_forced_route_uses_explicit_job_posting_identity_for_artifact_doc_id(self) -> None:
+        captured_write_calls: list[dict[str, object]] = []
+
+        def _fake_write_document(*, content: str, path: str | None = None, doc_id: str | None = None, correlation_id: str | None = None, **_: object):
+            captured_write_calls.append(
+                {
+                    "content": content,
+                    "path": path,
+                    "doc_id": doc_id,
+                    "correlation_id": correlation_id,
+                }
+            )
+            return "Document saved to: /tmp/explicit_cover_letter.md"
+
+        chat = chat_mod.ChatCom(
+            _model="gpt-4o-mini",
+            _input_text=json.dumps(SAMPLE_WORKFLOW_REQUEST, ensure_ascii=False),
+            _name="test_explicit_structured_route",
+        )
+
+        def _fake_execute_tool(name: str, args: dict, tool_call_id: str = None, source_agent_label: str = None):
+            if name != "route_to_agent":
+                raise AssertionError(f"Unexpected tool execution: {name}")
+            return (
+                "Routing to _xworker",
+                {
+                    "messages": [],
+                    "agent_label": "_xworker",
+                    "tools": [],
+                    "model": "gpt-4o",
+                    "include_history": False,
+                    "handoff": {
+                        "protocol": "agent_handoff_v1",
+                        "source_agent": "_xplaner_xrouter",
+                        "target_agent": "_xworker",
+                        "handoff_payload": {
+                            "agent_label": "_xplaner_xrouter",
+                            "handoff_to": "_xworker",
+                            "output": {
+                                "action": "generate_cover_letter",
+                                "job_posting_result": {
+                                    "agent": "job_posting_parser",
+                                    "correlation_id": "sha-explicit-1",
+                                    "file": {"path": "/tmp/source-posting.pdf"},
+                                    "raw_text_document": {
+                                        "title": "Support Engineer",
+                                        "raw_text": "Support Engineer at Example Co",
+                                    },
+                                    "entity_objects": [
+                                        {"entity_key": "subject", "entity_type": "job_posting", "canonical_name": "Support Engineer", "metadata": {"role": "subject"}},
+                                        {"entity_key": "organization:example_co", "entity_type": "organization", "canonical_name": "Example Co"},
+                                    ],
+                                    "relation_objects": [
+                                        {"source_entity_key": "subject", "target_entity_key": "organization:example_co", "relation_type": "offered_by", "section_key": "header"}
+                                    ],
+                                },
+                                "profile_result": {
+                                    "agent": "profile_parser",
+                                    "correlation_id": "profile:direct-1",
+                                    "profile": {"profile_id": "profile:direct-1", "preferences": {"language": "de"}},
+                                },
+                                "options": {"language": "de", "tone": "modern", "max_words": 280},
+                            },
+                        },
+                        "metadata": {},
+                    },
+                    "handoff_context": {
+                        "contract": {
+                            "schema": {
+                                "result_postprocess": {
+                                    "tool": "persist_cover_letter_artifacts",
+                                    "text_writer_tool": "write_document",
+                                    "pdf_writer_tool": "md_to_pdf",
+                                    "default_write_pdf": True,
+                                }
+                            }
+                        }
+                    },
+                    "runtime": {"instance_policy": "ephemeral", "role": "worker"},
+                },
+            )
+
+        with patch("alde.chat_completion.ChatComE", _DeterministicDispatcherChatComE), patch(
+            "alde.agents_factory.execute_tool",
+            side_effect=_fake_execute_tool,
+        ), patch(
+            "alde.agents_factory.write_document",
+            side_effect=_fake_write_document,
+        ), patch(
+            "alde.agents_factory.md_to_pdf",
+            return_value={"ok": True, "pdf_path": "/tmp/explicit_cover_letter.pdf"},
+        ):
+            response = chat.get_response()
+
+        payload = json.loads(response)
+        self.assertEqual(payload["document_text_path"], "/tmp/explicit_cover_letter.md")
+        self.assertEqual(payload["document_pdf_path"], "/tmp/explicit_cover_letter.pdf")
+        self.assertEqual(captured_write_calls[0]["doc_id"], "Support Engineer_Example Co")
 
 
 if __name__ == "__main__":

@@ -26,6 +26,27 @@ class AgentRuntimeCoreService:
             f"target={target_agent}; reason={type(exc).__name__}: {exc}"
         )
 
+    def load_object_job_name(self, normalized_target: str) -> str:
+        try:
+            from alde.agents_config import get_default_job_name  # type: ignore
+        except ImportError as e:
+            msg = str(e)
+            if "attempted relative import" in msg or "no known parent package" in msg:
+                from ALDE.alde.agents_config import get_default_job_name  # type: ignore
+            else:
+                raise
+        return str(get_default_job_name(normalized_target) or "").strip()
+
+    def build_object_route_request(self, *, normalized_target: str, prompt: str) -> dict[str, Any]:
+        route_request: dict[str, Any] = {
+            "target_agent": normalized_target,
+            "user_question": prompt,
+        }
+        job_name = self.load_object_job_name(normalized_target)
+        if job_name:
+            route_request["job_name"] = job_name
+        return route_request
+
     def execute_chat_object(
         self,
         *,
@@ -53,7 +74,7 @@ class AgentRuntimeCoreService:
 
         return str(
             execute_forced_route(
-                {"target_agent": normalized_target, "user_question": prompt},
+                self.build_object_route_request(normalized_target=normalized_target, prompt=prompt),
                 ChatCom=ChatCom,
                 origin_agent_label="_xplaner_xrouter",
             )

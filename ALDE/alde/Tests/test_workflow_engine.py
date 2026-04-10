@@ -220,6 +220,7 @@ class TestWorkflowEngine(unittest.TestCase):
         )
 
         self.assertEqual(config["name"], "custom_schema")
+        self.assertEqual(config["handoff_id"], "custom_schema")
         self.assertEqual(config["protocol"], "message_text")
         self.assertEqual(config["workflow_name"], "custom_flow")
         self.assertEqual(config["instructions"], ["Use structured payload"])

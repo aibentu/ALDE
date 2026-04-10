@@ -1,5 +1,55 @@
 # Quick Start: Two-Agent Runtime
 
+## Current Delivery Focus
+
+- The active user-facing surface in this repository is the local desktop/runtime path.
+- Local desktop runs are persisted in `ALDE/AppData/desktop_runs.json` through the desktop runtime services.
+- A dedicated ALDE WebApp frontend is planned only after the desktop UI, runtime, storage, and config layers are stable.
+
+## Desktop Control-Plane Snapshots
+
+The desktop operator surface now uses shared control-plane projections instead of recomputing monitoring and operator state independently in the UI.
+
+Primary load surfaces:
+
+- `load_desktop_monitoring_snapshot(...)`
+- `load_operator_status_snapshot(...)`
+
+Primary export surfaces:
+
+- `export_runtime_view(...)`
+- `export_desktop_monitoring_snapshot(...)`
+- `export_operator_status_snapshot(...)`
+- `export_control_plane_snapshot(...)`
+
+The preferred export for operator reporting is `export_control_plane_snapshot(...)` because it writes one bundle under `ALDE/AppData/generated/` containing:
+
+- runtime view projection
+- desktop monitoring snapshot
+- desktop operator snapshot
+- merged recent-item projection for cross-surface review
+
+Shared monitoring/operator snapshot fields:
+
+- `snapshot_kind`
+- `healthy`
+- `alerts`
+- `attention_count`
+- `summary_metrics`
+- `recent_items`
+- `recent_item_count`
+- `recent_item_summary`
+- `recent_item_filters`
+- `detail_rows`
+
+The operator snapshot extends the shared structure with:
+
+- `recent_actions`
+- `audit_summary`
+- `recent_action_filters`
+
+That extension is what powers the desktop UI filters for action status, action type, action group, and source in the Operations tab.
+
 ## Scenario 1: Generate Cover Letter (Simple)
 
 **User provides:** Job posting PDF + stored profile ID
@@ -180,9 +230,12 @@
 ```python
 route_to_agent(
     target_agent="_xworker",
+    job_name="cover_letter_writer",
     message_text={...payload...}
 )
 ```
+
+Direct desktop calls that target `_xworker` without a specialized workflow currently normalize to `job_name="generic_execution"` inside the desktop/runtime caller layer.
 
 ### 2. `dispatch_documents` / persistence tools - Access runtime stores
 ```python
@@ -192,7 +245,7 @@ dispatch_documents(scan_dir="/path/to/jobs")
 
 ### 3. `read_document` - Load profile from file
 ```python
-read_document(path="/path/to/cv.pdf")
+read_document(file_path="/path/to/cv.pdf")
 ```
 
 ### 4. `write_document` - Save cover letter

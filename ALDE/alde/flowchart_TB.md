@@ -2,7 +2,7 @@
 
 ```mermaid
 flowchart TB
-    UI[Qt UI / Web UI / CLI]
+    UI[Qt Desktop UI / Future Web UI / CLI]
     MCPClient[Editor Agent / MCP Client]
     Coordinator[ALDE Coordinator]
     WorkflowAPI[Workflow State API]

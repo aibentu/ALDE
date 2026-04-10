@@ -1,0 +1,127 @@
+{
+  "agent": "xworker",
+  "job_name": "job_posting_parser",
+  "correlation_id": "<content_sha256>",
+  "link": {
+    "thread_id": "...",
+    "message_id": "..."
+  },
+  "file": {
+    "path": "...",
+    "name": "...",
+    "content_sha256": "..."
+  },
+  "parse": {
+    "is_job_posting": true,
+    "language": "de",
+    "extraction_quality": "high",
+    "errors": [],
+    "warnings": []
+  },
+  "raw_text_document": {
+    "document_type": "job_posting",
+    "title": null,
+    "language": "de",
+    "raw_text": "",
+    "sections": [
+      {
+        "section_key": "header",
+        "heading": "Object Header",
+        "text": "",
+        "metadata": {}
+      }
+    ],
+    "metadata": {
+      "content_sha256": null,
+      "source": null
+    }
+  },
+  "entity_objects": [
+    {
+      "entity_key": "subject",
+      "entity_type": "job_posting",
+      "canonical_name": null,
+      "mention_text": null,
+      "section_key": "header",
+      "summary": null,
+      "confidence": 0.99,
+      "aliases": [],
+      "attributes": {},
+      "metadata": {
+        "role": "subject",
+        "source_field": "job_posting.job_title"
+      }
+    }
+  ],
+  "relation_objects": [
+    {
+      "source_entity_key": "subject",
+      "target_entity_key": "organization:example_gmbh",
+      "relation_type": "offered_by",
+      "section_key": "header",
+      "confidence": 0.95,
+      "metadata": {
+        "source_field": "job_posting.company_name"
+      }
+    }
+  ],
+  "job_posting": {
+    "job_title": null,
+    "company_name": null,
+    "company_info": {
+      "industry": null,
+      "size": null,
+      "location": null,
+      "website": null
+    },
+    "position": {
+      "type": null,
+      "level": null,
+      "department": null,
+      "reports_to": null
+    },
+    "location_details": {
+      "office": null,
+      "remote": null,
+      "travel_required": null
+    },
+    "compensation": {
+      "salary_min": null,
+      "salary_max": null,
+      "salary_period": null,
+      "currency": null,
+      "benefits": []
+    },
+    "requirements": {
+      "education": null,
+      "experience_years": null,
+      "experience_description": null,
+      "technical_skills": [],
+      "soft_skills": [],
+      "languages": []
+    },
+    "responsibilities": [],
+    "what_we_offer": [],
+    "application": {
+      "deadline": null,
+      "application_link": null,
+      "contact_email": null,
+      "contact_person": null
+    },
+    "metadata": {
+      "posting_date": null,
+      "job_id": null,
+      "source": null,
+      "language": null
+    },
+    "raw_text": ""
+  },
+  "db_updates": {
+    "existing_record_id": null,
+    "correlation_id": "<content_sha256>",
+    "content_sha256": "...",
+    "processing_state": "processed",
+    "processed": true,
+    "failed_reason": null
+  }
+}

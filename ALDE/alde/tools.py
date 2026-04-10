@@ -28,6 +28,7 @@ try:
         create_agent_system_basic_config,
         create_agent_system_persisted_config_module,
         get_available_agent_labels,
+        get_available_job_names,
         get_available_tool_names,
         get_action_request_schema_config,
         get_tool_config,
@@ -45,6 +46,7 @@ except ImportError as e:
             create_agent_system_basic_config,
             create_agent_system_persisted_config_module,
             get_available_agent_labels,
+            get_available_job_names,
             get_available_tool_names,
             get_action_request_schema_config,
             get_tool_config,
@@ -312,6 +314,161 @@ def _document_default_agent(obj: str) -> str:
     return _DOCUMENT_DEFAULT_AGENTS.get(normalized_obj, f"{_document_section_key(normalized_obj)}_parser")
 
 
+def _first_non_empty_text(*values: Any) -> str | None:
+    for value in values:
+        if isinstance(value, str):
+            normalized_value = value.strip()
+            if normalized_value:
+                return normalized_value
+    return None
+
+
+def _load_job_posting_entity_payloads(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    entity_payloads = payload.get("entity_objects")
+    if not isinstance(entity_payloads, Sequence) or isinstance(entity_payloads, (str, bytes, bytearray)):
+        return []
+    return [dict(entity_payload) for entity_payload in entity_payloads if isinstance(entity_payload, dict)]
+
+
+def _load_job_posting_entity_name(
+    payload: dict[str, Any],
+    *,
+    entity_key: str | None = None,
+    entity_type: str | None = None,
+    role: str | None = None,
+) -> str | None:
+    for entity_payload in _load_job_posting_entity_payloads(payload):
+        metadata = entity_payload.get("metadata") if isinstance(entity_payload.get("metadata"), dict) else {}
+        if entity_key and str(entity_payload.get("entity_key") or entity_payload.get("seed_key") or "").strip() != entity_key:
+            continue
+        if entity_type and str(entity_payload.get("entity_type") or entity_payload.get("type_key") or "").strip() != entity_type:
+            continue
+        if role and str(metadata.get("role") or "").strip() != role:
+            continue
+        canonical_name = _first_non_empty_text(
+            entity_payload.get("canonical_name"),
+            entity_payload.get("name"),
+            entity_payload.get("title"),
+            entity_payload.get("mention_text"),
+        )
+        if canonical_name:
+            return canonical_name
+    return None
+
+
+def _build_job_posting_compatibility_section(payload: dict[str, Any]) -> dict[str, Any]:
+    compatibility_payload: dict[str, Any] = {}
+    raw_text_payload = payload.get("raw_text_document") if isinstance(payload.get("raw_text_document"), dict) else {}
+    raw_text_metadata = raw_text_payload.get("metadata") if isinstance(raw_text_payload.get("metadata"), dict) else {}
+    legacy_payload = payload.get("job_posting") if isinstance(payload.get("job_posting"), dict) else {}
+
+    title = _first_non_empty_text(
+        legacy_payload.get("job_title"),
+        _load_job_posting_entity_name(payload, entity_key="subject"),
+        _load_job_posting_entity_name(payload, entity_type="job_posting"),
+        _load_job_posting_entity_name(payload, role="subject"),
+        raw_text_payload.get("title"),
+    )
+    if title:
+        compatibility_payload["job_title"] = title
+
+    company_name = _first_non_empty_text(
+        legacy_payload.get("company_name"),
+        _load_job_posting_entity_name(payload, entity_type="organization"),
+    )
+    if company_name:
+        compatibility_payload["company_name"] = company_name
+
+    raw_text = _first_non_empty_text(
+        legacy_payload.get("raw_text"),
+        raw_text_payload.get("raw_text"),
+        raw_text_payload.get("text"),
+    )
+    if raw_text:
+        compatibility_payload["raw_text"] = raw_text
+
+    location_name = _first_non_empty_text(
+        _payload_value(legacy_payload, "company_info.location"),
+        _payload_value(legacy_payload, "location_details.office"),
+        _load_job_posting_entity_name(payload, entity_type="location"),
+    )
+    if location_name:
+        compatibility_payload.setdefault("company_info", {})
+        compatibility_payload["company_info"]["location"] = location_name
+
+    employment_type = _first_non_empty_text(
+        _payload_value(legacy_payload, "position.type"),
+        _load_job_posting_entity_name(payload, entity_type="employment_type"),
+    )
+    if employment_type:
+        compatibility_payload.setdefault("position", {})
+        compatibility_payload["position"]["type"] = employment_type
+
+    contact_person = _first_non_empty_text(
+        _payload_value(legacy_payload, "application.contact_person"),
+        _load_job_posting_entity_name(payload, entity_type="person"),
+    )
+    if contact_person:
+        compatibility_payload.setdefault("application", {})
+        compatibility_payload["application"]["contact_person"] = contact_person
+
+    technical_skill_types = {"skill", "tool", "framework", "database", "protocol"}
+    technical_skill_list: list[str] = []
+    competency_list: list[str] = []
+    language_list: list[str] = []
+    for entity_payload in _load_job_posting_entity_payloads(payload):
+        entity_type = str(entity_payload.get("entity_type") or entity_payload.get("type_key") or "").strip()
+        canonical_name = _first_non_empty_text(
+            entity_payload.get("canonical_name"),
+            entity_payload.get("name"),
+            entity_payload.get("title"),
+            entity_payload.get("mention_text"),
+        )
+        if not canonical_name:
+            continue
+        if entity_type in technical_skill_types and canonical_name not in technical_skill_list:
+            technical_skill_list.append(canonical_name)
+        elif entity_type == "competency" and canonical_name not in competency_list:
+            competency_list.append(canonical_name)
+        elif entity_type == "language" and canonical_name not in language_list:
+            language_list.append(canonical_name)
+    if technical_skill_list or competency_list or language_list:
+        compatibility_payload.setdefault("requirements", {})
+        if technical_skill_list:
+            compatibility_payload["requirements"]["technical_skills"] = technical_skill_list
+        if competency_list:
+            compatibility_payload["requirements"]["soft_skills"] = competency_list
+        if language_list:
+            compatibility_payload["requirements"]["languages"] = language_list
+
+    language_code = _first_non_empty_text(
+        _payload_value(legacy_payload, "metadata.language"),
+        raw_text_payload.get("language"),
+        raw_text_metadata.get("language"),
+    )
+    if raw_text_metadata or language_code:
+        compatibility_payload.setdefault("metadata", {})
+        for key, value in raw_text_metadata.items():
+            compatibility_payload["metadata"].setdefault(str(key), deepcopy(value))
+        if language_code:
+            compatibility_payload["metadata"]["language"] = language_code
+
+    for top_level_key in ("company_info", "position", "requirements", "application", "metadata"):
+        legacy_value = legacy_payload.get(top_level_key)
+        if not isinstance(legacy_value, dict):
+            continue
+        compatibility_payload.setdefault(top_level_key, {})
+        for field_key, field_value in legacy_value.items():
+            compatibility_payload[top_level_key].setdefault(str(field_key), deepcopy(field_value))
+
+    for top_level_key in ("responsibilities", "what_we_offer"):
+        legacy_value = legacy_payload.get(top_level_key)
+        if isinstance(legacy_value, list) and legacy_value:
+            compatibility_payload.setdefault(top_level_key, deepcopy(legacy_value))
+
+    return compatibility_payload
+
+
 def _extract_document_section(result_payload: dict[str, Any], resolved_obj: str) -> dict[str, Any]:
     resolved_section_key = _document_section_key(resolved_obj)
     candidate_keys = [
@@ -324,6 +481,10 @@ def _extract_document_section(result_payload: dict[str, Any], resolved_obj: str)
         candidate_value = result_payload.get(candidate_key)
         if isinstance(candidate_value, dict):
             return candidate_value
+    if _normalize_document_obj_name(resolved_obj) == "job_postings":
+        compatibility_payload = _build_job_posting_compatibility_section(result_payload)
+        if compatibility_payload:
+            return compatibility_payload
     return {}
 
 
@@ -676,6 +837,10 @@ class DocumentRepository:
         record["link"] = deepcopy(result_payload.get("link") if isinstance(result_payload.get("link"), dict) else output_payload.get("link") if isinstance(output_payload.get("link"), dict) else {})
         record["file"] = deepcopy(result_payload.get("file") if isinstance(result_payload.get("file"), dict) else output_payload.get("file") if isinstance(output_payload.get("file"), dict) else {})
         record["parse"] = deepcopy(parse_section)
+        for explicit_key in ("raw_text_document", "entity_objects", "relation_objects"):
+            explicit_value = result_payload.get(explicit_key)
+            if explicit_value is not None:
+                record[explicit_key] = deepcopy(explicit_value)
         record[resolved_section_key] = deepcopy(document_section)
         record["db_updates"] = deepcopy(db_updates)
         record["handoff_metadata"] = deepcopy(metadata)
@@ -727,7 +892,7 @@ class DocumentRepository:
             record = document_records.get(correlation_id)
         if not isinstance(record, dict):
             return None
-        return {
+        result = {
             "agent": str(record.get("source_agent") or record.get("agent") or _document_default_agent(resolved_obj_name)),
             "correlation_id": str(record.get("correlation_id") or correlation_id),
             "link": deepcopy(record.get("link") or {}),
@@ -736,6 +901,11 @@ class DocumentRepository:
             resolved_section_key: deepcopy(record.get(resolved_section_key) or record.get(resolved_obj_name) or {}),
             "db_updates": deepcopy(record.get("db_updates") or {}),
         }
+        for explicit_key in ("raw_text_document", "entity_objects", "relation_objects"):
+            explicit_value = record.get(explicit_key)
+            if explicit_value is not None:
+                result[explicit_key] = deepcopy(explicit_value)
+        return result
 
     def get_dispatcher_record(
         self,
@@ -956,6 +1126,10 @@ class DocumentRepository:
         next_record["link"] = deepcopy(result_payload.get("link") if isinstance(result_payload.get("link"), dict) else {})
         next_record["file"] = deepcopy(result_payload.get("file") if isinstance(result_payload.get("file"), dict) else {})
         next_record["parse"] = deepcopy(parse_section)
+        for explicit_key in ("raw_text_document", "entity_objects", "relation_objects"):
+            explicit_value = result_payload.get(explicit_key)
+            if explicit_value is not None:
+                next_record[explicit_key] = deepcopy(explicit_value)
         next_record[resolved_section_key] = deepcopy(record_section)
         next_record["db_updates"] = deepcopy(db_updates)
         next_record["handoff_metadata"] = deepcopy(metadata)
@@ -1295,6 +1469,24 @@ class RequestObjectResolutionService:
                 ).strip()
                 if company_name:
                     normalized_value["company_name"] = company_name
+            compatibility_payload = _build_job_posting_compatibility_section(normalized_value)
+            for field_key in ("job_title", "company_name", "raw_text"):
+                if not str(normalized_value.get(field_key) or "").strip() and str(compatibility_payload.get(field_key) or "").strip():
+                    normalized_value[field_key] = compatibility_payload[field_key]
+            for nested_key in ("company_info", "position", "requirements", "application", "metadata"):
+                compatibility_value = compatibility_payload.get(nested_key)
+                if not isinstance(compatibility_value, dict):
+                    continue
+                current_value = normalized_value.get(nested_key)
+                if not isinstance(current_value, dict):
+                    normalized_value[nested_key] = deepcopy(compatibility_value)
+                    continue
+                for item_key, item_value in compatibility_value.items():
+                    current_value.setdefault(str(item_key), deepcopy(item_value))
+            for list_key in ("responsibilities", "what_we_offer"):
+                compatibility_value = compatibility_payload.get(list_key)
+                if isinstance(compatibility_value, list) and compatibility_value and not normalized_value.get(list_key):
+                    normalized_value[list_key] = deepcopy(compatibility_value)
         return normalized_value
 
     def build_parse_payload(self, *, object_value: dict[str, Any], spec: RequestObjectSpec) -> dict[str, Any]:
@@ -1302,7 +1494,14 @@ class RequestObjectResolutionService:
             language = _payload_value(object_value, "preferences.language") or "de"
             return {"language": language, "errors": [], "warnings": []}
         if spec.parse_mode == "job_posting":
-            return {"is_job_posting": True, "errors": [], "warnings": []}
+            parse_payload = {"is_job_posting": True, "errors": [], "warnings": []}
+            language = _first_non_empty_text(
+                _payload_value(object_value, "raw_text_document.language"),
+                _payload_value(object_value, "metadata.language"),
+            )
+            if language:
+                parse_payload["language"] = language
+            return parse_payload
         return {"errors": [], "warnings": []}
 
     def build_inline_result(self, raw_value: Any, *, obj_name: str, source_path: str | None = None) -> dict[str, Any] | None:
@@ -1312,6 +1511,20 @@ class RequestObjectResolutionService:
         if isinstance(raw_value, dict):
             object_value = self.normalize_object_value(raw_value=raw_value, spec=spec, source_path=source_path)
             correlation_id = self.resolve_correlation_id(value=object_value, candidates=spec.correlation_candidates) or None
+            if spec.parse_mode == "job_posting" and any(key in object_value for key in ("raw_text_document", "entity_objects", "relation_objects")):
+                result_payload = {
+                    "agent": _document_default_agent(resolved_obj_name),
+                    "correlation_id": correlation_id,
+                    "parse": self.build_parse_payload(object_value=object_value, spec=spec),
+                }
+                compatibility_payload = _build_job_posting_compatibility_section(object_value)
+                if compatibility_payload:
+                    result_payload[result_key] = compatibility_payload
+                for explicit_key in ("raw_text_document", "entity_objects", "relation_objects"):
+                    explicit_value = object_value.get(explicit_key)
+                    if explicit_value is not None:
+                        result_payload[explicit_key] = deepcopy(explicit_value)
+                return result_payload
             return {
                 "agent": _document_default_agent(resolved_obj_name),
                 "correlation_id": correlation_id,
@@ -1325,6 +1538,21 @@ class RequestObjectResolutionService:
             object_value: dict[str, Any] = {"raw_text": raw_text}
             if source_path:
                 object_value["source_path"] = source_path
+            if spec.parse_mode == "job_posting":
+                raw_text_document = {
+                    "document_type": "job_posting",
+                    "title": None,
+                    "raw_text": raw_text,
+                    "sections": [],
+                    "metadata": {},
+                }
+                return {
+                    "agent": _document_default_agent(resolved_obj_name),
+                    "correlation_id": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
+                    "parse": self.build_parse_payload(object_value={"raw_text_document": raw_text_document}, spec=spec),
+                    "raw_text_document": raw_text_document,
+                    result_key: _build_job_posting_compatibility_section({"raw_text_document": raw_text_document}) or object_value,
+                }
             return {
                 "agent": _document_default_agent(resolved_obj_name),
                 "correlation_id": hashlib.sha256(raw_text.encode("utf-8")).hexdigest(),
@@ -4461,6 +4689,8 @@ class ToolSpec:
     description: str
     parameters: list[ParamSpec] = field(default_factory=list)
     implementation: Callable | None = None  # Optional: actual function reference
+    final_result: bool = False
+    tool_response_required: bool = True
     
     # Callbacks bound to this tool 
     on_call: Callable[[str, dict], None] | None = None  # Called before execution
@@ -4611,6 +4841,8 @@ def tool(name: str, desc: str, params: list[ParamSpec] = None,
 _TOOL_RUNTIME_REFS: dict[str, Any] = {
     "default_save_dir": _DEFAULT_SAVE_DIR,
     "agent_labels": get_available_agent_labels(),
+    "job_names": get_available_job_names(),
+    "tool_names": get_available_tool_names(),
 }
 
 
@@ -4690,6 +4922,8 @@ def _tool_spec_from_config(config: dict[str, Any]) -> ToolSpec:
         description=str(config.get("description") or ""),
         parameters=[_param_spec_from_config(param_config) for param_config in (config.get("parameters") or [])],
         implementation=implementation,
+        final_result=bool(config.get("final_result", False)),
+        tool_response_required=bool(config.get("tool_response_required", True)),
     )
 
 

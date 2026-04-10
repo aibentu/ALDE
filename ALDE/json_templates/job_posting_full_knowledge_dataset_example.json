@@ -66,6 +66,103 @@
       "warnings": [],
       "errors": []
     },
+    "raw_text_document": {
+      "document_type": "job_posting",
+      "title": "IT Service Desk Coordinator (m/w/d)",
+      "language": "de",
+      "raw_text": "Jobtitel: IT Service Desk Coordinator (m/w/d)\nArbeitgeber: ExampleCorp\nArbeitsort: Remote (EU)\nAnstellungsart: Vollzeit\nBeginn: ab sofort\nMission: Example job posting used to demonstrate the job posting schema and downstream parsing workflows.",
+      "sections": [
+        {
+          "section_key": "header",
+          "heading": "Object Header",
+          "text": "Title: IT Service Desk Coordinator (m/w/d)\nOrganization: ExampleCorp\nLocation: Remote (EU)\nEmployment Type: Vollzeit",
+          "metadata": {
+            "section_type": "header"
+          }
+        },
+        {
+          "section_key": "requirements",
+          "heading": "Requirements",
+          "text": "- IT-Support\n- TOPdesk\n- ITIL\n- Deutsch\n- Englisch",
+          "metadata": {
+            "section_type": "requirements"
+          }
+        }
+      ],
+      "metadata": {
+        "content_sha256": "97cd25733bdee9a854f2cc62daf3cea5871bf411b1f3277b638ff9ec108aa217",
+        "source": "pdf_upload"
+      }
+    },
+    "entity_objects": [
+      {
+        "entity_key": "subject",
+        "entity_type": "job_posting",
+        "canonical_name": "IT Service Desk Coordinator (m/w/d)",
+        "mention_text": "IT Service Desk Coordinator (m/w/d)",
+        "section_key": "header",
+        "summary": "Primary job posting subject.",
+        "confidence": 0.99,
+        "aliases": [],
+        "attributes": {
+          "position_type": "Vollzeit"
+        },
+        "metadata": {
+          "role": "subject",
+          "source_field": "job_posting.job_title"
+        }
+      },
+      {
+        "entity_key": "organization:examplecorp",
+        "entity_type": "organization",
+        "canonical_name": "ExampleCorp",
+        "mention_text": "ExampleCorp",
+        "section_key": "header",
+        "summary": "Organization associated with the job posting.",
+        "confidence": 0.98,
+        "aliases": [],
+        "attributes": {},
+        "metadata": {
+          "source_field": "job_posting.company_name"
+        }
+      },
+      {
+        "entity_key": "tool:topdesk",
+        "entity_type": "tool",
+        "canonical_name": "TOPdesk",
+        "mention_text": "TOPdesk",
+        "section_key": "requirements",
+        "summary": "Required support tooling.",
+        "confidence": 0.92,
+        "aliases": [],
+        "attributes": {},
+        "metadata": {
+          "source_field": "job_posting.requirements.technical_skills"
+        }
+      }
+    ],
+    "relation_objects": [
+      {
+        "source_entity_key": "subject",
+        "target_entity_key": "organization:examplecorp",
+        "relation_type": "offered_by",
+        "section_key": "header",
+        "confidence": 0.98,
+        "metadata": {
+          "source_field": "job_posting.company_name"
+        }
+      },
+      {
+        "source_entity_key": "subject",
+        "target_entity_key": "tool:topdesk",
+        "relation_type": "requires_tool",
+        "section_key": "requirements",
+        "confidence": 0.92,
+        "metadata": {
+          "source_field": "job_posting.requirements.technical_skills"
+        }
+      }
+    ],
     "job_posting": {
       "$schema_version": "1.0",
       "jobtitel": "IT Service Desk Coordinator (m/w/d)",

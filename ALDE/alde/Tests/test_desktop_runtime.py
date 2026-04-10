@@ -137,7 +137,7 @@ class TestDesktopRuntime(unittest.TestCase):
             result = service.execute_chat_object(run)
 
         self.assertEqual(result, "worker ok")
-        self.assertEqual(captured["args"], {"target_agent": "_xworker", "user_question": "build result"})
+        self.assertEqual(captured["args"], {"target_agent": "_xworker", "job_name": "generic_execution", "user_question": "build result"})
         self.assertEqual(captured["origin_agent_label"], "_xplaner_xrouter")
 
     def test_inmemory_message_runner_processes_messages(self) -> None:
@@ -299,6 +299,45 @@ class TestDesktopRuntime(unittest.TestCase):
             self.assertEqual(snapshot["failure_count"], 1)
             self.assertEqual(len(snapshot["recent_runs"]), 2)
             self.assertEqual(len(activity_view), 2)
+
+    def test_monitor_service_includes_runtime_observability_snapshot(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store_service = DesktopAgentRunStoreService(
+                persistence_service=DesktopAgentRunPersistenceService(
+                    storage_path=Path(temp_dir) / "desktop_runs.json",
+                )
+            )
+
+            class _IdleExecutionService:
+                def execute_object_run(self, run: DesktopAgentRun) -> str:
+                    return "ok"
+
+            queue_service = DesktopAgentRunQueueService(
+                store_service=store_service,
+                execution_service=_IdleExecutionService(),
+            )
+            monitor_service = DesktopAgentRunMonitorService(
+                store_service=store_service,
+                queue_service=queue_service,
+            )
+
+            with patch.object(
+                monitor_service,
+                "load_runtime_observability_snapshot",
+                return_value={
+                    "healthy": True,
+                    "queue_backend": "inmemory",
+                    "queue_healthy": True,
+                    "session_count": 2,
+                    "active_session_count": 1,
+                    "validation": {"valid": True, "errors": []},
+                },
+            ):
+                snapshot = monitor_service.load_object_snapshot(limit=5)
+
+            self.assertTrue(snapshot["runtime_observability"]["healthy"])
+            self.assertEqual(snapshot["runtime_observability"]["session_count"], 2)
+            self.assertEqual(snapshot["runtime_observability"]["queue_backend"], "inmemory")
 
 
 if __name__ == "__main__":

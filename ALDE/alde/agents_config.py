@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 from pprint import pformat
-from ALDE.alde.agents_pconfig import (
+from alde.agents_pconfig import (
     ACTION_REQUEST_NAME_ALIASES,
     ACTION_REQUEST_SCHEMA_CONFIGS,
     AGENT_MANIFEST_OVERRIDES,
@@ -15,6 +15,7 @@ from ALDE.alde.agents_pconfig import (
     FORCED_ROUTE_CONFIGS,
     HANDOFF_PROTOCOL_CONFIGS,
     HANDOFF_SCHEMA_CONFIGS,
+    JOB_CONFIGS,
     JOB_PROMPT_CONFIGS,
     PROMPT_FRAGMENT_CONFIGS,
     SYSTEM_PROMPT,
@@ -128,6 +129,20 @@ def _build_agent_manifest(agent_label: str) -> dict[str, Any]:
     canonical_name = str(runtime_config.get("canonical_name") or normalize_agent_name(agent_label))
     skill_profile_name = str(override.get("skill_profile") or "")
     skill_profile = AGENT_SKILL_PROFILES.get(skill_profile_name) or {}
+    skill_profile_loading = dict(override.get("skill_profile_loading") or {})
+    skill_profile_loading.setdefault("mode", "job_name")
+    skill_profile_loading.setdefault("fallback_selection_mode", "")
+    skill_profile_loading.setdefault("fallback_skill_profile", skill_profile_name or "")
+    job_skill_profiles = {
+        str(job_name).strip(): str(profile_name).strip()
+        for job_name, profile_name in dict(override.get("job_skill_profiles") or {}).items()
+        if str(job_name).strip() and str(profile_name).strip()
+    }
+    tool_skill_profiles = {
+        str(TOOL_NAME_ALIASES.get(str(tool_name).strip(), str(tool_name).strip()) or "").strip(): str(profile_name).strip()
+        for tool_name, profile_name in dict(override.get("tool_skill_profiles") or {}).items()
+        if str(tool_name).strip() and str(profile_name).strip()
+    }
     role_name = str(override.get("role") or skill_profile.get("role") or "xworker")
     role_config = AGENT_ROLE_CONFIGS.get(role_name) or AGENT_ROLE_CONFIGS["xworker"]
     workflow_name = _workflow_definition_for_agent(agent_label)
@@ -184,6 +199,9 @@ def _build_agent_manifest(agent_label: str) -> dict[str, Any]:
         "role_config": deepcopy(role_config),
         "skill_profile": skill_profile_name,
         "skill_profile_config": deepcopy(skill_profile),
+        "skill_profile_loading": skill_profile_loading,
+        "job_skill_profiles": deepcopy(job_skill_profiles),
+        "tool_skill_profiles": deepcopy(tool_skill_profiles),
         "prompt_config_name": canonical_name,
         "prompt_fragments": list(skill_profile.get("prompt_fragments") or []),
         "model": runtime_config.get("model") or "",
@@ -226,6 +244,13 @@ class AgentConfigObject:
             "agent_label": object_label,
             "canonical_name": self.load_canonical_name(),
             "role": "xworker",
+            "skill_profile_loading": {
+                "mode": "job_name",
+                "fallback_selection_mode": "",
+                "fallback_skill_profile": "",
+            },
+            "job_skill_profiles": {},
+            "tool_skill_profiles": {},
             "model": "",
             "system": self.agent_config_service.load_system_object(self.object_name),
             "tools": [],
@@ -252,6 +277,9 @@ class AgentConfigObject:
             "canonical_name": self.manifest["canonical_name"],
             "role": self.manifest["role"],
             "skill_profile": self.manifest["skill_profile"],
+            "skill_profile_loading": dict(self.manifest.get("skill_profile_loading") or {}),
+            "job_skill_profiles": dict(self.manifest.get("job_skill_profiles") or {}),
+            "tool_skill_profiles": dict(self.manifest.get("tool_skill_profiles") or {}),
             "model": self.manifest["model"],
             "system": self.manifest["system"],
             "tools": list(self.manifest.get("tools") or []),
@@ -392,6 +420,14 @@ def get_job_prompt(job_name: str) -> str:
     return _compose_prompt(get_job_prompt_config(job_name))
 
 
+def get_job_configs() -> dict[str, dict[str, Any]]:
+    return deepcopy(JOB_CONFIGS)
+
+
+def get_job_config(job_name: str) -> dict[str, Any]:
+    return deepcopy(JOB_CONFIGS.get(str(job_name or ""), {}))
+
+
 def _materialize_agent_manifests() -> dict[str, dict[str, Any]]:
     return {
         agent_label: _build_agent_manifest(agent_label)
@@ -432,6 +468,16 @@ def get_agents_registry_data() -> dict[str, dict[str, Any]]:
 
 def get_available_agent_labels() -> list[str]:
     return AGENT_CONFIG_SERVICE.list_available_object_names()
+
+
+def get_available_job_names() -> list[str]:
+    return [str(job_name) for job_name in JOB_CONFIGS if str(job_name).strip()]
+
+
+def get_default_job_name(agent_name: str) -> str:
+    agent_label = normalize_agent_label(agent_name)
+    defaults = dict((AGENT_RUNTIME_CONFIG.get(agent_label) or {}).get("defaults") or {})
+    return str(defaults.get("default_job_name") or "").strip()
 
 
 def get_agent_manifest(agent_name: str) -> dict[str, Any]:
@@ -990,7 +1036,14 @@ class HandoffConfigService:
         return deepcopy(HANDOFF_SCHEMA_CONFIGS)
 
     def load_schema_object(self, object_name: str) -> dict[str, Any]:
-        return deepcopy(HANDOFF_SCHEMA_CONFIGS.get(str(object_name or ""), {}))
+        schema_name = str(object_name or "").strip()
+        schema_config = deepcopy(HANDOFF_SCHEMA_CONFIGS.get(schema_name, {}))
+        if not schema_config:
+            return {}
+        return self.resolve_schema_object(
+            schema_name,
+            schema_config=schema_config,
+        )
 
     def load_agent_policy_object(self, object_name: str) -> dict[str, Any]:
         object_label = AGENT_CONFIG_SERVICE.normalize_object_label(object_name)
@@ -1012,6 +1065,7 @@ class HandoffConfigService:
     def build_missing_schema_object(self, object_name: str) -> dict[str, Any]:
         return {
             "name": str(object_name or "").strip(),
+            "handoff_id": str(object_name or "").strip(),
             "protocol": "message_text",
             "description": "",
             "instructions": [],
@@ -1020,6 +1074,68 @@ class HandoffConfigService:
     def create_schema_object(self, object_name: str, config_updates: dict[str, Any] | None = None) -> dict[str, Any]:
         schema_config = self.load_schema_object(object_name) or self.build_missing_schema_object(object_name)
         return set_config_values(schema_config, config_updates)
+
+    def resolve_schema_object(
+        self,
+        object_name: str,
+        *,
+        handoff_payload: dict[str, Any] | None = None,
+        handoff_metadata: dict[str, Any] | None = None,
+        protocol: str | None = None,
+        handoff_id: str | None = None,
+        job_name: str | None = None,
+        schema_config: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        schema_name = str(object_name or "").strip()
+        base_schema = deepcopy(schema_config if schema_config is not None else HANDOFF_SCHEMA_CONFIGS.get(schema_name, {}))
+        if not base_schema:
+            return {}
+
+        payload = dict(handoff_payload or {}) if isinstance(handoff_payload, dict) else {}
+        metadata = dict(handoff_metadata or {}) if isinstance(handoff_metadata, dict) else {}
+        selected_handoff_id = str(handoff_id or payload.get("handoff_id") or metadata.get("handoff_id") or "").strip()
+        selected_job_name = str(job_name or payload.get("job_name") or metadata.get("job_name") or "").strip()
+        candidate_protocol = str(protocol or "").strip()
+
+        resolved_schema = deepcopy(base_schema)
+        variants = base_schema.get("variants") or {}
+        if isinstance(variants, dict):
+            selected_variant: dict[str, Any] | None = None
+            selected_variant_score = -1
+            for variant_name, variant_value in variants.items():
+                variant = dict(variant_value or {}) if isinstance(variant_value, dict) else {}
+                variant_handoff_id = str(variant.get("handoff_id") or variant_name).strip()
+                variant_job_name = str(variant.get("job_name") or "").strip()
+                variant_job_names = {
+                    str(value).strip()
+                    for value in [variant.get("job_name"), *(variant.get("job_names") or [])]
+                    if str(value).strip()
+                }
+                handoff_matches = bool(selected_handoff_id) and selected_handoff_id == variant_handoff_id
+                job_matches = bool(selected_job_name) and selected_job_name in variant_job_names
+                if not handoff_matches and not job_matches:
+                    continue
+                if candidate_protocol and variant.get("protocol") and str(variant.get("protocol") or "").strip() != candidate_protocol:
+                    continue
+                score = 0
+                if handoff_matches:
+                    score += 2
+                if selected_job_name and variant_job_name and selected_job_name == variant_job_name:
+                    score += 2
+                elif job_matches:
+                    score += 1
+                if score > selected_variant_score:
+                    selected_variant = variant
+                    selected_variant_score = score
+
+            if selected_variant is not None:
+                resolved_schema = set_config_values(deepcopy(base_schema), selected_variant)
+
+        resolved_schema["name"] = schema_name
+        resolved_schema["handoff_id"] = str(resolved_schema.get("handoff_id") or selected_handoff_id or "structured").strip()
+        if selected_job_name and not str(resolved_schema.get("job_name") or "").strip():
+            resolved_schema["job_name"] = selected_job_name
+        return resolved_schema
 
 
 HANDOFF_CONFIG_SERVICE = HandoffConfigService()
@@ -1079,6 +1195,8 @@ class HandoffRouteService:
         target_object_name: str | None,
         *,
         protocol: str | None = None,
+        handoff_payload: dict[str, Any] | None = None,
+        handoff_metadata: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         source_label = self.normalize_object_name(source_object_name)
         target_label = self.normalize_object_name(target_object_name)
@@ -1112,17 +1230,30 @@ class HandoffRouteService:
             "instructions": list(target_source_policy.get("instructions") or source_target_policy.get("instructions") or []),
         }
         schema_name = str(contract.get("handoff_schema") or "").strip()
-        schema_config = get_handoff_schema_config(schema_name) if schema_name else {}
+        schema_config = (
+            HANDOFF_CONFIG_SERVICE.resolve_schema_object(
+                schema_name,
+                handoff_payload=handoff_payload,
+                handoff_metadata=handoff_metadata,
+                protocol=selected_protocol,
+            )
+            if schema_name
+            else {}
+        )
         if schema_config:
             contract["schema"] = schema_config
-            if not contract["workflow_name"]:
+            contract["handoff_id"] = str(schema_config.get("handoff_id") or "").strip()
+            contract["job_name"] = str(schema_config.get("job_name") or "").strip()
+            if schema_config.get("workflow_name"):
                 contract["workflow_name"] = str(schema_config.get("workflow_name") or "")
-            if not contract["instructions"]:
+            if schema_config.get("instructions"):
                 contract["instructions"] = list(schema_config.get("instructions") or [])
             if schema_config.get("protocol") and not protocol:
                 contract["protocol"] = str(schema_config.get("protocol") or contract["protocol"])
         else:
             contract["schema"] = {}
+            contract["handoff_id"] = ""
+            contract["job_name"] = ""
         return contract
 
     def normalize_agent_response_object(
@@ -1267,6 +1398,14 @@ class HandoffRouteService:
 
         handoff_payload = handoff.get("handoff_payload") if isinstance(handoff.get("handoff_payload"), dict) else {}
         metadata = handoff.get("metadata") if isinstance(handoff.get("metadata"), dict) else {}
+        contract = self.load_route_contract(
+            source_label,
+            target_label,
+            protocol=protocol,
+            handoff_payload=handoff_payload,
+            handoff_metadata=metadata,
+        )
+        schema = dict(contract.get("schema") or {})
         for key_path in schema.get("required_payload_paths") or []:
             if not _handoff_path_exists(handoff_payload, str(key_path)):
                 errors.append(f"handoff payload is missing required path '{key_path}'")
@@ -1294,10 +1433,16 @@ class HandoffRouteService:
         target_label = normalize_agent_label(target_object_name)
         source_label = self.normalize_object_name(source_object_name or handoff.get("source_agent"))
         protocol = str(handoff.get("protocol") or "message_text").strip()
-        contract = self.load_route_contract(source_label, target_label, protocol=protocol)
-        schema = dict(contract.get("schema") or {})
         handoff_payload = deepcopy(handoff.get("handoff_payload") or {}) if isinstance(handoff.get("handoff_payload"), dict) else {}
         metadata = deepcopy(handoff.get("metadata") or {}) if isinstance(handoff.get("metadata"), dict) else {}
+        contract = self.load_route_contract(
+            source_label,
+            target_label,
+            protocol=protocol,
+            handoff_payload=handoff_payload,
+            handoff_metadata=metadata,
+        )
+        schema = dict(contract.get("schema") or {})
 
         preferred_paths = [str(value) for value in (schema.get("preferred_payload_paths") or []) if str(value).strip()]
         target_input_path = str(schema.get("target_input_path") or "").strip()
@@ -1341,6 +1486,8 @@ class HandoffRouteService:
             "target_agent": target_label,
             "workflow_name": contract.get("workflow_name") or "",
             "handoff_schema": contract.get("handoff_schema") or "",
+            "handoff_id": contract.get("handoff_id") or "",
+            "job_name": contract.get("job_name") or "",
             "instructions": list(contract.get("instructions") or []),
             "metadata": metadata,
             "selected_input": selected_input,
@@ -1365,8 +1512,16 @@ def get_handoff_route_contract(
     target_agent: str | None,
     *,
     protocol: str | None = None,
+    handoff_payload: dict[str, Any] | None = None,
+    handoff_metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return HANDOFF_ROUTE_SERVICE.load_route_contract(source_agent, target_agent, protocol=protocol)
+    return HANDOFF_ROUTE_SERVICE.load_route_contract(
+        source_agent,
+        target_agent,
+        protocol=protocol,
+        handoff_payload=handoff_payload,
+        handoff_metadata=handoff_metadata,
+    )
 
 
 def _normalize_handoff_target(value: str | None) -> str:
@@ -2619,6 +2774,35 @@ def validate_agent_manifest(agent_name: str, manifest: dict[str, Any] | None = N
     if skill_profile_name and skill_profile_name not in AGENT_SKILL_PROFILES:
         errors.append(f"skill_profile '{skill_profile_name}' is not defined in AGENT_SKILL_PROFILES")
 
+    skill_profile_loading = dict(config.get("skill_profile_loading") or {})
+    selection_mode = str(skill_profile_loading.get("mode") or "job_name").strip() or "job_name"
+    fallback_selection_mode = str(skill_profile_loading.get("fallback_selection_mode") or "").strip()
+    valid_selection_modes = {"job_name", "tool_name"}
+    if selection_mode not in valid_selection_modes:
+        errors.append("skill_profile_loading.mode must be 'job_name' or 'tool_name'")
+    if fallback_selection_mode and fallback_selection_mode not in valid_selection_modes:
+        errors.append("skill_profile_loading.fallback_selection_mode must be 'job_name' or 'tool_name'")
+    fallback_skill_profile = str(skill_profile_loading.get("fallback_skill_profile") or "").strip()
+    if fallback_skill_profile and fallback_skill_profile not in AGENT_SKILL_PROFILES:
+        errors.append(f"skill_profile_loading.fallback_skill_profile '{fallback_skill_profile}' is not defined in AGENT_SKILL_PROFILES")
+
+    for job_name, profile_name in dict(config.get("job_skill_profiles") or {}).items():
+        normalized_job_name = str(job_name or "").strip()
+        normalized_profile_name = str(profile_name or "").strip()
+        if normalized_job_name and normalized_job_name not in JOB_CONFIGS:
+            errors.append(f"job_skill_profiles references unknown job_name '{normalized_job_name}'")
+        if normalized_profile_name and normalized_profile_name not in AGENT_SKILL_PROFILES:
+            errors.append(f"job_skill_profiles maps '{normalized_job_name}' to unknown skill_profile '{normalized_profile_name}'")
+
+    known_tool_names = {normalize_tool_name(name) for name in get_available_tool_names()}
+    for tool_name, profile_name in dict(config.get("tool_skill_profiles") or {}).items():
+        normalized_tool_name = normalize_tool_name(str(tool_name or "").strip())
+        normalized_profile_name = str(profile_name or "").strip()
+        if normalized_tool_name and normalized_tool_name not in known_tool_names:
+            errors.append(f"tool_skill_profiles references unknown tool_name '{tool_name}'")
+        if normalized_profile_name and normalized_profile_name not in AGENT_SKILL_PROFILES:
+            errors.append(f"tool_skill_profiles maps '{normalized_tool_name}' to unknown skill_profile '{normalized_profile_name}'")
+
     prompt_config_name = str(config.get("prompt_config_name") or "")
     if prompt_config_name and prompt_config_name not in SYSTEM_PROMPT:
         errors.append(f"prompt_config_name '{prompt_config_name}' is not defined in SYSTEM_PROMPT")
@@ -2762,6 +2946,177 @@ def validate_all_action_request_schemas() -> dict[str, Any]:
     }
 
 
+def validate_job_config(job_name: str, job_config: dict[str, Any] | None = None) -> dict[str, Any]:
+    normalized_job_name = str(job_name or "").strip()
+    config = deepcopy(job_config if job_config is not None else JOB_CONFIGS.get(normalized_job_name, {}))
+    errors: list[str] = []
+    warnings: list[str] = []
+
+    if not config:
+        return {
+            "name": normalized_job_name,
+            "valid": False,
+            "errors": ["job config is missing"],
+            "warnings": [],
+        }
+
+    runtime_agent = normalize_agent_label(config.get("runtime_agent") or "")
+    if not runtime_agent:
+        errors.append("runtime_agent is required")
+    elif runtime_agent not in AGENT_RUNTIME_CONFIG:
+        errors.append(f"runtime_agent '{runtime_agent}' is not defined in AGENT_RUNTIME_CONFIG")
+
+    skill_profile_name = str(config.get("skill_profile") or "").strip()
+    if not skill_profile_name:
+        errors.append("skill_profile is required")
+    elif skill_profile_name not in AGENT_SKILL_PROFILES:
+        errors.append(f"skill_profile '{skill_profile_name}' is not defined in AGENT_SKILL_PROFILES")
+    else:
+        skill_profile = AGENT_SKILL_PROFILES.get(skill_profile_name) or {}
+        profile_job_name = str(skill_profile.get("job_name") or "").strip()
+        if profile_job_name and profile_job_name != normalized_job_name:
+            errors.append(
+                f"skill_profile '{skill_profile_name}' declares job_name '{profile_job_name}' instead of '{normalized_job_name}'"
+            )
+
+    default_object_name = str(config.get("default_object_name") or "").strip()
+    if not default_object_name:
+        errors.append("default_object_name is required")
+
+    if runtime_agent in AGENT_RUNTIME_CONFIG:
+        runtime_config = AGENT_RUNTIME_CONFIG.get(runtime_agent) or {}
+        runtime_skill_profiles = runtime_config.get("job_skill_profiles") or {}
+        runtime_skill_profile_name = str(runtime_skill_profiles.get(normalized_job_name) or "").strip()
+        if runtime_skill_profile_name and skill_profile_name and runtime_skill_profile_name != skill_profile_name:
+            errors.append(
+                f"runtime_agent '{runtime_agent}' maps job_name '{normalized_job_name}' to skill_profile '{runtime_skill_profile_name}'"
+            )
+
+        default_job_name = str(get_default_job_name(runtime_agent) or "").strip()
+        if default_job_name == normalized_job_name and runtime_agent != "_xworker":
+            warnings.append(
+                f"runtime_agent '{runtime_agent}' uses '{normalized_job_name}' as default_job_name; verify this specialization should be the default"
+            )
+
+    if runtime_agent == "_xworker":
+        prompt_name = _SPECIALIZED_JOB_PROMPT_MAP.get(("xworker", normalized_job_name))
+        if not prompt_name:
+            warnings.append("specialized job prompt mapping is missing")
+        elif prompt_name not in JOB_PROMPT_CONFIGS:
+            errors.append(f"specialized prompt '{prompt_name}' is not defined in JOB_PROMPT_CONFIGS")
+
+        specialized_prompt = get_specialized_system_prompt("xworker", normalized_job_name)
+        if not specialized_prompt:
+            warnings.append("specialized system prompt resolves to an empty string")
+
+        handoff_contract = get_handoff_route_contract(
+            "_xplaner_xrouter",
+            runtime_agent,
+            handoff_metadata={"job_name": normalized_job_name},
+        )
+        if not handoff_contract:
+            errors.append("handoff contract from _xplaner_xrouter is missing")
+        else:
+            resolved_job_name = str(handoff_contract.get("job_name") or "").strip()
+            if resolved_job_name and resolved_job_name != normalized_job_name:
+                errors.append(
+                    f"handoff contract resolved job_name '{resolved_job_name}' instead of '{normalized_job_name}'"
+                )
+
+            protocol_name = str(handoff_contract.get("protocol") or "").strip()
+            if protocol_name and protocol_name not in HANDOFF_PROTOCOL_CONFIGS:
+                errors.append(f"handoff contract protocol '{protocol_name}' is not defined in HANDOFF_PROTOCOL_CONFIGS")
+
+            variant_config = handoff_contract.get("schema") if isinstance(handoff_contract.get("schema"), dict) else {}
+            variant_job_name = str(variant_config.get("job_name") or "").strip()
+            variant_job_names = {
+                str(name or "").strip()
+                for name in (variant_config.get("job_names") or [])
+                if str(name or "").strip()
+            }
+            if variant_job_name and variant_job_name != normalized_job_name:
+                errors.append(
+                    f"handoff variant pins job_name '{variant_job_name}' instead of '{normalized_job_name}'"
+                )
+            elif variant_job_names and normalized_job_name not in variant_job_names:
+                errors.append(
+                    f"handoff variant job_names {sorted(variant_job_names)} do not include '{normalized_job_name}'"
+                )
+
+    return {
+        "name": normalized_job_name,
+        "valid": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "runtime_agent": runtime_agent or None,
+        "skill_profile": skill_profile_name or None,
+        "default_object_name": default_object_name or None,
+    }
+
+
+def validate_all_job_configs() -> dict[str, Any]:
+    reports = [validate_job_config(job_name, config) for job_name, config in JOB_CONFIGS.items()]
+    invalid_reports = [report for report in reports if not report.get("valid")]
+    return {
+        "valid": not invalid_reports,
+        "job_count": len(reports),
+        "valid_count": len(reports) - len(invalid_reports),
+        "invalid_count": len(invalid_reports),
+        "jobs": reports,
+    }
+
+
+def validate_runtime_contracts() -> dict[str, Any]:
+    workflow_report = validate_all_workflows()
+    agent_report = validate_all_agent_manifests()
+    action_report = validate_all_action_request_schemas()
+    job_report = validate_all_job_configs()
+
+    flattened_errors = list(workflow_report.get("mapping_errors") or [])
+
+    for workflow_entry in workflow_report.get("workflows") or []:
+        if not isinstance(workflow_entry, dict) or workflow_entry.get("valid", True):
+            continue
+        workflow_name = str(workflow_entry.get("name") or "workflow").strip()
+        for error in workflow_entry.get("errors") or []:
+            flattened_errors.append(f"{workflow_name}: {error}")
+
+    for report_key, source_report, default_label in (
+        ("agents", agent_report, "agent"),
+        ("schemas", action_report, "action_request_schema"),
+        ("jobs", job_report, "job"),
+    ):
+        for entry in source_report.get(report_key) or []:
+            if not isinstance(entry, dict) or entry.get("valid", True):
+                continue
+            entry_name = str(entry.get("name") or default_label).strip() or default_label
+            for error in entry.get("errors") or []:
+                flattened_errors.append(f"{entry_name}: {error}")
+
+    return {
+        **workflow_report,
+        "valid": bool(
+            workflow_report.get("valid")
+            and agent_report.get("valid")
+            and action_report.get("valid")
+            and job_report.get("valid")
+        ),
+        "agent_count": agent_report.get("agent_count", 0),
+        "valid_agent_count": agent_report.get("valid_count", 0),
+        "invalid_agent_count": agent_report.get("invalid_count", 0),
+        "agents": agent_report.get("agents") or [],
+        "action_request_schema_count": action_report.get("schema_count", 0),
+        "valid_action_request_schema_count": action_report.get("valid_count", 0),
+        "invalid_action_request_schema_count": action_report.get("invalid_count", 0),
+        "action_request_schemas": action_report.get("schemas") or [],
+        "job_count": job_report.get("job_count", 0),
+        "valid_job_count": job_report.get("valid_count", 0),
+        "invalid_job_count": job_report.get("invalid_count", 0),
+        "jobs": job_report.get("jobs") or [],
+        "errors": flattened_errors,
+    }
+
+
 def get_specialized_system_prompt(agent_type: str, task_name: str) -> str:
     job_prompt_name = _SPECIALIZED_JOB_PROMPT_MAP.get((agent_type, task_name))
     if not job_prompt_name:
@@ -2822,13 +3177,17 @@ __all__ = [
     "get_action_request_schema_config",
     "get_action_request_schema_configs",
     "get_available_agent_labels",
+    "get_available_job_names",
     "get_available_tool_names",
     "get_batch_workflow_config",
     "get_batch_workflow_configs",
+    "get_default_job_name",
     "get_handoff_protocol_config",
     "get_handoff_protocol_configs",
     "get_handoff_schema_config",
     "get_handoff_schema_configs",
+    "get_job_config",
+    "get_job_configs",
     "get_prompt_config",
     "get_specialized_system_prompt",
     "normalize_agent_label",
@@ -2850,6 +3209,9 @@ __all__ = [
     "validate_handoff_for_target",
     "validate_agent_manifest",
     "validate_all_agent_manifests",
+    "validate_job_config",
+    "validate_all_job_configs",
+    "validate_runtime_contracts",
     "validate_batch_workflow_config",
     "validate_workflow_config",
     "validate_all_workflows",
