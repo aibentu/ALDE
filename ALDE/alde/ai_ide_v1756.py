@@ -1292,6 +1292,10 @@ class EditorTabs(QTabWidget):
         self._act_open.setShortcut(QKeySequence.Open)
         self._act_open.triggered.connect(self._open_file_dialog)
 
+        self._act_new_code_viewer = QAction("Neuen Code-Viewer-Tab", self)
+        self._act_new_code_viewer.setShortcut(QKeySequence("Ctrl+Alt+N"))
+        self._act_new_code_viewer.triggered.connect(self._new_code_viewer_tab)
+
         self._act_open_with_enc = QAction("Öffnen mit Encoding...", self)
         self._act_open_with_enc.triggered.connect(self._open_file_dialog_with_encoding)
 
@@ -1310,7 +1314,15 @@ class EditorTabs(QTabWidget):
         self._act_set_encoding = QAction("Encoding setzen...", self)
         self._act_set_encoding.triggered.connect(self._set_current_tab_encoding)
 
-        for a in (self._act_open, self._act_open_with_enc, self._act_save, self._act_save_as, self._act_reopen_closed, self._act_set_encoding):
+        for a in (
+            self._act_new_code_viewer,
+            self._act_open,
+            self._act_open_with_enc,
+            self._act_save,
+            self._act_save_as,
+            self._act_reopen_closed,
+            self._act_set_encoding,
+        ):
             self.addAction(a)
 
         # State for optional features
@@ -1339,6 +1351,28 @@ class EditorTabs(QTabWidget):
         self._bind_editor(self.widget(index))
         # Highlighter anwenden (Standard-Dateiname endet auf .py → Python)
         self._apply_highlighter(self.widget(index), f"untitled_{self.count()}.py")
+        self.setCurrentIndex(index)
+
+    @Slot()
+    def _new_code_viewer_tab(self) -> None:
+        """Create a new editable CodeViewer tab right of the active tab."""
+        current = self.currentIndex()
+        if current < 0:
+            current = self.count() - 1
+
+        title = f"code_viewer_{self.count() + 1}.py"
+        viewer = CodeViewer(
+            "",
+            language="python",
+            editable=True,
+            auto_fit=False,
+        )
+        viewer.setProperty("file_path", "")
+        viewer.setProperty("file_encoding", str(getattr(self, "_default_encoding", "utf-8")))
+        viewer.document().setModified(False)
+        self._bind_editor(viewer)
+
+        index = self.insertTab(current + 1, viewer, title)
         self.setCurrentIndex(index)
 
     @Slot()
@@ -1456,6 +1490,8 @@ class EditorTabs(QTabWidget):
     def _show_context_menu(self, pos: QPoint) -> None:  # noqa: D401
         """Zeigt das allgemeine Kontextmenü (Speichern / Speichern unter)."""
         menu = QMenu(self)
+        menu.addAction(self._act_new_code_viewer)
+        menu.addSeparator()
         recent_menu = self._build_recent_menu()
         if recent_menu is not None:
             menu.addMenu(recent_menu)
@@ -1471,6 +1507,8 @@ class EditorTabs(QTabWidget):
     def _show_context_menu_from_tabbar(self, pos: QPoint) -> None:
         """Kontextmenü, wenn auf der Tab-Leiste rechts geklickt wurde."""
         menu = QMenu(self)
+        menu.addAction(self._act_new_code_viewer)
+        menu.addSeparator()
         recent_menu = self._build_recent_menu()
         if recent_menu is not None:
             menu.addMenu(recent_menu)
@@ -1876,6 +1914,7 @@ class AIWidget(QWidget):
         self._api_key_missing: bool = not bool(self.api_key)
         self._model:   str = "o3-2025-04-16"                 # <<< zentrales Modell
         self._dropped_files: List[str] = []
+        self._runtime_context_entries: list[dict[str, str]] = []
         self.scheme = _build_scheme(accent, base)                # Farbschema mergen
         self._build_ui()
         self._wire()
@@ -2014,6 +2053,43 @@ class AIWidget(QWidget):
     # ---------------------------------------------------------------------------
     #  CHAT – Text-Prompt
     # ---------------------------------------------------------------------------
+    def _runtime_context_display_title(self, *, title: str, source_path: str) -> str:
+        normalized_source = str(source_path or "").strip()
+        if normalized_source:
+            return Path(normalized_source).name
+        normalized_title = str(title or "").strip()
+        return normalized_title or "runtime_widget"
+
+    def _build_runtime_user_input_context_payload(self) -> str:
+        entries = list(getattr(self, "_runtime_context_entries", []))
+        if not entries:
+            return ""
+
+        max_chars = int(getattr(CHAT_ATTACHMENT_SERVICE, "_MAX_TEXT_CHARS", 12000) or 12000)
+        blocks: list[str] = []
+        for entry in entries:
+            title = str(entry.get("title") or "runtime_widget").strip() or "runtime_widget"
+            source_path = str(entry.get("source_path") or "").strip()
+            language = str(entry.get("language") or "").strip().lower()
+            content = str(entry.get("content") or "").strip("\n")
+            if not content.strip():
+                continue
+
+            if len(content) > max_chars:
+                content = content[:max_chars].rstrip() + "\n[TRUNCATED]"
+
+            if language in {"text", "plaintext"}:
+                language = ""
+            fence_open = f"```{language}" if language else "```"
+
+            header_lines = [f"[WIDGET_CONTEXT] {title}"]
+            if source_path:
+                header_lines.append(f"[SOURCE] {source_path}")
+
+            blocks.append("\n".join(header_lines + [fence_open, content, "```"]))
+
+        return "\n\n".join(blocks)
+
     @Slot()
     def _send(self) -> None:
         if getattr(self, "_api_key_missing", False):
@@ -2022,27 +2098,37 @@ class AIWidget(QWidget):
             except Exception:
                 pass
             return
-        prompt, image_paths = CHAT_ATTACHMENT_SERVICE.build_prompt_payload(
+        prompt_visible, image_paths = CHAT_ATTACHMENT_SERVICE.build_prompt_payload(
             prompt_text=self.prompt_edit.toPlainText(),
             file_paths=self._dropped_files,
         )
-        if not prompt and not image_paths:
+        runtime_context_payload = self._build_runtime_user_input_context_payload()
+        prompt_for_model = prompt_visible
+        if runtime_context_payload:
+            prompt_for_model = (
+                f"{prompt_for_model}\n\n{runtime_context_payload}"
+                if prompt_for_model
+                else runtime_context_payload
+            )
+
+        if not prompt_for_model and not image_paths:
             return
 
-        self._append("You", prompt)
+        self._append("You", prompt_visible)
         self.prompt_edit.clear()
         
         try:
             reply = ChatCom(
                 _model=self._model,
                 _url=image_paths or None,
-                _input_text=prompt
+                _input_text=prompt_for_model
             ).get_response()
         except Exception as exc:
             reply = f"[ERROR] {exc}"
 
         self._append("AI", str(reply))
         self._dropped_files = []
+        self._runtime_context_entries = []
 
     # ---------------------------------------------------------------------------
     #  CHAT – Bild analysieren
@@ -2055,14 +2141,23 @@ class AIWidget(QWidget):
             except Exception:
                 pass
             return
-        prompt = self.prompt_edit.toPlainText().strip()
+        prompt_visible = self.prompt_edit.toPlainText().strip()
         image_paths = CHAT_ATTACHMENT_SERVICE.load_image_object_paths(self._dropped_files)
-        if not (prompt and image_paths):
+        runtime_context_payload = self._build_runtime_user_input_context_payload()
+        prompt_for_model = prompt_visible
+        if runtime_context_payload:
+            prompt_for_model = (
+                f"{prompt_for_model}\n\n{runtime_context_payload}"
+                if prompt_for_model
+                else runtime_context_payload
+            )
+
+        if not (prompt_for_model and image_paths):
             QMessageBox.warning(self, "Info",
                 "Ziehe ein Bild in das Chat-Fenster und gib anschließend deinen Prompt ein.")
             return
 
-        self._append("You", prompt)
+        self._append("You", prompt_visible)
         self.prompt_edit.clear()
         url = image_paths[0]
 
@@ -2070,7 +2165,7 @@ class AIWidget(QWidget):
             resp = ImageDescription(
                 _model="gpt-5",
                 _url=url,
-                _input_text=prompt
+                _input_text=prompt_for_model
             ).get_descript()
 
             if hasattr(resp, 'choices') and resp.choices:
@@ -2084,6 +2179,7 @@ class AIWidget(QWidget):
 
         self._append("AI", reply)
         self._dropped_files = []
+        self._runtime_context_entries = []
 
     # ---------------------------------------------------------------------------
     #  CHAT – Bild generieren
@@ -2135,6 +2231,59 @@ class AIWidget(QWidget):
         """legt eine neue Nachricht im Chat-Viewport an"""
         self.chat_view.add_message(who, txt)
 
+    def attach_runtime_context(
+        self,
+        *,
+        title: str,
+        language: str,
+        content: str,
+        source_path: str = "",
+    ) -> bool:
+        normalized_title = str(title or "Runtime Widget").strip() or "Runtime Widget"
+        normalized_language = str(language or "").strip().lower()
+        normalized_content = str(content or "").strip("\n")
+        normalized_source_path = str(source_path or "").strip()
+        if not normalized_content.strip():
+            return False
+
+        entry = {
+            "title": normalized_title,
+            "language": normalized_language,
+            "source_path": normalized_source_path,
+            "content": normalized_content,
+        }
+        entries = list(getattr(self, "_runtime_context_entries", []))
+        if entry not in entries:
+            entries.append(entry)
+        self._runtime_context_entries = entries
+
+        prompt_title = self._runtime_context_display_title(
+            title=normalized_title,
+            source_path=normalized_source_path,
+        )
+        context_marker = prompt_title
+
+        existing_prompt = self.prompt_edit.toPlainText().strip()
+        existing_lines = [line.strip() for line in existing_prompt.splitlines() if line.strip()]
+        if context_marker not in existing_lines:
+            merged_prompt = f"{existing_prompt}\n{context_marker}" if existing_prompt else context_marker
+        else:
+            merged_prompt = existing_prompt
+        self.prompt_edit.setPlainText(merged_prompt)
+
+        cursor = self.prompt_edit.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.prompt_edit.setTextCursor(cursor)
+
+        try:
+            window = self.window()
+            status_bar = window.statusBar() if window is not None and hasattr(window, "statusBar") else None
+            if status_bar is not None:
+                status_bar.showMessage(f"UserInputContext ergänzt: {prompt_title}", 3200)
+        except Exception:
+            pass
+        return True
+
     def open_agent_system_builder_panel(
         self,
         *,
@@ -2158,9 +2307,6 @@ class AIWidget(QWidget):
             QLabel#builderSectionTitle {
                 color: #d7d7d7;
                 font-weight: 700;
-            }
-            QLabel#builderSectionText {
-                color: #c2c2c2;
             }
             QPushButton#builderPrimaryButton {
                 background: transparent;
@@ -2198,19 +2344,33 @@ class AIWidget(QWidget):
         top_buttons.setSpacing(6)
         btn_template = QPushButton("", panel)
         btn_build = QPushButton("", panel)
+        btn_post = QPushButton("", panel)
+        btn_copy = QPushButton("", panel)
         btn_template.setIcon(_icon("open_file.svg"))
         btn_build.setIcon(_icon("deployed_code.svg"))
+        btn_post.setIcon(_icon("send.svg"))
+        btn_copy.setIcon(_icon("file_export_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg"))
         btn_template.setToolTip("Template laden")
         btn_build.setToolTip("Sync Build starten")
+        btn_post.setToolTip("Ergebnis in Chat verschieben")
+        btn_copy.setToolTip("JSON exportieren")
         btn_template.setIconSize(QSize(18, 18))
         btn_build.setIconSize(QSize(18, 18))
+        btn_post.setIconSize(QSize(18, 18))
+        btn_copy.setIconSize(QSize(18, 18))
         btn_template.setCursor(Qt.PointingHandCursor)
         btn_build.setCursor(Qt.PointingHandCursor)
+        btn_post.setCursor(Qt.PointingHandCursor)
+        btn_copy.setCursor(Qt.PointingHandCursor)
         btn_template.setObjectName("builderPrimaryButton")
         btn_build.setObjectName("builderPrimaryButton")
+        btn_post.setObjectName("builderIconButton")
+        btn_copy.setObjectName("builderIconButton")
         top_buttons.addWidget(btn_template, 0)
         top_buttons.addWidget(btn_build, 0)
         top_buttons.addStretch(1)
+        top_buttons.addWidget(btn_post, 0)
+        top_buttons.addWidget(btn_copy, 0)
         panel_layout.addLayout(top_buttons)
 
         editor = CodeViewer(
@@ -2228,34 +2388,15 @@ class AIWidget(QWidget):
         editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         panel_layout.addWidget(editor)
 
-        status_text = QLabel("Status: Bereit", panel)
-        status_text.setObjectName("builderSectionText")
-        status_text.setWordWrap(True)
-        panel_layout.addWidget(status_text)
-
         bottom_buttons = QHBoxLayout()
         bottom_buttons.setContentsMargins(0, 0, 0, 0)
         bottom_buttons.setSpacing(6)
-        btn_post = QPushButton("", panel)
-        btn_copy = QPushButton("", panel)
         btn_close = QPushButton("", panel)
-        btn_post.setIcon(_icon("send.svg"))
-        btn_copy.setIcon(_icon("file_export_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg"))
         btn_close.setIcon(_icon("close.svg"))
-        btn_post.setToolTip("Ergebnis in Chat verschieben")
-        btn_copy.setToolTip("JSON exportieren")
         btn_close.setToolTip("Panel schliessen")
-        btn_post.setIconSize(QSize(18, 18))
-        btn_copy.setIconSize(QSize(18, 18))
         btn_close.setIconSize(QSize(18, 18))
-        btn_post.setCursor(Qt.PointingHandCursor)
-        btn_copy.setCursor(Qt.PointingHandCursor)
         btn_close.setCursor(Qt.PointingHandCursor)
-        btn_post.setObjectName("builderIconButton")
-        btn_copy.setObjectName("builderIconButton")
         btn_close.setObjectName("builderIconButton")
-        bottom_buttons.addWidget(btn_post, 0)
-        bottom_buttons.addWidget(btn_copy, 0)
         bottom_buttons.addWidget(btn_close, 0)
         bottom_buttons.addStretch(1)
         panel_layout.addLayout(bottom_buttons)
@@ -2264,36 +2405,50 @@ class AIWidget(QWidget):
         self._agent_builder_panel_row = panel_row
         latest_result: dict[str, Any] = {}
 
+        def _set_builder_status(message: str, timeout_ms: int = 4500) -> None:
+            try:
+                window = self.window()
+                status_bar_getter = getattr(window, "statusBar", None)
+                if not callable(status_bar_getter):
+                    return
+                status_bar = status_bar_getter()
+                if status_bar is not None:
+                    status_bar.showMessage(f"Builder: {message}", timeout_ms)
+            except Exception:
+                pass
+
+        _set_builder_status("Bereit")
+
         def _load_template() -> None:
             editor.setPlainText(json.dumps(initial_payload, ensure_ascii=False, indent=2))
-            status_text.setText("Status: Template geladen")
+            _set_builder_status("Template geladen")
 
         def _run_build() -> None:
             nonlocal latest_result
             raw_text = editor.toPlainText().strip()
             if not raw_text:
-                status_text.setText("Status: Payload ist leer")
+                _set_builder_status("Payload ist leer")
                 return
 
             try:
                 payload = json.loads(raw_text)
             except Exception as exc:
-                status_text.setText(f"Status: JSON-Fehler ({type(exc).__name__})")
+                _set_builder_status(f"JSON-Fehler ({type(exc).__name__})")
                 return
 
             if not isinstance(payload, dict):
-                status_text.setText("Status: Payload muss JSON-Objekt sein")
+                _set_builder_status("Payload muss JSON-Objekt sein")
                 return
 
             btn_build.setEnabled(False)
             try:
                 latest_result = dict(build_handler(payload) or {})
                 validation = dict(latest_result.get("validation") or {})
-                status_text.setText(
-                    f"Status: Build abgeschlossen (valid={bool(validation.get('valid', True))})"
+                _set_builder_status(
+                    f"Build abgeschlossen (valid={bool(validation.get('valid', True))})"
                 )
             except Exception as exc:
-                status_text.setText(f"Status: Build fehlgeschlagen ({type(exc).__name__})")
+                _set_builder_status(f"Build fehlgeschlagen ({type(exc).__name__})")
                 latest_result = {}
             finally:
                 btn_build.setEnabled(True)
@@ -2301,16 +2456,18 @@ class AIWidget(QWidget):
         def _post_result() -> None:
             if not latest_result:
                 self._append("System", "Kein Build-Ergebnis vorhanden. Bitte zuerst Sync Build starten.")
+                _set_builder_status("Kein Build-Ergebnis vorhanden")
                 return
             self._append("AI", json.dumps(latest_result, ensure_ascii=False, indent=2))
+            _set_builder_status("Ergebnis in Chat verschoben")
 
         def _copy_json() -> None:
             payload_text = editor.toPlainText()
             try:
                 QApplication.clipboard().setText(payload_text)
-                status_text.setText("Status: JSON in Zwischenablage")
+                _set_builder_status("JSON in Zwischenablage")
             except Exception as exc:
-                status_text.setText(f"Status: Kopieren fehlgeschlagen ({type(exc).__name__})")
+                _set_builder_status(f"Kopieren fehlgeschlagen ({type(exc).__name__})")
 
         def _close_panel() -> None:
             self.chat_view.remove_inline_panel(panel_row)
@@ -2472,6 +2629,7 @@ class CodeViewer(QPlainTextEdit):
         selection_color = self._accent_selection_color if edit_mode else "#264f78"
         scrollbar_hover_color = self._surface_color
         scrollbar_pressed_color = self._accent_selection_color
+        scrollbar_idle_color = "rgba(180, 180, 180, 0.45)" if edit_mode else "rgba(135, 135, 135, 0.40)"
         font_size_rule = f" font-size:{self._font_size_px}px;" if self._font_size_px is not None else ""
         return (
             f"QPlainTextEdit#{self.objectName()} {{"
@@ -2486,19 +2644,19 @@ class CodeViewer(QPlainTextEdit):
             "}"
             f"QPlainTextEdit#{self.objectName()} QScrollBar:vertical {{"
             " background:transparent;"
-            " width:6px;"
+            " width:8px;"
             " margin:0px;"
             " border:none;"
             "}"
             f"QPlainTextEdit#{self.objectName()} QScrollBar:horizontal {{"
             " background:transparent;"
-            " height:6px;"
+            " height:8px;"
             " margin:0px;"
             " border:none;"
             "}"
             f"QPlainTextEdit#{self.objectName()} QScrollBar::handle:vertical,"
             f"QPlainTextEdit#{self.objectName()} QScrollBar::handle:horizontal {{"
-            " background:transparent;"
+            f" background:{scrollbar_idle_color};"
             " min-height:24px;"
             " min-width:24px;"
             " border-radius:3px;"
@@ -2529,7 +2687,7 @@ class CodeViewer(QPlainTextEdit):
             f"QPlainTextEdit#{self.objectName()} QScrollBar::add-page:horizontal,"
             f"QPlainTextEdit#{self.objectName()} QScrollBar::sub-page:horizontal {{"
             " background:transparent;"
-            "}"
+                "}"
         )
 
     def mousePressEvent(self, ev):  # noqa: N802
@@ -2539,11 +2697,17 @@ class CodeViewer(QPlainTextEdit):
 
     def eventFilter(self, obj, ev):  # noqa: N802
         if obj is self.viewport() and ev.type() == QEvent.Wheel:
+            if not self._auto_fit:
+                return False
             self.wheelEvent(ev)
             return bool(ev.isAccepted())
         return super().eventFilter(obj, ev)
 
     def wheelEvent(self, ev: QWheelEvent) -> None:
+        if not self._auto_fit:
+            super().wheelEvent(ev)
+            return
+
         angle_delta = ev.angleDelta()
         pixel_delta = ev.pixelDelta()
         delta_y = angle_delta.y() if angle_delta.y() else pixel_delta.y()
@@ -3355,6 +3519,9 @@ from PySide6.QtCore import (
 class ControlPlaneWidget(QWidget):
     snapshotChanged = Signal(dict)
     _OPERATOR_FILTER_SETTINGS_PREFIX = "ControlPlane/OperatorFilters"
+    _RUNTIME_LAYOUT_SETTINGS_PATH_KEY = "controlPlaneRuntimeLayoutPath"
+    _RUNTIME_LAYOUT_DEFAULT_REL_PATH = "AppData/control_plane_runtime_tabs.json"
+    _RUNTIME_LAYOUT_SCHEMA = 1
 
     def __init__(self, accent: dict[str, str], base: dict[str, str], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -3366,6 +3533,16 @@ class ControlPlaneWidget(QWidget):
         self._operator_log_entries: list[dict[str, Any] | str] = []
         self._operator_filter_preferences = self._load_operator_filter_preferences()
         self._agent_rows_by_label: dict[str, dict[str, Any]] = {}
+        self._runtime_tab_counter = 0
+        self._runtime_tab_records: dict[QWidget, dict[str, Any]] = {}
+        self._builder_runtime_tab: QWidget | None = None
+        self._runtime_restore_active = False
+        self._runtime_state_last_saved_payload = ""
+        self._runtime_layout_path = self._resolve_runtime_layout_path()
+        self._runtime_state_save_timer = QTimer(self)
+        self._runtime_state_save_timer.setSingleShot(True)
+        self._runtime_state_save_timer.setInterval(900)
+        self._runtime_state_save_timer.timeout.connect(self.persist_runtime_tabs_state)
         self._build_ui()
         self.update_scheme(accent, base)
 
@@ -3417,6 +3594,437 @@ class ControlPlaneWidget(QWidget):
         self._operator_filter_preferences = self._current_operator_filter_preferences()
         self._save_operator_filter_preferences()
         self._render_operator_log()
+
+    def _runtime_layout_root(self) -> Path:
+        try:
+            return Path(__file__).resolve().parents[2]
+        except Exception:
+            return Path.cwd()
+
+    def _resolve_runtime_layout_path(self, configured_path: str | None = None) -> Path:
+        raw_path = configured_path
+        if raw_path is None:
+            settings = self._control_plane_settings()
+            raw_path = str(
+                settings.value(
+                    self._RUNTIME_LAYOUT_SETTINGS_PATH_KEY,
+                    self._RUNTIME_LAYOUT_DEFAULT_REL_PATH,
+                )
+                or self._RUNTIME_LAYOUT_DEFAULT_REL_PATH
+            )
+
+        candidate = Path(str(raw_path or self._RUNTIME_LAYOUT_DEFAULT_REL_PATH).strip()).expanduser()
+        if not candidate.is_absolute():
+            candidate = self._runtime_layout_root() / candidate
+        return candidate
+
+    def runtime_layout_path(self) -> str:
+        return str(self._runtime_layout_path)
+
+    def set_runtime_layout_path(self, layout_path: str) -> str:
+        self._runtime_layout_path = self._resolve_runtime_layout_path(layout_path)
+        self._runtime_state_last_saved_payload = ""
+        settings = self._control_plane_settings()
+        settings.setValue(self._RUNTIME_LAYOUT_SETTINGS_PATH_KEY, str(self._runtime_layout_path))
+        try:
+            settings.sync()
+        except Exception:
+            pass
+        self._restore_runtime_tabs_state()
+        self._ensure_builder_runtime_tab(activate=False, persist=False)
+        self._update_runtime_layout_hint()
+        self._update_code_tab_button_visibility(self.tabs.currentIndex())
+        return str(self._runtime_layout_path)
+
+    def _update_runtime_layout_hint(self) -> None:
+        hint_label = getattr(self, "_runtime_hint_label", None)
+        if hint_label is None:
+            return
+        path_name = self._runtime_layout_path.name or str(self._runtime_layout_path)
+        hint_label.setText(f"Runtime layout: {path_name}")
+
+    def _select_runtime_layout_path(self) -> None:
+        start_path = str(self._runtime_layout_path)
+        selected_path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Runtime-Layout-Datei wählen",
+            start_path,
+            "JSON (*.json);;All files (*)",
+        )
+        if not selected_path:
+            return
+        resolved = self.set_runtime_layout_path(selected_path)
+        try:
+            window = self.window()
+            status_getter = getattr(window, "statusBar", None)
+            if callable(status_getter):
+                status_bar = status_getter()
+                if status_bar is not None:
+                    status_bar.showMessage(f"Runtime-Layout Pfad gesetzt: {resolved}", 3500)
+        except Exception:
+            pass
+
+    def _reload_runtime_layout_from_path(self) -> None:
+        self._restore_runtime_tabs_state()
+        self._ensure_builder_runtime_tab(activate=False, persist=False)
+        self._update_runtime_layout_hint()
+        self._update_code_tab_button_visibility(self.tabs.currentIndex())
+        try:
+            window = self.window()
+            status_getter = getattr(window, "statusBar", None)
+            if callable(status_getter):
+                status_bar = status_getter()
+                if status_bar is not None:
+                    status_bar.showMessage(f"Runtime-Layout neu geladen: {self._runtime_layout_path}", 3200)
+        except Exception:
+            pass
+
+    def _resolve_runtime_source_path(self, source_path: str) -> Path:
+        candidate = Path(str(source_path or "").strip()).expanduser()
+        if candidate.is_absolute():
+            return candidate
+        return self._runtime_layout_path.parent / candidate
+
+    def _read_runtime_source_text(self, source_path: str) -> str | None:
+        source = str(source_path or "").strip()
+        if not source:
+            return None
+        try:
+            resolved = self._resolve_runtime_source_path(source)
+            if not resolved.is_file():
+                return None
+            return resolved.read_text(encoding="utf-8")
+        except Exception:
+            return None
+
+    def _runtime_widget_editor(self, panel: QWidget) -> QPlainTextEdit | None:
+        code_editor = panel.findChild(CodeViewer)
+        if isinstance(code_editor, CodeViewer):
+            return code_editor
+        text_editor = panel.findChild(QPlainTextEdit)
+        if isinstance(text_editor, QPlainTextEdit):
+            return text_editor
+        return None
+
+    def _runtime_widget_language(self, panel: QWidget) -> str:
+        widget_kind = str(panel.property("runtime_widget_kind") or "code_json").strip().lower()
+        if widget_kind == "code_yaml":
+            return "yaml"
+        if widget_kind == "code_python":
+            return "python"
+        if widget_kind == "text_view":
+            return "text"
+        return "json"
+
+    def _normalize_runtime_source_path_for_storage(self, file_path: str) -> str:
+        candidate = Path(str(file_path or "").strip()).expanduser()
+        if not candidate:
+            return ""
+        try:
+            resolved_path = candidate.resolve()
+        except Exception:
+            resolved_path = candidate
+
+        try:
+            base_dir = self._runtime_layout_path.parent.resolve()
+            relative = resolved_path.relative_to(base_dir)
+            return str(relative)
+        except Exception:
+            return str(resolved_path)
+
+    def _import_runtime_widget_content(self, panel: QWidget) -> None:
+        editor = self._runtime_widget_editor(panel)
+        if editor is None:
+            QMessageBox.information(self, "Info", "Dieses Widget unterstützt keinen Datei-Import.")
+            return
+
+        source_hint = str(panel.property("runtime_source_path") or "").strip()
+        start_path = self._resolve_runtime_source_path(source_hint) if source_hint else self._runtime_layout_path.parent
+
+        file_filter = "Text files (*.txt *.md *.json *.yaml *.yml *.py *.toml *.ini *.cfg *.log);;All files (*)"
+        selected_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Widget-Inhalt importieren",
+            str(start_path),
+            file_filter,
+        )
+        if not selected_path:
+            return
+
+        try:
+            imported_text = Path(selected_path).read_text(encoding="utf-8", errors="replace")
+        except Exception as exc:
+            QMessageBox.warning(self, "Fehler", f"Datei konnte nicht importiert werden: {exc}")
+            return
+
+        editor.setPlainText(imported_text)
+        stored_source_path = self._normalize_runtime_source_path_for_storage(selected_path)
+        panel.setProperty("runtime_source_path", stored_source_path)
+        editor.setProperty("runtime_source_path", stored_source_path)
+        self._schedule_runtime_state_save()
+
+        try:
+            window = self.window()
+            status_getter = getattr(window, "statusBar", None)
+            if callable(status_getter):
+                status_bar = status_getter()
+                if status_bar is not None:
+                    status_bar.showMessage(f"Widget importiert: {Path(selected_path).name}", 3200)
+        except Exception:
+            pass
+
+    def _export_runtime_widget_to_chat_context(
+        self,
+        panel: QWidget,
+    ) -> None:
+        editor = self._runtime_widget_editor(panel)
+        if editor is None:
+            QMessageBox.information(self, "Info", "Dieses Widget unterstützt keinen Export in den Chat-Kontext.")
+            return
+
+        title = str(panel.property("runtime_widget_title") or "Runtime Widget").strip() or "Runtime Widget"
+        source_path = str(panel.property("runtime_source_path") or "").strip()
+        language = self._runtime_widget_language(panel)
+
+        content_text = editor.toPlainText().strip("\n")
+        if not content_text.strip():
+            QMessageBox.information(self, "Info", "Widget enthält keinen Inhalt zum Anhängen.")
+            return
+
+        ai_widget = self._resolve_ai_widget()
+        attach_callable = getattr(ai_widget, "attach_runtime_context", None) if ai_widget is not None else None
+        if callable(attach_callable):
+            attached = bool(
+                attach_callable(
+                    title=title,
+                    language=language,
+                    content=content_text,
+                    source_path=source_path,
+                )
+            )
+            if attached:
+                return
+
+        QMessageBox.information(
+            self,
+            "Info",
+            "Chat-Kontext nicht verfügbar. Bitte AI-Chat öffnen und erneut versuchen.",
+        )
+
+    def _collect_runtime_widget_text(self, panel: QWidget) -> str:
+        code_editor = panel.findChild(CodeViewer)
+        if isinstance(code_editor, CodeViewer):
+            return code_editor.toPlainText()
+        text_editor = panel.findChild(QPlainTextEdit)
+        if isinstance(text_editor, QPlainTextEdit):
+            return text_editor.toPlainText()
+        return ""
+
+    def _serialize_runtime_widget_panel(self, panel: QWidget) -> dict[str, Any]:
+        widget_kind = str(panel.property("runtime_widget_kind") or "code_json")
+        title = str(panel.property("runtime_widget_title") or "runtime_widget")
+        source_path = str(panel.property("runtime_source_path") or "").strip()
+        content = self._collect_runtime_widget_text(panel)
+
+        payload: dict[str, Any] = {
+            "kind": widget_kind,
+            "title": title,
+        }
+        if source_path:
+            payload["source_path"] = source_path
+            if self._read_runtime_source_text(source_path) is None and content:
+                payload["content"] = content
+        else:
+            payload["content"] = content
+        return payload
+
+    def _serialize_runtime_tabs_state(self) -> dict[str, Any]:
+        serialized_tabs: list[dict[str, Any]] = []
+        active_runtime_tab = ""
+
+        for index in range(self.tabs.count()):
+            tab_widget = self.tabs.widget(index)
+            if tab_widget not in self._runtime_tab_records:
+                continue
+
+            record = self._runtime_tab_records.get(tab_widget) or {}
+            splitter = record.get("splitter")
+            default_widget_kind = self._runtime_tab_default_widget_kind(tab_widget)
+
+            widget_payloads: list[dict[str, Any]] = []
+            if isinstance(splitter, QSplitter):
+                for widget_index in range(splitter.count()):
+                    panel = splitter.widget(widget_index)
+                    if isinstance(panel, QWidget) and panel.objectName() == "runtimeWidgetPanel":
+                        widget_payloads.append(self._serialize_runtime_widget_panel(panel))
+
+            serialized_tabs.append(
+                {
+                    "name": self.tabs.tabText(index),
+                    "default_widget_kind": default_widget_kind,
+                    "widgets": widget_payloads,
+                }
+            )
+
+            role_value = str(tab_widget.property("runtime_role") or "").strip()
+            if role_value:
+                serialized_tabs[-1]["role"] = role_value
+
+            if self.tabs.currentWidget() is tab_widget:
+                active_runtime_tab = self.tabs.tabText(index)
+
+        return {
+            "schema": self._RUNTIME_LAYOUT_SCHEMA,
+            "tabs": serialized_tabs,
+            "active_runtime_tab": active_runtime_tab,
+        }
+
+    def _schedule_runtime_state_save(self) -> None:
+        if self._runtime_restore_active:
+            return
+        if isinstance(getattr(self, "_runtime_state_save_timer", None), QTimer):
+            self._runtime_state_save_timer.start()
+
+    def persist_runtime_tabs_state(self, *, force: bool = False) -> Path | None:
+        if self._runtime_restore_active and not force:
+            return None
+
+        payload = self._serialize_runtime_tabs_state()
+        serialized_payload = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        if not force and serialized_payload == self._runtime_state_last_saved_payload:
+            return self._runtime_layout_path
+
+        try:
+            self._runtime_layout_path.parent.mkdir(parents=True, exist_ok=True)
+            if not force and self._runtime_layout_path.exists():
+                existing_payload = self._runtime_layout_path.read_text(encoding="utf-8")
+                if existing_payload == serialized_payload:
+                    self._runtime_state_last_saved_payload = serialized_payload
+                    return self._runtime_layout_path
+
+            temp_path = self._runtime_layout_path.with_suffix(self._runtime_layout_path.suffix + ".tmp")
+            temp_path.write_text(serialized_payload, encoding="utf-8")
+            temp_path.replace(self._runtime_layout_path)
+            self._runtime_state_last_saved_payload = serialized_payload
+        except Exception:
+            return None
+
+        settings = self._control_plane_settings()
+        settings.setValue(self._RUNTIME_LAYOUT_SETTINGS_PATH_KEY, str(self._runtime_layout_path))
+        try:
+            settings.sync()
+        except Exception:
+            pass
+        return self._runtime_layout_path
+
+    def _clear_runtime_tabs(self) -> None:
+        runtime_tabs = [
+            self.tabs.widget(index)
+            for index in range(self.tabs.count())
+            if self.tabs.widget(index) in self._runtime_tab_records
+        ]
+        for tab_widget in runtime_tabs:
+            if tab_widget is self._builder_runtime_tab:
+                self._builder_runtime_tab = None
+            self._dispose_runtime_tab(tab_widget, persist=False)
+
+    def _restore_runtime_tabs_state(self) -> None:
+        path = self._runtime_layout_path
+        if not path.exists():
+            self._runtime_state_last_saved_payload = json.dumps(
+                self._serialize_runtime_tabs_state(),
+                ensure_ascii=False,
+                indent=2,
+                sort_keys=True,
+            )
+            return
+
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return
+        if not isinstance(payload, dict):
+            return
+
+        tabs_payload = payload.get("tabs")
+        if not isinstance(tabs_payload, list):
+            return
+
+        self._runtime_restore_active = True
+        try:
+            self._clear_runtime_tabs()
+
+            for tab_entry in tabs_payload:
+                if not isinstance(tab_entry, dict):
+                    continue
+
+                tab_name = str(tab_entry.get("name") or "").strip() or f"Runtime {self._runtime_tab_counter + 1}"
+                tab_widget = self.create_runtime_tab(
+                    tab_name,
+                    activate=False,
+                    add_default_widget=False,
+                    persist=False,
+                )
+
+                role_value = str(tab_entry.get("role") or "").strip().lower()
+                if role_value:
+                    tab_widget.setProperty("runtime_role", role_value)
+                    if role_value == "builder":
+                        self._builder_runtime_tab = tab_widget
+
+                record = self._runtime_tab_records.get(tab_widget) or {}
+                default_widget_kind = str(tab_entry.get("default_widget_kind") or "code_json")
+                self._set_runtime_tab_default_widget_kind(
+                    tab_widget,
+                    default_widget_kind,
+                    persist=False,
+                )
+
+                restored_any = False
+                widget_entries = tab_entry.get("widgets")
+                if isinstance(widget_entries, list):
+                    for widget_entry in widget_entries:
+                        if not isinstance(widget_entry, dict):
+                            continue
+                        widget_kind = str(widget_entry.get("kind") or "code_json")
+                        widget_title = str(widget_entry.get("title") or "").strip() or None
+                        widget_content = str(widget_entry.get("content") or "")
+                        widget_source_path = str(widget_entry.get("source_path") or "")
+                        self._add_widget_to_runtime_tab(
+                            tab_widget,
+                            widget_kind=widget_kind,
+                            title=widget_title,
+                            content=widget_content,
+                            source_path=widget_source_path,
+                            persist=False,
+                        )
+                        restored_any = True
+
+                if not restored_any:
+                    self._add_widget_to_runtime_tab(
+                        tab_widget,
+                        widget_kind=default_widget_kind,
+                        persist=False,
+                    )
+
+            active_name = str(payload.get("active_runtime_tab") or "").strip().lower()
+            if active_name:
+                for index in range(self.tabs.count()):
+                    tab_widget = self.tabs.widget(index)
+                    if tab_widget in self._runtime_tab_records and self.tabs.tabText(index).strip().lower() == active_name:
+                        self.tabs.setCurrentIndex(index)
+                        break
+        finally:
+            self._runtime_restore_active = False
+
+        self._runtime_tab_counter = max(self._runtime_tab_counter, len(self._runtime_tab_records))
+        self._ensure_builder_runtime_tab(activate=False, persist=False)
+        self._runtime_state_last_saved_payload = json.dumps(
+            self._serialize_runtime_tabs_state(),
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -3476,6 +4084,30 @@ class ControlPlaneWidget(QWidget):
         )
         header_row.addWidget(self.btn_refresh, 0, Qt.AlignTop)
 
+        self.btn_add_runtime_tab = ToolButton(
+            "add_tab_dock.svg",
+            "Neuen Runtime-Tab anlegen",
+            slot=self._open_new_runtime_tab,
+            parent=hero,
+        )
+        header_row.addWidget(self.btn_add_runtime_tab, 0, Qt.AlignTop)
+
+        self.btn_select_runtime_layout = ToolButton(
+            "open_file.svg",
+            "Runtime-Layout Pfad wählen",
+            slot=self._select_runtime_layout_path,
+            parent=hero,
+        )
+        header_row.addWidget(self.btn_select_runtime_layout, 0, Qt.AlignTop)
+
+        self.btn_reload_runtime_layout = ToolButton(
+            "reload_.svg",
+            "Runtime-Layout neu laden",
+            slot=self._reload_runtime_layout_from_path,
+            parent=hero,
+        )
+        header_row.addWidget(self.btn_reload_runtime_layout, 0, Qt.AlignTop)
+
         hero_layout.addLayout(header_row)
 
         metrics_row = QHBoxLayout()
@@ -3526,23 +4158,7 @@ class ControlPlaneWidget(QWidget):
         self.config_splitter.setSizes([140, 280])
         self.config_splitter.setStretchFactor(0, 1)
         self.config_splitter.setStretchFactor(1, 2)
-
-        self.config_builder_container = QFrame(config_tab)
-        self.config_builder_container.setObjectName("controlBuilderContainer")
-        self.config_builder_container.setMinimumSize(0, 0)
-        self.config_builder_container.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
-        self.config_builder_layout = QVBoxLayout(self.config_builder_container)
-        self.config_builder_layout.setContentsMargins(0, 0, 0, 0)
-        self.config_builder_layout.setSpacing(0)
-        self._config_builder_panel: QWidget | None = None
-
-        self.config_root_splitter = self._create_viewport_splitter(config_tab)
-        self.config_root_splitter.addWidget(self.config_splitter)
-        self.config_root_splitter.addWidget(self.config_builder_container)
-        self.config_root_splitter.setSizes([1, 0])
-        self.config_root_splitter.setStretchFactor(0, 3)
-        self.config_root_splitter.setStretchFactor(1, 2)
-        config_layout.addWidget(self.config_root_splitter, 1)
+        config_layout.addWidget(self.config_splitter, 1)
 
         monitor_tab = QWidget(self.tabs)
         monitor_tab.setMinimumSize(0, 0)
@@ -3790,6 +4406,33 @@ class ControlPlaneWidget(QWidget):
         self.tabs.addTab(config_tab, "Configuration")
         self.tabs.addTab(monitor_tab, "Monitoring")
         self.tabs.addTab(operations_tab, "Operations")
+
+        self._code_tab_new_button = QToolButton(self.tabs.tabBar())
+        self._code_tab_new_button.setObjectName("controlCodeTabNewButton")
+        self._code_tab_new_button.setIcon(_icon("add_tab_dock.svg"))
+        self._code_tab_new_button.setIconSize(QSize(12, 12))
+        self._code_tab_new_button.setToolTip("Neuen Code-Tab öffnen")
+        self._code_tab_new_button.setCursor(Qt.PointingHandCursor)
+        self._code_tab_new_button.setAutoRaise(True)
+        self._code_tab_new_button.setStyleSheet(
+            """
+            QToolButton#controlCodeTabNewButton {
+                border: none;
+                padding: 0px;
+                margin-left: 4px;
+                background: transparent;
+            }
+            QToolButton#controlCodeTabNewButton:hover {
+                background: rgba(255, 255, 255, 0.10);
+                border-radius: 4px;
+            }
+            """
+        )
+        self._code_tab_new_button.clicked.connect(self._open_new_code_tab_from_plane)
+        self._code_tab_index = -1
+        self.tabs.currentChanged.connect(self._update_code_tab_button_visibility)
+        self._update_code_tab_button_visibility(self.tabs.currentIndex())
+
         self.primary_splitter.addWidget(self.tabs)
         self.primary_splitter.addWidget(hero)
         self.primary_splitter.setSizes([560, 170])
@@ -3797,8 +4440,652 @@ class ControlPlaneWidget(QWidget):
         self.primary_splitter.setStretchFactor(1, 1)
         root.addWidget(self.primary_splitter, 1)
         self._render_operator_log()
-        self._open_agent_system_builder_in_configuration_tab()
+        self._update_runtime_layout_hint()
+        self._restore_runtime_tabs_state()
+        self._ensure_builder_runtime_tab(activate=False, persist=False)
         self._set_config_builder_visible(False)
+
+    def _resolve_main_editor_window(self) -> QWidget | None:
+        candidate = self.window()
+        if callable(getattr(candidate, "_file_new_code_viewer_tab", None)):
+            return candidate
+
+        current = self.parentWidget()
+        while current is not None:
+            if callable(getattr(current, "_file_new_code_viewer_tab", None)):
+                return current
+            current = current.parentWidget()
+
+        for top_level in QApplication.topLevelWidgets():
+            if callable(getattr(top_level, "_file_new_code_viewer_tab", None)):
+                return top_level
+        return None
+
+    def _open_new_code_tab_from_plane(self) -> None:
+        window = self._resolve_main_editor_window()
+        opener = getattr(window, "_file_new_code_viewer_tab", None) if window is not None else None
+        if callable(opener):
+            try:
+                opener()
+            except Exception as exc:
+                QMessageBox.warning(self, "Fehler", f"Code-Tab konnte nicht geöffnet werden: {exc}")
+            return
+        QMessageBox.information(self, "Info", "Kein Tab-Dock verfügbar, um einen Code-Tab zu öffnen.")
+
+    def _update_code_tab_button_visibility(self, current_index: int) -> None:
+        if not hasattr(self, "tabs"):
+            return
+        button = getattr(self, "_code_tab_new_button", None)
+        if button is None:
+            return
+        self._refresh_code_tab_button_target()
+        code_index = int(getattr(self, "_code_tab_index", -1))
+        if code_index < 0:
+            button.hide()
+            return
+
+        tab_bar = self.tabs.tabBar()
+        if tab_bar.tabButton(code_index, QTabBar.RightSide) is not button:
+            tab_bar.setTabButton(code_index, QTabBar.RightSide, button)
+
+        is_active = current_index == code_index
+        button.setVisible(is_active)
+        button.setEnabled(is_active)
+
+    def _refresh_code_tab_button_target(self) -> int:
+        button = getattr(self, "_code_tab_new_button", None)
+        if button is None:
+            self._code_tab_index = -1
+            return -1
+
+        builder_tab = getattr(self, "_builder_runtime_tab", None)
+        if builder_tab not in self._runtime_tab_records:
+            builder_tab = None
+            for i in range(self.tabs.count()):
+                candidate = self.tabs.widget(i)
+                if candidate not in self._runtime_tab_records:
+                    continue
+                role = str(candidate.property("runtime_role") or "").strip().lower()
+                if role == "builder" or self.tabs.tabText(i).strip().lower() == "builder":
+                    builder_tab = candidate
+                    break
+            self._builder_runtime_tab = builder_tab
+
+        code_index = self.tabs.indexOf(builder_tab) if builder_tab is not None else -1
+        self._code_tab_index = code_index
+
+        if code_index >= 0:
+            tab_bar = self.tabs.tabBar()
+            if tab_bar.tabButton(code_index, QTabBar.RightSide) is not button:
+                tab_bar.setTabButton(code_index, QTabBar.RightSide, button)
+        return code_index
+
+    def _find_runtime_tab_by_name(self, tab_name: str) -> QWidget | None:
+        normalized = str(tab_name or "").strip().lower()
+        if not normalized:
+            return None
+        for i in range(self.tabs.count()):
+            candidate = self.tabs.widget(i)
+            if candidate in self._runtime_tab_records and self.tabs.tabText(i).strip().lower() == normalized:
+                return candidate
+        return None
+
+    def _ensure_builder_runtime_tab(self, *, activate: bool = False, persist: bool = False) -> QWidget:
+        builder_tab = getattr(self, "_builder_runtime_tab", None)
+        if builder_tab not in self._runtime_tab_records:
+            builder_tab = None
+
+        if builder_tab is None:
+            for i in range(self.tabs.count()):
+                candidate = self.tabs.widget(i)
+                if candidate not in self._runtime_tab_records:
+                    continue
+                role = str(candidate.property("runtime_role") or "").strip().lower()
+                if role == "builder":
+                    builder_tab = candidate
+                    break
+
+        if builder_tab is None:
+            by_name = self._find_runtime_tab_by_name("Builder")
+            if by_name is not None:
+                builder_tab = by_name
+
+        if builder_tab is None:
+            builder_tab = self.create_runtime_tab(
+                "Builder",
+                activate=activate,
+                add_default_widget=False,
+                persist=persist,
+            )
+
+        builder_tab.setProperty("runtime_role", "builder")
+        self._builder_runtime_tab = builder_tab
+
+        has_builder_widget = False
+        record = self._runtime_tab_records.get(builder_tab) or {}
+        splitter = record.get("splitter")
+        if isinstance(splitter, QSplitter):
+            for idx in range(splitter.count()):
+                panel = splitter.widget(idx)
+                if isinstance(panel, QWidget) and str(panel.property("runtime_widget_kind") or "").strip().lower() == "builder_panel":
+                    has_builder_widget = True
+                    break
+
+        if not has_builder_widget:
+            self._add_widget_to_runtime_tab(
+                builder_tab,
+                widget_kind="builder_panel",
+                title="Agent System Builder",
+                persist=persist,
+            )
+
+        if activate:
+            self.tabs.setCurrentWidget(builder_tab)
+
+        self._refresh_code_tab_button_target()
+        return builder_tab
+
+    def _open_new_runtime_tab(self) -> None:
+        default_name = f"Runtime {self._runtime_tab_counter + 1}"
+        tab_name, ok = QInputDialog.getText(
+            self,
+            "Neuer Runtime-Tab",
+            "Tab-Name:",
+            text=default_name,
+        )
+        if not ok:
+            return
+        self.create_runtime_tab(tab_name.strip() or default_name, activate=True)
+
+    def _next_runtime_tab_name(self, requested_name: str) -> str:
+        base_name = str(requested_name or "").strip() or f"Runtime {self._runtime_tab_counter + 1}"
+        existing = {self.tabs.tabText(i).strip().lower() for i in range(self.tabs.count())}
+        if base_name.lower() not in existing:
+            return base_name
+
+        suffix = 2
+        while f"{base_name} {suffix}".lower() in existing:
+            suffix += 1
+        return f"{base_name} {suffix}"
+
+    def _runtime_widget_kind_for_language(self, language: str) -> str:
+        normalized = str(language or "").strip().lower()
+        if normalized in {"yaml", "yml"}:
+            return "code_yaml"
+        if normalized in {"python", "py"}:
+            return "code_python"
+        return "code_json"
+
+    def _runtime_widget_menu_options(self) -> list[tuple[str, str]]:
+        return [
+            ("Builder", "builder_panel"),
+            ("Json", "code_json"),
+            ("Yaml", "code_yaml"),
+            ("Python", "code_python"),
+            ("Text", "text_view"),
+        ]
+
+    def _runtime_widget_label_for_kind(self, widget_kind: str) -> str:
+        target = str(widget_kind or "code_json").strip().lower()
+        for label, kind in self._runtime_widget_menu_options():
+            if kind == target:
+                return label
+        return "Json"
+
+    def _runtime_tab_default_widget_kind(self, tab_widget: QWidget) -> str:
+        record = self._runtime_tab_records.get(tab_widget) or {}
+        resolved_kind = str(record.get("default_widget_kind") or "code_json").strip().lower()
+        allowed = {kind for _label, kind in self._runtime_widget_menu_options()}
+        if resolved_kind not in allowed:
+            return "code_json"
+        return resolved_kind
+
+    def _set_runtime_tab_default_widget_kind(
+        self,
+        tab_widget: QWidget,
+        widget_kind: str,
+        *,
+        persist: bool = False,
+    ) -> None:
+        record = self._runtime_tab_records.get(tab_widget)
+        if not isinstance(record, dict):
+            return
+
+        allowed = {kind for _label, kind in self._runtime_widget_menu_options()}
+        resolved_kind = str(widget_kind or "code_json").strip().lower()
+        if resolved_kind not in allowed:
+            resolved_kind = "code_json"
+        record["default_widget_kind"] = resolved_kind
+
+        selector_actions = record.get("selector_actions")
+        if isinstance(selector_actions, dict):
+            for action_kind, action in selector_actions.items():
+                if isinstance(action, QAction):
+                    action.setChecked(str(action_kind) == resolved_kind)
+
+        selector_button = record.get("selector")
+        if isinstance(selector_button, (QPushButton, QToolButton)):
+            label = self._runtime_widget_label_for_kind(resolved_kind)
+            selector_button.setText(label)
+            selector_button.setToolTip(f"Viewer-Auswahl (aktuell: {label})")
+            if isinstance(selector_button, QToolButton):
+                metrics = QFontMetrics(selector_button.font())
+                selector_button.setFixedHeight(21)
+                selector_button.setMinimumWidth(max(46, metrics.horizontalAdvance(label) + 14))
+
+        if persist:
+            self._schedule_runtime_state_save()
+
+    def _select_runtime_widget_kind_from_menu(self, tab_widget: QWidget, action: QAction | None) -> None:
+        selected_kind = str(action.data() if action is not None else "").strip().lower()
+        self._set_runtime_tab_default_widget_kind(tab_widget, selected_kind, persist=True)
+
+    def _runtime_widget_template(self, widget_kind: str) -> tuple[str, str]:
+        kind = str(widget_kind or "code_json").strip().lower()
+        if kind == "builder_panel":
+            template = self._build_agent_system_template("agent_system", "/create agents")
+            return "json", json.dumps(template, ensure_ascii=False, indent=2)
+        if kind == "code_yaml":
+            return "yaml", "runtime:\n  agents: []\n  workflows: []\n"
+        if kind == "code_python":
+            return "python", "runtime_config = {\n    \"agents\": [],\n    \"workflows\": [],\n}\n"
+        if kind == "text_view":
+            return "text", "Runtime notes\n"
+        return "json", "{\n  \"runtime\": {\n    \"agents\": [],\n    \"workflows\": []\n  }\n}\n"
+
+    def _remove_runtime_widget_panel(self, panel: QWidget) -> None:
+        if panel is None:
+            return
+        panel.setParent(None)
+        panel.deleteLater()
+        self._schedule_runtime_state_save()
+
+    def _create_runtime_widget_panel(
+        self,
+        *,
+        tab_widget: QWidget,
+        widget_kind: str,
+        title: str,
+        content: str = "",
+        source_path: str = "",
+    ) -> QWidget:
+        panel = QFrame(tab_widget)
+        panel.setObjectName("runtimeWidgetPanel")
+        panel.setStyleSheet(
+            f"""
+            QFrame#runtimeWidgetPanel {{
+                background: {self.scheme['col5']};
+                border: 1px solid {self.scheme['col10']};
+                border-radius: 10px;
+            }}
+            QLabel#runtimeWidgetTitle {{
+                color: {self.scheme['col6']};
+                font-weight: 600;
+            }}
+            QToolButton#runtimeWidgetActionButton {{
+                border: none;
+                background: transparent;
+                padding: 0px;
+            }}
+            QToolButton#runtimeWidgetActionButton:hover {{
+                background: rgba(255, 255, 255, 0.10);
+                border-radius: 4px;
+            }}
+            QToolButton#runtimeWidgetRemoveButton {{
+                border: none;
+                background: transparent;
+                padding: 0px;
+            }}
+            QToolButton#runtimeWidgetRemoveButton:hover {{
+                background: rgba(255, 255, 255, 0.10);
+                border-radius: 4px;
+            }}
+            """
+        )
+
+        root = QVBoxLayout(panel)
+        root.setContentsMargins(8, 8, 8, 8)
+        root.setSpacing(6)
+
+        header = QHBoxLayout()
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(6)
+        title_label = QLabel(title, panel)
+        title_label.setObjectName("runtimeWidgetTitle")
+        header.addWidget(title_label, 1)
+
+        remove_btn = QToolButton(panel)
+        remove_btn.setObjectName("runtimeWidgetRemoveButton")
+        remove_btn.setIcon(_icon("close.svg"))
+        remove_btn.setIconSize(QSize(14, 14))
+        remove_btn.setToolTip("Widget entfernen")
+        remove_btn.clicked.connect(lambda _checked=False, p=panel: self._remove_runtime_widget_panel(p))
+        header.addWidget(remove_btn, 0)
+
+        def _add_runtime_header_action(icon_name: str, tooltip: str, slot_callable) -> None:
+            action_btn = QToolButton(panel)
+            action_btn.setObjectName("runtimeWidgetActionButton")
+            action_btn.setIcon(_icon(icon_name))
+            action_btn.setIconSize(QSize(14, 14))
+            action_btn.setToolTip(tooltip)
+            action_btn.setCursor(Qt.PointingHandCursor)
+            action_btn.setAutoRaise(True)
+            action_btn.clicked.connect(slot_callable)
+            header.insertWidget(max(0, header.count() - 1), action_btn, 0)
+
+        _add_runtime_header_action(
+            "open_file.svg",
+            "Datei in Widget importieren",
+            lambda _checked=False, p=panel: self._import_runtime_widget_content(p),
+        )
+        _add_runtime_header_action(
+            "file_export_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg",
+            "An Chat anhängen",
+            lambda _checked=False, p=panel: self._export_runtime_widget_to_chat_context(p),
+        )
+
+        root.addLayout(header)
+
+        kind = str(widget_kind or "code_json").strip().lower()
+        language, default_text = self._runtime_widget_template(kind)
+        resolved_source_path = str(source_path or "").strip()
+        path_text = self._read_runtime_source_text(resolved_source_path)
+        resolved_text = path_text if path_text is not None else (content or default_text)
+
+        panel.setProperty("runtime_widget_kind", kind)
+        panel.setProperty("runtime_widget_title", str(title))
+        panel.setProperty("runtime_source_path", resolved_source_path)
+
+        if kind == "builder_panel":
+            builder_panel = self._create_agent_system_builder_config_panel(
+                initial_payload=self._build_agent_system_template("agent_system", "/create agents"),
+                build_handler=self._execute_agent_system_builder_payload,
+                parent_container=panel,
+                show_toolbar=False,
+            )
+
+            internal_template_btn = builder_panel.findChild(QPushButton, "builderTemplateButton")
+            internal_build_btn = builder_panel.findChild(QPushButton, "builderBuildButton")
+            internal_post_btn = builder_panel.findChild(QPushButton, "builderPostButton")
+            internal_copy_btn = builder_panel.findChild(QPushButton, "builderCopyButton")
+
+            def _add_builder_header_action(icon_name: str, tooltip: str, target_btn: QPushButton | None) -> None:
+                if target_btn is None:
+                    return
+                action_btn = QToolButton(panel)
+                action_btn.setObjectName("runtimeWidgetActionButton")
+                action_btn.setIcon(_icon(icon_name))
+                action_btn.setIconSize(QSize(14, 14))
+                action_btn.setToolTip(tooltip)
+                action_btn.setCursor(Qt.PointingHandCursor)
+                action_btn.setAutoRaise(True)
+                action_btn.clicked.connect(lambda _checked=False, button=target_btn: button.click())
+                header.insertWidget(max(0, header.count() - 1), action_btn, 0)
+
+            _add_builder_header_action("open_file.svg", "Template laden", internal_template_btn)
+            _add_builder_header_action("deployed_code.svg", "Sync Build starten", internal_build_btn)
+            _add_builder_header_action("send.svg", "Ergebnis ins Operations-Log schreiben", internal_post_btn)
+            _add_builder_header_action("file_export_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg", "JSON exportieren", internal_copy_btn)
+
+            builder_editor = builder_panel.findChild(CodeViewer)
+            if isinstance(builder_editor, CodeViewer):
+                builder_editor.setPlainText(resolved_text)
+                builder_editor.setMinimumHeight(96)
+                builder_editor.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+                builder_editor.textChanged.connect(self._schedule_runtime_state_save)
+            root.addWidget(builder_panel, 1)
+        elif kind.startswith("code_"):
+            editor = CodeViewer(
+                resolved_text,
+                panel,
+                language=language,
+                editable=True,
+                auto_fit=False,
+                accent_color=self.scheme.get("col1", "#3a5fff"),
+                accent_selection_color=self.scheme.get("col2", "#6280ff"),
+                surface_color=self.scheme.get("col10", "#404040"),
+                font_size_px=14,
+            )
+            editor.setMinimumHeight(96)
+            editor.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
+            editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            editor.setProperty("runtime_source_path", resolved_source_path)
+            editor.textChanged.connect(self._schedule_runtime_state_save)
+            root.addWidget(editor, 1)
+        else:
+            text_view = QPlainTextEdit(panel)
+            text_view.setPlainText(resolved_text)
+            text_view.setLineWrapMode(QPlainTextEdit.NoWrap)
+            text_view.setMinimumHeight(96)
+            text_view.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+            text_view.setProperty("runtime_source_path", resolved_source_path)
+            text_view.textChanged.connect(self._schedule_runtime_state_save)
+            root.addWidget(text_view, 1)
+
+        return panel
+
+    def _add_widget_to_runtime_tab(
+        self,
+        tab_widget: QWidget,
+        *,
+        widget_kind: str | None = None,
+        title: str | None = None,
+        content: str = "",
+        source_path: str = "",
+        persist: bool = True,
+    ) -> QWidget | None:
+        record = self._runtime_tab_records.get(tab_widget)
+        if not isinstance(record, dict):
+            return None
+
+        resolved_kind = str(widget_kind or "").strip() or "code_json"
+        if widget_kind is None:
+            resolved_kind = self._runtime_tab_default_widget_kind(tab_widget)
+
+        counter = int(record.get("widget_count") or 0) + 1
+        record["widget_count"] = counter
+
+        display_title = title
+        if not display_title:
+            label_by_kind = {
+                "builder_panel": "agent_system_builder.json",
+                "code_json": "runtime_config.json",
+                "code_yaml": "runtime_config.yaml",
+                "code_python": "runtime_config.py",
+                "text_view": "runtime_notes.txt",
+            }
+            display_title = f"{label_by_kind.get(resolved_kind, 'runtime_widget')} #{counter}"
+
+        panel = self._create_runtime_widget_panel(
+            tab_widget=tab_widget,
+            widget_kind=resolved_kind,
+            title=str(display_title),
+            content=content,
+            source_path=source_path,
+        )
+
+        splitter = record.get("splitter")
+        if isinstance(splitter, QSplitter):
+            splitter.addWidget(panel)
+            panel_index = splitter.indexOf(panel)
+            if panel_index >= 0:
+                splitter.setCollapsible(panel_index, True)
+        if persist:
+            self._schedule_runtime_state_save()
+        return panel
+
+    def create_runtime_tab(
+        self,
+        tab_name: str,
+        *,
+        activate: bool = True,
+        add_default_widget: bool = True,
+        persist: bool = True,
+    ) -> QWidget:
+        resolved_name = self._next_runtime_tab_name(tab_name)
+
+        tab_widget = QWidget(self.tabs)
+        tab_layout = QVBoxLayout(tab_widget)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(8)
+
+        toolbar = QHBoxLayout()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(8)
+
+        widget_selector_menu = QMenu(tab_widget)
+        selector_actions: dict[str, QAction] = {}
+        for option_label, option_kind in self._runtime_widget_menu_options():
+            option_action = widget_selector_menu.addAction(option_label)
+            option_action.setCheckable(True)
+            option_action.setData(option_kind)
+            selector_actions[option_kind] = option_action
+
+        widget_selector_btn = QToolButton(tab_widget)
+        widget_selector_btn.setObjectName("runtimeViewerPicker")
+        widget_selector_btn.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        widget_selector_btn.setPopupMode(QToolButton.InstantPopup)
+        widget_selector_btn.setCursor(Qt.PointingHandCursor)
+        widget_selector_btn.setAutoRaise(True)
+        widget_selector_btn.setFixedHeight(21)
+        widget_selector_btn.setMinimumWidth(56)
+        widget_selector_btn.setStyleSheet(
+            f"""
+            QToolButton#runtimeViewerPicker {{
+                border: none;
+                border-radius: 5px;
+                padding: 0px 12px 0px 2px;
+                margin: 0px;
+                background: {self.scheme['col5']};
+                color: {self.scheme['col6']};
+                font-size: 16px;
+            }}
+            QToolButton#runtimeViewerPicker:hover {{
+                background: {self.scheme['col5']};
+                color: {self.scheme['col6']};
+            }}
+            QToolButton#runtimeViewerPicker::menu-indicator {{
+                subcontrol-origin: padding;
+                subcontrol-position: right center;
+                right: 2px;
+            }}
+            """
+        )
+        widget_selector_btn.setMenu(widget_selector_menu)
+        toolbar.addWidget(widget_selector_btn, 0)
+        toolbar.addStretch(1)
+
+        add_widget_btn = ToolButton(
+            "add_tab_dock.svg",
+            "Widget hinzufügen",
+            parent=tab_widget,
+        )
+        add_widget_btn.setFixedSize(28, 28)
+        toolbar.addWidget(add_widget_btn, 0)
+
+        close_tab_btn = ToolButton(
+            "close.svg",
+            "Tab schließen",
+            parent=tab_widget,
+        )
+        close_tab_btn.setFixedSize(28, 28)
+        toolbar.addWidget(close_tab_btn, 0)
+
+        tab_layout.addLayout(toolbar)
+
+        workspace_splitter = self._create_viewport_splitter(tab_widget)
+        tab_layout.addWidget(workspace_splitter, 1)
+
+        self._runtime_tab_records[tab_widget] = {
+            "selector": widget_selector_btn,
+            "selector_menu": widget_selector_menu,
+            "selector_actions": selector_actions,
+            "default_widget_kind": "code_json",
+            "splitter": workspace_splitter,
+            "widget_count": 0,
+        }
+
+        widget_selector_menu.triggered.connect(
+            lambda selected_action, tw=tab_widget: self._select_runtime_widget_kind_from_menu(tw, selected_action)
+        )
+        self._set_runtime_tab_default_widget_kind(tab_widget, "code_json", persist=False)
+
+        add_widget_btn.clicked.connect(
+            lambda _checked=False, tw=tab_widget: self._add_widget_to_runtime_tab(tw)
+        )
+        close_tab_btn.clicked.connect(
+            lambda _checked=False, tw=tab_widget: self._close_runtime_tab(tw)
+        )
+
+        if add_default_widget:
+            self._add_widget_to_runtime_tab(tab_widget, widget_kind="code_json", persist=False)
+
+        tab_index = self.tabs.addTab(tab_widget, resolved_name)
+        if activate:
+            self.tabs.setCurrentIndex(tab_index)
+        self._runtime_tab_counter += 1
+        if persist:
+            self._schedule_runtime_state_save()
+        return tab_widget
+
+    def _dispose_runtime_tab(self, tab_widget: QWidget, *, persist: bool = True) -> None:
+        index = self.tabs.indexOf(tab_widget)
+        if index >= 0:
+            self.tabs.removeTab(index)
+        self._runtime_tab_records.pop(tab_widget, None)
+        if tab_widget is self._builder_runtime_tab:
+            self._builder_runtime_tab = None
+        tab_widget.setParent(None)
+        tab_widget.deleteLater()
+        if persist:
+            self._schedule_runtime_state_save()
+
+    def _close_runtime_tab(self, tab_widget: QWidget) -> None:
+        self._dispose_runtime_tab(tab_widget, persist=True)
+
+    def append_runtime_widget(
+        self,
+        *,
+        tab_name: str,
+        widget_kind: str = "code_json",
+        content: str = "",
+        source_path: str = "",
+        title: str | None = None,
+    ) -> QWidget | None:
+        target_tab: QWidget | None = None
+        normalized_name = str(tab_name or "").strip().lower()
+        for i in range(self.tabs.count()):
+            candidate = self.tabs.widget(i)
+            if candidate in self._runtime_tab_records and self.tabs.tabText(i).strip().lower() == normalized_name:
+                target_tab = candidate
+                break
+        if target_tab is None:
+            target_tab = self.create_runtime_tab(tab_name, activate=True)
+        return self._add_widget_to_runtime_tab(
+            target_tab,
+            widget_kind=widget_kind,
+            title=title,
+            content=content,
+            source_path=source_path,
+        )
+
+    def append_runtime_code_view(
+        self,
+        *,
+        tab_name: str,
+        language: str = "json",
+        content: str = "",
+        source_path: str = "",
+        title: str | None = None,
+    ) -> QWidget | None:
+        widget_kind = self._runtime_widget_kind_for_language(language)
+        return self.append_runtime_widget(
+            tab_name=tab_name,
+            widget_kind=widget_kind,
+            content=content,
+            source_path=source_path,
+            title=title,
+        )
 
     def _create_metric_card(self, title: str) -> tuple[QFrame, QLabel]:
         card = QFrame(self)
@@ -3852,27 +5139,22 @@ class ControlPlaneWidget(QWidget):
         return tile, button
 
     def _set_config_builder_visible(self, visible: bool) -> None:
-        if not hasattr(self, "config_root_splitter"):
+        if not hasattr(self, "tabs"):
             return
-        if not visible:
-            self.config_root_splitter.setSizes([1, 0])
+        config_tab = getattr(self, "_config_tab", None)
+
+        if visible:
+            self._ensure_builder_runtime_tab(activate=True, persist=False)
             return
 
-        sizes = self.config_root_splitter.sizes()
-        if len(sizes) == 2:
-            total = max(520, sizes[0] + sizes[1])
-        else:
-            total = max(520, self.height())
-        builder_height = max(220, min(420, total // 2))
-        self.config_root_splitter.setSizes([total - builder_height, builder_height])
+        if config_tab is not None:
+            self.tabs.setCurrentWidget(config_tab)
 
     def _clear_config_builder_panel(self) -> None:
         panel = getattr(self, "_config_builder_panel", None)
-        if panel is None:
-            return
-        self.config_builder_layout.removeWidget(panel)
-        panel.setParent(None)
-        panel.deleteLater()
+        if isinstance(panel, QWidget):
+            panel.setParent(None)
+            panel.deleteLater()
         self._config_builder_panel = None
 
     def _close_config_builder_panel(self) -> None:
@@ -3882,16 +5164,18 @@ class ControlPlaneWidget(QWidget):
     def _mount_config_builder_panel(self, panel: QWidget) -> None:
         self._clear_config_builder_panel()
         self._config_builder_panel = panel
-        self.config_builder_layout.addWidget(panel, 1)
-        self.tabs.setCurrentWidget(self._config_tab)
+        self._set_config_builder_visible(True)
 
     def _create_agent_system_builder_config_panel(
         self,
         *,
         initial_payload: dict[str, Any],
         build_handler: Callable[[dict[str, Any]], dict[str, Any]],
+        parent_container: QWidget | None = None,
+        show_toolbar: bool = True,
     ) -> QWidget:
-        panel = QFrame(self.config_builder_container)
+        panel_parent = parent_container if isinstance(parent_container, QWidget) else self
+        panel = QFrame(panel_parent)
         panel.setObjectName("controlBuilderPanel")
         panel.setStyleSheet(
             f"""
@@ -3900,10 +5184,10 @@ class ControlPlaneWidget(QWidget):
                 border: 1px solid {self.scheme['col10']};
                 border-radius: 10px;
             }}
-            QLabel#builderSectionText {{
-                color: #c2c2c2;
-            }}
-            QPushButton#builderPrimaryButton {{
+            QPushButton#builderTemplateButton,
+            QPushButton#builderBuildButton,
+            QPushButton#builderPostButton,
+            QPushButton#builderCopyButton {{
                 background: transparent;
                 border: 1px solid transparent;
                 border-radius: 8px;
@@ -3911,19 +5195,10 @@ class ControlPlaneWidget(QWidget):
                 min-width: 22px;
                 min-height: 22px;
             }}
-            QPushButton#builderPrimaryButton:hover {{
-                background: rgba(255, 255, 255, 0.08);
-                border-color: rgba(255, 255, 255, 0.18);
-            }}
-            QPushButton#builderIconButton {{
-                background: transparent;
-                border: 1px solid transparent;
-                border-radius: 8px;
-                padding: 1px;
-                min-width: 22px;
-                min-height: 22px;
-            }}
-            QPushButton#builderIconButton:hover {{
+            QPushButton#builderTemplateButton:hover,
+            QPushButton#builderBuildButton:hover,
+            QPushButton#builderPostButton:hover,
+            QPushButton#builderCopyButton:hover {{
                 background: rgba(255, 255, 255, 0.08);
                 border-color: rgba(255, 255, 255, 0.18);
             }}
@@ -3934,25 +5209,42 @@ class ControlPlaneWidget(QWidget):
         panel_layout.setContentsMargins(12, 12, 12, 12)
         panel_layout.setSpacing(8)
 
-        top_buttons = QHBoxLayout()
+        toolbar_widget = QWidget(panel)
+        top_buttons = QHBoxLayout(toolbar_widget)
         top_buttons.setContentsMargins(0, 0, 0, 0)
         top_buttons.setSpacing(6)
         btn_template = QPushButton("", panel)
         btn_build = QPushButton("", panel)
+        btn_post = QPushButton("", panel)
+        btn_copy = QPushButton("", panel)
         btn_template.setIcon(_icon("open_file.svg"))
         btn_build.setIcon(_icon("deployed_code.svg"))
+        btn_post.setIcon(_icon("send.svg"))
+        btn_copy.setIcon(_icon("file_export_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg"))
         btn_template.setToolTip("Template laden")
         btn_build.setToolTip("Sync Build starten")
+        btn_post.setToolTip("Ergebnis ins Operations-Log schreiben")
+        btn_copy.setToolTip("JSON exportieren")
         btn_template.setIconSize(QSize(18, 18))
         btn_build.setIconSize(QSize(18, 18))
+        btn_post.setIconSize(QSize(18, 18))
+        btn_copy.setIconSize(QSize(18, 18))
         btn_template.setCursor(Qt.PointingHandCursor)
         btn_build.setCursor(Qt.PointingHandCursor)
-        btn_template.setObjectName("builderPrimaryButton")
-        btn_build.setObjectName("builderPrimaryButton")
+        btn_post.setCursor(Qt.PointingHandCursor)
+        btn_copy.setCursor(Qt.PointingHandCursor)
+        btn_template.setObjectName("builderTemplateButton")
+        btn_build.setObjectName("builderBuildButton")
+        btn_post.setObjectName("builderPostButton")
+        btn_copy.setObjectName("builderCopyButton")
         top_buttons.addWidget(btn_template, 0)
         top_buttons.addWidget(btn_build, 0)
         top_buttons.addStretch(1)
-        panel_layout.addLayout(top_buttons)
+        top_buttons.addWidget(btn_post, 0)
+        top_buttons.addWidget(btn_copy, 0)
+        panel_layout.addWidget(toolbar_widget)
+        if not show_toolbar:
+            toolbar_widget.hide()
 
         editor = CodeViewer(
             json.dumps(initial_payload, ensure_ascii=False, indent=2),
@@ -3965,67 +5257,57 @@ class ControlPlaneWidget(QWidget):
             surface_color=self.scheme.get("col10", "#404040"),
             font_size_px=14,
         )
-        editor.setMinimumHeight(260)
+        editor.setMinimumHeight(96)
+        editor.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOn)
         editor.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         panel_layout.addWidget(editor)
 
-        status_text = QLabel("Status: Bereit", panel)
-        status_text.setObjectName("builderSectionText")
-        status_text.setWordWrap(True)
-        panel_layout.addWidget(status_text)
-
-        bottom_buttons = QHBoxLayout()
-        bottom_buttons.setContentsMargins(0, 0, 0, 0)
-        bottom_buttons.setSpacing(6)
-        btn_post = QPushButton("", panel)
-        btn_copy = QPushButton("", panel)
-        btn_post.setIcon(_icon("send.svg"))
-        btn_copy.setIcon(_icon("file_export_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg"))
-        btn_post.setToolTip("Ergebnis ins Operations-Log schreiben")
-        btn_copy.setToolTip("JSON exportieren")
-        btn_post.setIconSize(QSize(18, 18))
-        btn_copy.setIconSize(QSize(18, 18))
-        btn_post.setCursor(Qt.PointingHandCursor)
-        btn_copy.setCursor(Qt.PointingHandCursor)
-        btn_post.setObjectName("builderIconButton")
-        btn_copy.setObjectName("builderIconButton")
-        bottom_buttons.addWidget(btn_post, 0)
-        bottom_buttons.addWidget(btn_copy, 0)
-        bottom_buttons.addStretch(1)
-        panel_layout.addLayout(bottom_buttons)
-
         latest_result: dict[str, Any] = {}
+
+        def _set_builder_status(message: str, timeout_ms: int = 4500) -> None:
+            try:
+                window = self.window()
+                status_bar_getter = getattr(window, "statusBar", None)
+                if not callable(status_bar_getter):
+                    return
+                status_bar = status_bar_getter()
+                if status_bar is not None:
+                    status_bar.showMessage(f"Builder: {message}", timeout_ms)
+            except Exception:
+                pass
+
+        _set_builder_status("Bereit")
 
         def _load_template() -> None:
             editor.setPlainText(json.dumps(initial_payload, ensure_ascii=False, indent=2))
-            status_text.setText("Status: Template geladen")
+            _set_builder_status("Template geladen")
 
         def _run_build() -> None:
             nonlocal latest_result
             raw_text = editor.toPlainText().strip()
             if not raw_text:
-                status_text.setText("Status: Payload ist leer")
+                _set_builder_status("Payload ist leer")
                 return
 
             try:
                 payload = json.loads(raw_text)
             except Exception as exc:
-                status_text.setText(f"Status: JSON-Fehler ({type(exc).__name__})")
+                _set_builder_status(f"JSON-Fehler ({type(exc).__name__})")
                 return
 
             if not isinstance(payload, dict):
-                status_text.setText("Status: Payload muss JSON-Objekt sein")
+                _set_builder_status("Payload muss JSON-Objekt sein")
                 return
 
             btn_build.setEnabled(False)
             try:
                 latest_result = dict(build_handler(payload) or {})
                 validation = dict(latest_result.get("validation") or {})
-                status_text.setText(
-                    f"Status: Build abgeschlossen (valid={bool(validation.get('valid', True))})"
+                _set_builder_status(
+                    f"Build abgeschlossen (valid={bool(validation.get('valid', True))})"
                 )
             except Exception as exc:
-                status_text.setText(f"Status: Build fehlgeschlagen ({type(exc).__name__})")
+                _set_builder_status(f"Build fehlgeschlagen ({type(exc).__name__})")
                 latest_result = {}
             finally:
                 btn_build.setEnabled(True)
@@ -4033,22 +5315,22 @@ class ControlPlaneWidget(QWidget):
         def _post_result() -> None:
             if not latest_result:
                 self._append_operator_log("Agent builder has no result yet. Run Sync Build first.")
-                status_text.setText("Status: Kein Ergebnis zum Loggen")
+                _set_builder_status("Kein Ergebnis zum Loggen")
                 return
             validation = dict(latest_result.get("validation") or {})
             system_name = str(latest_result.get("system_name") or "agent_system")
             self._append_operator_log(
                 f"Agent builder completed: system={system_name} valid={bool(validation.get('valid', True))}"
             )
-            status_text.setText("Status: Ergebnis im Operations-Log vermerkt")
+            _set_builder_status("Ergebnis im Operations-Log vermerkt")
 
         def _copy_json() -> None:
             payload_text = editor.toPlainText()
             try:
                 QApplication.clipboard().setText(payload_text)
-                status_text.setText("Status: JSON in Zwischenablage")
+                _set_builder_status("JSON in Zwischenablage")
             except Exception as exc:
-                status_text.setText(f"Status: Kopieren fehlgeschlagen ({type(exc).__name__})")
+                _set_builder_status(f"Kopieren fehlgeschlagen ({type(exc).__name__})")
 
         btn_template.clicked.connect(_load_template)
         btn_build.clicked.connect(_run_build)
@@ -4057,15 +5339,8 @@ class ControlPlaneWidget(QWidget):
         return panel
 
     def _open_agent_system_builder_in_configuration_tab(self) -> None:
-        if self._config_builder_panel is not None:
-            self.tabs.setCurrentWidget(self._config_tab)
-            return
-        template = self._build_agent_system_template("agent_system", "/create agents")
-        panel = self._create_agent_system_builder_config_panel(
-            initial_payload=template,
-            build_handler=self._execute_agent_system_builder_payload,
-        )
-        self._mount_config_builder_panel(panel)
+        # Compatibility wrapper: the builder lives in runtime-tab logic.
+        self._ensure_builder_runtime_tab(activate=True, persist=True)
 
     def _build_agent_system_template(self, system_name: str, route_prefix: str) -> dict[str, Any]:
         resolved_system_name = str(system_name or "agent_system").strip() or "agent_system"
@@ -4233,7 +5508,7 @@ class ControlPlaneWidget(QWidget):
     def _open_agent_system_builder_in_ai_chat(self) -> None:
         try:
             self._open_agent_system_builder_in_configuration_tab()
-            self._append_operator_log("Agent builder panel opened in Configuration tab")
+            self._append_operator_log("Agent builder panel opened in Builder runtime tab")
         except Exception as exc:
             self._append_operator_log(f"Agent builder panel failed: {type(exc).__name__}: {exc}")
             self._open_agent_system_builder_dialog()
@@ -5704,6 +6979,7 @@ class MainAIEditor(QMainWindow):
         super().__init__()
         self._accent, self._base = SCHEME_BLUE, SCHEME_DARK
         self._tab_docks: List[QDockWidget] = []          # store all tab docks
+        self._workspace_column_widths: list[int] = [280, 760, 460]
 
         # Crash-isolation helper: progressively enable init steps.
         # Default is "full" (999). Smaller numbers build less UI.
@@ -5712,7 +6988,7 @@ class MainAIEditor(QMainWindow):
         except Exception:
             init_level = 999
 
-        self.setWindowTitle("AI Editor – Synergetic")
+        self.setWindowTitle("AI_IDE")
         self.resize(1280, 800)
         #self.showFullScreen
         # ---- create primary widgets/layout --------------------------------
@@ -5884,6 +7160,7 @@ class MainAIEditor(QMainWindow):
         self._strip_dock_decoration(self.files_dock)
         self._strip_dock_decoration(self.chat_dock)
         self._strip_dock_decoration(self.control_plane_dock)
+
         self.main_split = QSplitter(Qt.Horizontal, self)
         self.main_split.setObjectName("mainHorizontalSplitter")
         self.main_split.setChildrenCollapsible(False)
@@ -5895,7 +7172,12 @@ class MainAIEditor(QMainWindow):
         self.main_split.setStretchFactor(0, 1)
         self.main_split.setStretchFactor(1, 3)
         self.main_split.setStretchFactor(2, 2)
-        self.main_split.setSizes([280, 760, 460])
+        default_sizes = list(getattr(self, "_workspace_column_widths", [280, 760, 460]))
+        if len(default_sizes) != 3:
+            default_sizes = [280, 760, 460]
+        self.main_split.setSizes(default_sizes)
+        self.main_split.splitterMoved.connect(self._remember_workspace_column_widths)
+        self._remember_workspace_column_widths()
         self._apply_main_splitter_style()
 
         self.setCentralWidget(self.main_split)
@@ -6219,12 +7501,13 @@ class MainAIEditor(QMainWindow):
         act_open_txt = QAction("Öffnen…", self, shortcut=QKeySequence.Open, triggered=self._file_open_text)
         act_open_enc = QAction("Öffnen mit Encoding…", self, triggered=self._file_open_with_encoding)
         act_new      = QAction("Neu", self, shortcut=QKeySequence.New, triggered=self._new_tab)
+        act_new_code = QAction("Neuen Code-Viewer-Tab", self, shortcut=QKeySequence("Ctrl+Alt+N"), triggered=self._file_new_code_viewer_tab)
         act_save     = QAction("Speichern", self, shortcut=QKeySequence.Save, triggered=self._file_save_tab_via_tabs)
         act_save_as  = QAction("Speichern unter…", self, shortcut=QKeySequence("Ctrl+Shift+S"), triggered=self._file_save_as_tab_via_tabs)
         act_reopen   = QAction("Geschlossenen Tab wiederherstellen", self, shortcut=QKeySequence("Ctrl+Shift+T"), triggered=self._file_reopen_closed_tab)
         act_set_enc  = QAction("Encoding setzen…", self, triggered=self._file_set_encoding)
         editor_enabled = self._editor_surface_enabled()
-        for action in (act_open_txt, act_open_enc, act_new, act_save, act_save_as, act_reopen, act_set_enc):
+        for action in (act_open_txt, act_open_enc, act_new, act_new_code, act_save, act_save_as, act_reopen, act_set_enc):
             action.setEnabled(editor_enabled)
 
         # Recent submenu: rebuild on show
@@ -6232,6 +7515,7 @@ class MainAIEditor(QMainWindow):
         self._file_recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
 
         filem.addAction(act_new)
+        filem.addAction(act_new_code)
         filem.addAction(act_open_txt)
         filem.addAction(act_open_enc)
         filem.addSeparator()
@@ -6375,24 +7659,63 @@ class MainAIEditor(QMainWindow):
         act.setChecked(state)
         act.blockSignals(prev)
 
+    def _is_right_workspace_visible(self) -> bool:
+        """Return True if any widget in the right workspace column is visible."""
+        control_visible = bool(getattr(self, "control_plane_dock", None) and self.control_plane_dock.isVisible())
+        console_visible = bool(getattr(self, "console_dock", None) and self.console_dock.isVisible())
+        tabdock_visible = any(dock.isVisible() for dock in getattr(self, "_tab_docks", []))
+        return control_visible or console_visible or tabdock_visible
+
+    def _remember_workspace_column_widths(self, *_args: Any) -> None:
+        splitter = getattr(self, "main_split", None)
+        if splitter is None:
+            return
+
+        sizes = splitter.sizes()
+        if len(sizes) < 3:
+            return
+
+        if len(getattr(self, "_workspace_column_widths", [])) != 3:
+            self._workspace_column_widths = [280, 760, 460]
+
+        left_widget = getattr(self, "files_dock", None)
+        middle_widget = getattr(self, "chat_dock", None)
+
+        left_size = int(sizes[0]) if len(sizes) > 0 else 0
+        middle_size = int(sizes[1]) if len(sizes) > 1 else 0
+        right_size = int(sizes[2]) if len(sizes) > 2 else 0
+
+        if left_widget is not None and left_widget.isVisible() and left_size > 0:
+            self._workspace_column_widths[0] = left_size
+        if middle_widget is not None and middle_widget.isVisible() and middle_size > 0:
+            self._workspace_column_widths[1] = middle_size
+        if self._is_right_workspace_visible() and right_size > 0:
+            self._workspace_column_widths[2] = right_size
+
     def _rebalance_workspace_columns(self) -> None:
         splitter = getattr(self, "main_split", None)
         if splitter is None:
             return
 
-        column_specs = [
-            (getattr(self, "files_dock", None), 280),
-            (getattr(self, "chat_dock", None), 760),
-            (getattr(self, "control_plane_dock", None), 460),
+        self._remember_workspace_column_widths()
+
+        fallback_widths = [280, 760, 460]
+        preferred_widths = list(getattr(self, "_workspace_column_widths", fallback_widths))
+        if len(preferred_widths) != 3:
+            preferred_widths = fallback_widths
+
+        left_visible = bool(getattr(self, "files_dock", None) and self.files_dock.isVisible())
+        middle_visible = bool(getattr(self, "chat_dock", None) and self.chat_dock.isVisible())
+        right_visible = self._is_right_workspace_visible()
+
+        sizes: list[int] = [
+            preferred_widths[0] if left_visible else 0,
+            preferred_widths[1] if middle_visible else 0,
+            preferred_widths[2] if right_visible else 0,
         ]
-        sizes: list[int] = []
-        visible_found = False
-        for widget, preferred_width in column_specs:
-            is_visible = bool(widget is not None and widget.isVisible())
-            visible_found = visible_found or is_visible
-            sizes.append(preferred_width if is_visible else 0)
+        visible_found = left_visible or middle_visible or right_visible
         if not visible_found:
-            sizes = [280, 760, 460]
+            sizes = preferred_widths
         splitter.setSizes(sizes)
 
     # ------------------------------------------------ tab-dock clone ------
@@ -6415,6 +7738,8 @@ class MainAIEditor(QMainWindow):
         self._tab_docks.append(dock)
         dock.visibilityChanged.connect(
             lambda v, s=self: s._update_tabdock_toggle_state())
+        dock.visibilityChanged.connect(
+            lambda _v, s=self: s._rebalance_workspace_columns())
 
 
         if set_current:
@@ -6432,10 +7757,10 @@ class MainAIEditor(QMainWindow):
         """
         Öffnet einen neuen, noch ungespeicherten Tab im **ersten** Tab-Dock
         und setzt die benötigten run-time-Properties.
-    
-        – Greift sicher auf `self._tab_docks[0]` zu  
+
+        – Greift sicher auf `self._tab_docks[0]` zu
         – benutzt die korrekte Variable `idx` (statt des nicht existierenden
-          Namens `index`)  
+          Namens `index`)
         – aktiviert den neuen Tab sofort
         """
         if not self._tab_docks:           # noch kein Tab-Dock vorhanden
@@ -6589,6 +7914,31 @@ class MainAIEditor(QMainWindow):
         return None
 
     # -------------------- File menu wrappers for EditorTabs --------------
+    @Slot()
+    def _file_new_code_viewer_tab(self) -> None:
+        tabs = self._get_focused_tab_dock()
+        if tabs is None and hasattr(self, "_clone_tab_dock"):
+            try:
+                self._clone_tab_dock(set_current=True)
+            except Exception:
+                pass
+            tabs = self._get_focused_tab_dock()
+
+        if tabs is None:
+            QMessageBox.information(self, "Info", "Kein Tab-Dock verfügbar, um einen Code-Tab zu öffnen.")
+            return
+
+        dock = tabs.parentWidget()
+        while dock is not None and not isinstance(dock, QDockWidget):
+            dock = dock.parentWidget()
+        if isinstance(dock, QDockWidget) and not dock.isVisible():
+            dock.show()
+
+        tabs._new_code_viewer_tab()
+        self._update_tabdock_toggle_state()
+        self._rebalance_workspace_columns()
+        self._update_status_encoding()
+
     @Slot()
     def _file_open_text(self) -> None:
         tabs = self._get_focused_tab_dock()
@@ -6889,6 +8239,15 @@ class MainAIEditor(QMainWindow):
         _apply_style(self, _build_scheme(self._accent, self._base))
         self._apply_main_splitter_style()
         self._sync_explorer_scheme()
+
+        stored_widths = s.value("workspaceColumnWidths", [280, 760, 460])
+        if isinstance(stored_widths, (list, tuple)):
+            try:
+                parsed_widths = [int(value) for value in list(stored_widths)[:3]]
+            except Exception:
+                parsed_widths = []
+            if len(parsed_widths) == 3 and all(value > 0 for value in parsed_widths):
+                self._workspace_column_widths = parsed_widths
         
         self.chat_dock.setVisible(s.value("showChat", True,  bool))
         self.control_plane_dock.setVisible(s.value("showControlPlane", True, bool))
@@ -6932,6 +8291,14 @@ class MainAIEditor(QMainWindow):
         s.setValue("showChat", self.chat_dock.isVisible())   
         s.setValue("showControlPlane", self.control_plane_dock.isVisible())
         s.setValue("showTabDock",  False)
+        control_plane_widget = getattr(self, "control_plane_widget", None)
+        if control_plane_widget is not None and hasattr(control_plane_widget, "runtime_layout_path"):
+            try:
+                s.setValue("controlPlaneRuntimeLayoutPath", control_plane_widget.runtime_layout_path())
+            except Exception:
+                pass
+        self._remember_workspace_column_widths()
+        s.setValue("workspaceColumnWidths", list(self._workspace_column_widths))
 
         if self._editor_surface_enabled() and self._tab_docks:
             tabs: EditorTabs = self._tab_docks[0].widget()
@@ -6952,6 +8319,14 @@ class MainAIEditor(QMainWindow):
         try:
             if hasattr(self, "_chat"):
                 _maybe_flush_history(self._chat)
+        except Exception:
+            pass
+
+        # 1b) persist dynamic runtime tabs and widgets
+        try:
+            control_plane_widget = getattr(self, "control_plane_widget", None)
+            if control_plane_widget is not None and hasattr(control_plane_widget, "persist_runtime_tabs_state"):
+                control_plane_widget.persist_runtime_tabs_state(force=True)
         except Exception:
             pass
 

@@ -1,0 +1,44 @@
+{
+  "active_runtime_tab": "Runtime 2",
+  "schema": 1,
+  "tabs": [
+    {
+      "default_widget_kind": "text_view",
+      "name": "Runtime 2",
+      "widgets": [
+        {
+          "content": "{\n  \"action\": \"build_agent_system_configs\",\n  \"section_identity\": {\n    \"system_name\": \"agent_system\",\n    \"system_slug\": \"agent_system\",\n    \"route_prefix\": \"/create agents\",\n    \"route_name\": \"agent_system_create_agents_command\"\n  },\n  \"section_agents\": {\n    \"assistant_agent_name\": \"_xplaner_xrouter\",\n    \"planner_agent_name\": \"_agent_system_planner\",\n    \"worker_agent_name\": \"_agent_system_worker\",\n    \"planner_prompt_name\": \"agent_system_planner\",\n    \"worker_prompt_name\": \"agent_system_worker\",\n    \"planner_model\": \"gpt-4o\",\n    \"worker_model\": \"gpt-4o-mini\",\n    \"agent_specs\": [\n      {\n        \"name\": \"planner\",\n        \"agent_name\": \"_agent_system_planner\",\n        \"role\": \"xplaner_xrouter\",\n        \"responsibility\": \"Interactively clarify the requested agent system and prepare a structured build brief.\",\n        \"tools\": [\n          \"route_to_agent\"\n        ]\n      },\n      {\n        \"name\": \"worker\",\n        \"agent_name\": \"_agent_system_worker\",\n        \"role\": \"xworker\",\n        \"responsibility\": \"Materialize persisted prompt, runtime, handoff, builder workflow, and route config bundles.\",\n        \"tools\": [\n          \"build_agent_system_configs\",\n          \"@doc_rw\"\n        ]\n      }\n    ]\n  },\n  \"section_workflows\": {\n    \"planner_workflow_name\": \"agent_system_planner_router\",\n    \"builder_workflow_name\": \"agent_system_builder_leaf\",\n    \"workflow_specs\": [\n      {\n        \"name\": \"agent_system_planner_router\",\n        \"kind\": \"router\",\n        \"entry_state\": \"planner_ready\",\n        \"owner_agent\": \"_agent_system_planner\"\n      },\n      {\n        \"name\": \"agent_system_builder_leaf\",\n        \"kind\": \"leaf\",\n        \"entry_state\": \"builder_active\",\n        \"owner_agent\": \"_agent_system_worker\"\n      }\n    ]\n  },\n  \"section_handoff_and_action\": {\n    \"primary_to_planner_schema_name\": \"primary_to_agent_system_planner\",\n    \"planner_to_builder_schema_name\": \"agent_system_planner_to_builder\",\n    \"action_request_schema_name\": \"agent_system_builder_request\",\n    \"action_tool_name\": \"build_agent_system_configs\"\n  },\n  \"section_planning\": {\n    \"planning_schema\": {\n      \"required_steps\": [\n        \"capture_goal\",\n        \"identify_agents\",\n        \"define_workflows\",\n        \"confirm_tools\",\n        \"handoff_builder\"\n      ],\n      \"required_sections\": [\n        \"agent_specs\",\n        \"workflow_specs\",\n        \"integration_targets\"\n      ],\n      \"required_agent_fields\": [\n        \"name\",\n        \"agent_name\",\n        \"role\",\n        \"responsibility\",\n        \"tools\"\n      ],\n      \"required_workflow_fields\": [\n        \"name\",\n        \"kind\",\n        \"entry_state\",\n        \"owner_agent\"\n      ],\n      \"required_integration_fields\": [\n        \"assistant_agent_name\",\n        \"route_prefix\",\n        \"persisted_config_target\"\n      ],\n      \"interactive\": true,\n      \"builder_tool\": \"build_agent_system_configs\"\n    }\n  },\n  \"section_integration\": {\n    \"integration_targets\": {\n      \"assistant_agent_name\": \"_xplaner_xrouter\",\n      \"route_prefix\": \"/create agents\",\n      \"persisted_config_target\": \"generated_agent_system_configs/agent_system_persisted_config.py\"\n    }\n  },\n  \"section_execution\": {\n    \"write_file\": false,\n    \"persist_path\": \"generated_agent_system_configs/agent_system_persisted_config.py\"\n  }\n}",
+          "kind": "builder_panel",
+          "title": "agent_system_builder.json #3"
+        },
+        {
+          "content": "runtime_config = {\n    \"agents\": [],\n    \"workflows\": [],\n}",
+          "kind": "code_python",
+          "title": "runtime_config.py #2"
+        },
+        {
+          "content": "runtime:\n  agents: []\n  workflows: []",
+          "kind": "code_yaml",
+          "title": "runtime_config.yaml #3"
+        },
+        {
+          "content": "{\n  \"runtime\": {\n\t\"runtime_config.json\": \"...\",\n    \"runtime_config.python\": \"/home/ben/Vs_Code_Projects/Projects/ALDE_Projekt/ALDE/alde/agents_pconfig.py\",\n\t\"runtime_config.yaml\": \"...\",\n\t\"runtime_notes.text\": \"...\"\n  }\n}",
+          "kind": "code_json",
+          "title": "runtime_config.json #4"
+        }
+      ]
+    },
+    {
+      "default_widget_kind": "builder_panel",
+      "name": "Builder",
+      "role": "builder",
+      "widgets": [
+        {
+          "content": "{\n  \"action\": \"build_agent_system_configs\",\n  \"section_identity\": {\n    \"system_name\": \"agent_system\",\n    \"system_slug\": \"agent_system\",\n    \"route_prefix\": \"/create agents\",\n    \"route_name\": \"agent_system_create_agents_command\"\n  },\n  \"section_agents\": {\n    \"assistant_agent_name\": \"_xplaner_xrouter\",\n    \"planner_agent_name\": \"_agent_system_planner\",\n    \"worker_agent_name\": \"_agent_system_worker\",\n    \"planner_prompt_name\": \"agent_system_planner\",\n    \"worker_prompt_name\": \"agent_system_worker\",\n    \"planner_model\": \"gpt-4o\",\n    \"worker_model\": \"gpt-4o-mini\",\n    \"agent_specs\": [\n      {\n        \"name\": \"planner\",\n        \"agent_name\": \"_agent_system_planner\",\n        \"role\": \"xplaner_xrouter\",\n        \"responsibility\": \"Interactively clarify the requested agent system and prepare a structured build brief.\",\n        \"tools\": [\n          \"route_to_agent\"\n        ]\n      },\n      {\n        \"name\": \"worker\",\n        \"agent_name\": \"_agent_system_worker\",\n        \"role\": \"xworker\",\n        \"responsibility\": \"Materialize persisted prompt, runtime, handoff, builder workflow, and route config bundles.\",\n        \"tools\": [\n          \"build_agent_system_configs\",\n          \"@doc_rw\"\n        ]\n      }\n    ]\n  },\n  \"section_workflows\": {\n    \"planner_workflow_name\": \"agent_system_planner_router\",\n    \"builder_workflow_name\": \"agent_system_builder_leaf\",\n    \"workflow_specs\": [\n      {\n        \"name\": \"agent_system_planner_router\",\n        \"kind\": \"router\",\n        \"entry_state\": \"planner_ready\",\n        \"owner_agent\": \"_agent_system_planner\"\n      },\n      {\n        \"name\": \"agent_system_builder_leaf\",\n        \"kind\": \"leaf\",\n        \"entry_state\": \"builder_active\",\n        \"owner_agent\": \"_agent_system_worker\"\n      }\n    ]\n  },\n  \"section_handoff_and_action\": {\n    \"primary_to_planner_schema_name\": \"primary_to_agent_system_planner\",\n    \"planner_to_builder_schema_name\": \"agent_system_planner_to_builder\",\n    \"action_request_schema_name\": \"agent_system_builder_request\",\n    \"action_tool_name\": \"build_agent_system_configs\"\n  },\n  \"section_planning\": {\n    \"planning_schema\": {\n      \"required_steps\": [\n        \"capture_goal\",\n        \"identify_agents\",\n        \"define_workflows\",\n        \"confirm_tools\",\n        \"handoff_builder\"\n      ],\n      \"required_sections\": [\n        \"agent_specs\",\n        \"workflow_specs\",\n        \"integration_targets\"\n      ],\n      \"required_agent_fields\": [\n        \"name\",\n        \"agent_name\",\n        \"role\",\n        \"responsibility\",\n        \"tools\"\n      ],\n      \"required_workflow_fields\": [\n        \"name\",\n        \"kind\",\n        \"entry_state\",\n        \"owner_agent\"\n      ],\n      \"required_integration_fields\": [\n        \"assistant_agent_name\",\n        \"route_prefix\",\n        \"persisted_config_target\"\n      ],\n      \"interactive\": true,\n      \"builder_tool\": \"build_agent_system_configs\"\n    }\n  },\n  \"section_integration\": {\n    \"integration_targets\": {\n      \"assistant_agent_name\": \"_xplaner_xrouter\",\n      \"route_prefix\": \"/create agents\",\n      \"persisted_config_target\": \"generated_agent_system_configs/agent_system_persisted_config.py\"\n    }\n  },\n  \"section_execution\": {\n    \"write_file\": false,\n    \"persist_path\": \"generated_agent_system_configs/agent_system_persisted_config.py\"\n  }\n}",
+          "kind": "builder_panel",
+          "title": "Agent System Builder"
+        }
+      ]
+    }
+  ]
+}

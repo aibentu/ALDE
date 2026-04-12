@@ -1,8 +1,4 @@
-"""
-die Klasse **class TextWidget** so anpassen das ich eine variable, 
-ein cache der bereits die projekt historie geladen hat,uebergeben kann und 
-dann wie das pfad objekt verarbeitet wird. 
-"""
+
 
 from __future__ import annotations        # MUSS direkt nach Docstring stehen
 import sys

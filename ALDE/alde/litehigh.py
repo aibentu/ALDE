@@ -1,4 +1,5 @@
 
+
 from __future__ import annotations
 
 
@@ -59,10 +60,10 @@ class QSHighlighter(QSyntaxHighlighter):
     C_METHOD:    Final = "#FBF9CF"
     C_ATTR:      Final = "#9CDCFE"
     C_NUMBER:    Final = "#B5CEA8"
-    C_STRING:    Final = "#C2917F"
+    C_STRING:    Final = "#CE9178"
     C_COMMENT:   Final = "#6A9955"
     C_DECORATOR: Final = "#7C5885"
-    C_OPERATOR:  Final = "#D4D4D4"
+    C_OPERATOR:  Final = "#C4DDCA"
     C_VARIABLE:  Final = "#9CDCFE"
 
     # Rainbow-Brackets ------------------------------------------------------
@@ -70,16 +71,18 @@ class QSHighlighter(QSyntaxHighlighter):
     BRACKETS = [
         "#FDD354",  # 0
         "#814C8E",  # 1
-        "#9A5A3A",  # 2
-        "#FDD354",  # 3
-        "#A9DC76",  # 4
-        "#78DCE8",  # 5
-        "#AB9DF2",  # 6
+     
     ]
 
     # Bit-Felder im Block-State  -------------------------------------------
-    #  state = (depth << 1) | after_dot
-    _AFTER_DOT_MASK = 0b1
+    #  state = (depth << _DEPTH_SHIFT) | (triple_mode << _TRIPLE_SHIFT) | after_dot
+    _AFTER_DOT_MASK = 0b001
+    _TRIPLE_SHIFT = 1
+    _TRIPLE_MASK = 0b110
+    _DEPTH_SHIFT = 3
+
+    _TRIPLE_SINGLE = 1
+    _TRIPLE_DOUBLE = 2
 
     # --------------------------------------------------------------------- #
     #                                ctor                                   #
@@ -111,6 +114,116 @@ class QSHighlighter(QSyntaxHighlighter):
             if isinstance(o, (BuiltinFunctionType, BuiltinMethodType, type))
         }
 
+    @classmethod
+    def _encode_state(cls, depth: int, after_dot: bool, triple_mode: int = 0) -> int:
+        return (max(depth, 0) << cls._DEPTH_SHIFT) | ((triple_mode & 0b11) << cls._TRIPLE_SHIFT) | int(after_dot)
+
+    @classmethod
+    def _decode_state(cls, state: int) -> tuple[int, bool, int]:
+        if state == -1:
+            return 0, False, 0
+        depth = max(state >> cls._DEPTH_SHIFT, 0)
+        after_dot = bool(state & cls._AFTER_DOT_MASK)
+        triple_mode = (state & cls._TRIPLE_MASK) >> cls._TRIPLE_SHIFT
+        return depth, after_dot, triple_mode
+
+    @classmethod
+    def _scan_docstring_start(cls, text: str) -> tuple[int, int] | None:
+        """Find an unclosed triple-quoted docstring start at line-begin."""
+        stripped = text.lstrip(" \t")
+        if not stripped:
+            return None
+
+        indent = len(text) - len(stripped)
+        prefix_len = 0
+        while prefix_len < len(stripped) and stripped[prefix_len] in "rRuUbBfF":
+            prefix_len += 1
+            if prefix_len > 3:
+                return None
+
+        delim_col = indent + prefix_len
+        if len(text) < delim_col + 3:
+            return None
+
+        delim = text[delim_col:delim_col + 3]
+        if delim not in {'"""', "'''"}:
+            return None
+
+        if text.find(delim, delim_col + 3) != -1:
+            return None
+
+        mode = cls._TRIPLE_DOUBLE if delim == '"""' else cls._TRIPLE_SINGLE
+        return indent, mode
+
+    @classmethod
+    def _scan_unclosed_triple_quote(cls, text: str) -> tuple[int, int] | None:
+        """Find unclosed triple-quoted strings anywhere in a line."""
+        i = 0
+        n = len(text)
+        while i < n:
+            ch = text[i]
+
+            # Comments end parsing context for real code tokens.
+            if ch == "#":
+                break
+
+            if ch == "'":
+                if text.startswith("'''", i):
+                    close_at = text.find("'''", i + 3)
+                    if close_at == -1:
+                        start = i
+                        back = i - 1
+                        # Include optional raw/byte/format string prefix.
+                        while back >= 0 and i - back <= 3 and text[back] in "rRuUbBfF":
+                            start = back
+                            back -= 1
+                        if start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"):
+                            start = i
+                        return start, cls._TRIPLE_SINGLE
+                    i = close_at + 3
+                    continue
+
+                i += 1
+                while i < n:
+                    if text[i] == "\\":
+                        i += 2
+                        continue
+                    if text[i] == "'":
+                        i += 1
+                        break
+                    i += 1
+                continue
+
+            if ch == '"':
+                if text.startswith('"""', i):
+                    close_at = text.find('"""', i + 3)
+                    if close_at == -1:
+                        start = i
+                        back = i - 1
+                        while back >= 0 and i - back <= 3 and text[back] in "rRuUbBfF":
+                            start = back
+                            back -= 1
+                        if start > 0 and (text[start - 1].isalnum() or text[start - 1] == "_"):
+                            start = i
+                        return start, cls._TRIPLE_DOUBLE
+                    i = close_at + 3
+                    continue
+
+                i += 1
+                while i < n:
+                    if text[i] == "\\":
+                        i += 2
+                        continue
+                    if text[i] == '"':
+                        i += 1
+                        break
+                    i += 1
+                continue
+
+            i += 1
+
+        return None
+
     # --------------------------------------------------------------------- #
     #                       the work-horse: highlightBlock                  #
     # --------------------------------------------------------------------- #
@@ -122,18 +235,51 @@ class QSHighlighter(QSyntaxHighlighter):
         Folgezeile.
         """
         # ---------------------- alten State auslesen ----------------------
-        prev_state = self.previousBlockState()
-        if prev_state == -1:                              # kein State gesetzt
-            prev_state = 0
-        depth = prev_state >> 1
-        after_dot_from_prev_line = bool(prev_state & self._AFTER_DOT_MASK)
+        depth, after_dot_from_prev_line, in_triple_mode = self._decode_state(self.previousBlockState())
+
+        col_offset = 0
+        line_part = text
+
+        if in_triple_mode:
+            delim = '"""' if in_triple_mode == self._TRIPLE_DOUBLE else "'''"
+            close_at = text.find(delim)
+            if close_at == -1:
+                if text:
+                    self.setFormat(0, len(text), self.fmt_string)
+                self.setCurrentBlockState(self._encode_state(depth, False, in_triple_mode))
+                return
+
+            close_end = close_at + len(delim)
+            self.setFormat(0, close_end, self.fmt_string)
+
+            col_offset = close_end
+            line_part = text[close_end:]
+            after_dot_from_prev_line = False
+
+        triple_start = self._scan_docstring_start(line_part)
+        if triple_start is None:
+            triple_start = self._scan_unclosed_triple_quote(line_part)
+        if triple_start is not None:
+            start_in_part, new_mode = triple_start
+            start_col = col_offset + start_in_part
+            self.setFormat(start_col, len(text) - start_col, self.fmt_string)
+            self.setCurrentBlockState(self._encode_state(depth, False, new_mode))
+            return
 
         # ---------------------- Tokenisierung ----------------------------
+        token_stream = tokenize.generate_tokens(io.StringIO(line_part + "\n").readline)
+        tokens = []
         try:
-            tokens = list(tokenize.generate_tokens(io.StringIO(text + "\n").readline))
+            while True:
+                tokens.append(next(token_stream))
+        except StopIteration:
+            pass
         except tokenize.TokenError:                       # unvollständige Zeile
-            self.setCurrentBlockState(prev_state)
-            return
+            # Bereits gelesene Tokens behalten, damit beim Tippen nach
+            # öffnender Klammer das Highlighting nicht komplett ausfällt.
+            if not tokens:
+                self.setCurrentBlockState(self._encode_state(depth, after_dot_from_prev_line))
+                return
 
         expect: str | None = None       # Name erwartet nach 'class' / 'def'
 
@@ -143,6 +289,10 @@ class QSHighlighter(QSyntaxHighlighter):
         for i, tok in enumerate(tokens):
             ttype, tstr, (_row, col), _, _ = tok
             length = len(tstr)
+            abs_col = col + col_offset
+
+            def _apply(fmt: QTextCharFormat) -> None:
+                self.setFormat(abs_col, length, fmt)
 
             # ---------- reine Leerraum-Tokens überspringen ----------------
             if ttype == token.ERRORTOKEN and tstr.isspace():
@@ -150,48 +300,48 @@ class QSHighlighter(QSyntaxHighlighter):
 
             # ---------- Strings / Zahlen / Kommentare --------------------
             if ttype == token.STRING:
-                self.setFormat(col, length, self.fmt_string)
+                _apply(self.fmt_string)
                 continue
             if ttype == token.NUMBER:
-                self.setFormat(col, length, self.fmt_number)
+                _apply(self.fmt_number)
                 continue
             if ttype == tokenize.COMMENT:
-                self.setFormat(col, length, self.fmt_comment)
+                _apply(self.fmt_comment)
                 continue
 
             # ---------- Operatoren + Rainbow-Brackets --------------------
             if ttype == token.OP:
                 if tstr in "([{":
                     fmt = self.fmt_brackets[depth % len(self.fmt_brackets)]
-                    self.setFormat(col, length, fmt)
+                    _apply(fmt)
                     depth += 1
                 elif tstr in ")]}":
                     depth = max(depth - 1, 0)
                     fmt = self.fmt_brackets[depth % len(self.fmt_brackets)]
-                    self.setFormat(col, length, fmt)
+                    _apply(fmt)
                 else:
-                    self.setFormat(col, length, self.fmt_oper)
+                    _apply(self.fmt_oper)
                 continue
 
             # ---------- Namen (Keywords, Variablen, …) --------------------
             if ttype == token.NAME:
                 # Decorator?
-                if text.lstrip().startswith("@") and col == text.find("@") + 1:
-                    self.setFormat(col, length, self.fmt_deco)
+                if text.lstrip().startswith("@") and abs_col == text.find("@") + 1:
+                    _apply(self.fmt_deco)
                     continue
 
                 # self / cls
                 if tstr in {"self", "cls"}:
-                    self.setFormat(col, length, self.fmt_self)
+                    _apply(self.fmt_self)
                     continue
 
                 # Name nach 'class' / 'def'
                 if expect == "class":
-                    self.setFormat(col, length, self.fmt_class)
+                    _apply(self.fmt_class)
                     expect = None
                     continue
                 if expect == "def":
-                    self.setFormat(col, length, self.fmt_func)
+                    _apply(self.fmt_func)
                     expect = None
                     continue
 
@@ -214,17 +364,17 @@ class QSHighlighter(QSyntaxHighlighter):
 
                 # ------ tatsächliche Format-Wahl -------------------------
                 if tstr in self._keywords:
-                    self.setFormat(col, length, self.fmt_kw)
+                    _apply(self.fmt_kw)
                 elif is_method_call:
-                    self.setFormat(col, length, self.fmt_method)
+                    _apply(self.fmt_method)
                 elif is_after_dot:
-                    self.setFormat(col, length, self.fmt_attr)
+                    _apply(self.fmt_attr)
                 elif is_constructor_call:
-                    self.setFormat(col, length, self.fmt_class)
+                    _apply(self.fmt_class)
                 elif tstr in self._builtins:
-                    self.setFormat(col, length, self.fmt_builtin)
+                    _apply(self.fmt_builtin)
                 else:
-                    self.setFormat(col, length, self.fmt_var)
+                    _apply(self.fmt_var)
 
                 # 'class' / 'def' merken
                 if tstr == "class":
@@ -245,7 +395,7 @@ class QSHighlighter(QSyntaxHighlighter):
             break
 
         # --------------------- State an nächste Zeile ---------------------
-        new_state = (depth << 1) | int(new_after_dot)
+        new_state = self._encode_state(depth, new_after_dot)
         self.setCurrentBlockState(new_state)
 
 
@@ -324,11 +474,18 @@ class JSONHighlighter(QSyntaxHighlighter):
     C_PUNCT:   Final = "#D4D4D4"
     C_KEY:     Final = "#9CDCFE"
 
+    BRACKETS = [
+        "#FDD354",
+        "#814C8E",
+        "#4EC9B0",
+        "#4FC1FF",
+    ]
+
     _re_string = re.compile(r'"(?:\\.|[^"\\])*"')
     _re_number = re.compile(r"-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?")
     _re_bool = re.compile(r"\b(?:true|false)\b")
     _re_null = re.compile(r"\bnull\b")
-    _re_punct = re.compile(r"[{}\[\]:,]")
+    _re_punct = re.compile(r"[:,]")
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -338,30 +495,59 @@ class JSONHighlighter(QSyntaxHighlighter):
         self.fmt_null = _Fmt.make(self.C_NULL)
         self.fmt_punct = _Fmt.make(self.C_PUNCT)
         self.fmt_key = _Fmt.make(self.C_KEY, bold=True)
+        self.fmt_brackets = [_Fmt.make(color) for color in self.BRACKETS]
 
     def highlightBlock(self, text: str) -> None:  # noqa: N802
         if not text:
+            self.setCurrentBlockState(0)
             return
+
+        prev_state = self.previousBlockState()
+        depth = 0 if prev_state == -1 else max(prev_state, 0)
+
+        string_spans = [m.span() for m in self._re_string.finditer(text)]
+        in_string = [False] * len(text)
+        for start, end in string_spans:
+            for idx in range(start, min(end, len(text))):
+                in_string[idx] = True
+
+        # Rainbow brackets with depth carried across lines.
+        for idx, ch in enumerate(text):
+            if in_string[idx]:
+                continue
+            if ch in "[{":
+                fmt = self.fmt_brackets[depth % len(self.fmt_brackets)]
+                self.setFormat(idx, 1, fmt)
+                depth += 1
+            elif ch in "]}":
+                depth = max(depth - 1, 0)
+                fmt = self.fmt_brackets[depth % len(self.fmt_brackets)]
+                self.setFormat(idx, 1, fmt)
 
         # punctuation
         for m in self._re_punct.finditer(text):
-            self.setFormat(m.start(), m.end() - m.start(), self.fmt_punct)
+            if not in_string[m.start()]:
+                self.setFormat(m.start(), m.end() - m.start(), self.fmt_punct)
 
         # strings (detect keys as strings immediately followed by optional spaces and colon)
-        for m in self._re_string.finditer(text):
-            start, end = m.span()
+        for start, end in string_spans:
             after = text[end:]
             is_key = bool(re.match(r"\s*:", after))
             self.setFormat(start, end - start, self.fmt_key if is_key else self.fmt_string)
 
         for m in self._re_number.finditer(text):
-            self.setFormat(m.start(), m.end() - m.start(), self.fmt_number)
+            if not in_string[m.start()]:
+                self.setFormat(m.start(), m.end() - m.start(), self.fmt_number)
 
         for m in self._re_bool.finditer(text):
-            self.setFormat(m.start(), m.end() - m.start(), self.fmt_bool)
+            if not in_string[m.start()]:
+                self.setFormat(m.start(), m.end() - m.start(), self.fmt_bool)
 
         for m in self._re_null.finditer(text):
-            self.setFormat(m.start(), m.end() - m.start(), self.fmt_null)
+            if not in_string[m.start()]:
+                self.setFormat(m.start(), m.end() - m.start(), self.fmt_null)
+
+        self.setCurrentBlockState(depth)
 
 
 # --------------------------------------------------------------------------- #

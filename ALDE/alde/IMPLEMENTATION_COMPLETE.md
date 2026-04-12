@@ -48,3 +48,30 @@ Use these files for the maintained runtime description:
 ## Archive Note
 
 The removed content in the old version of this file documented a pre-refactor architecture and is intentionally not kept inline anymore because it no longer reflects the running system.
+
+## UI Update: Runtime Widget Chat Context (2026-04-12)
+
+### Scope
+
+- Updated runtime widget header actions in the desktop Control Plane.
+- Standardized widget-to-chat export behavior for all runtime widget types.
+
+### Implemented UI Changes
+
+- Each runtime widget header now exposes:
+  - file import action
+  - one chat export action (`An Chat anhängen`)
+- The previous optional second export variant (full-context action) was removed again to reduce UI complexity.
+
+### Technical Behavior
+
+- Export no longer injects full widget payload directly into the visible prompt text.
+- Visible prompt receives only a concise title line (typically the file name).
+- Full widget content is stored internally as runtime context entries and appended only at send-time to the model input payload.
+- Runtime context is cleared after send to prevent stale carry-over between requests.
+
+### Functional Outcome
+
+- Operator sees a clean and short prompt.
+- Model still receives the full attached widget context for generation quality.
+- UX remains simple (single export action) while preserving context completeness in the backend request.
