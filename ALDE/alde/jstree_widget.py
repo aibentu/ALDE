@@ -352,8 +352,8 @@ class JsonTreeWidgetWithToolbar(QWidget):
                 border-top-right-radius: 14px;
             }}
             QToolButton {{
-                background: {bg};
-                border: 1px solid #303030;
+                background: transparent;
+                border: none;
                 border-radius: 3px;
                 padding: 2px;
                 max-width: 24px;
@@ -361,11 +361,12 @@ class JsonTreeWidgetWithToolbar(QWidget):
                 color: #E3E3DED6;
             }}
             QToolButton:hover {{
-                background: #303030;
-                border: 1px solid {accent};
+                background: rgba(255, 255, 255, 0.10);
+                border: none;
             }}
             QToolButton:pressed {{
-                background: {accent};
+                background: rgba(255, 255, 255, 0.16);
+                border: none;
             }}
         """
         self._apply_toolbar_style(toolbar)
@@ -421,15 +422,15 @@ class JsonTreeWidgetWithToolbar(QWidget):
         self._btn_add_database.clicked.connect(self.tree._add_database_root)
         
         self._btn_import_json = QToolButton(toolbar)
-        # Use Material icons from symbols/ (avoid missing legacy filenames).
-        icon_import = _icon("upload_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg")
+        # General import entry point for JSON/YAML/TOML/Python data files.
+        icon_import = _icon("open_file.svg")
         if not icon_import.isNull():
             self._btn_import_json.setIcon(icon_import)
         else:
             self._btn_import_json.setText("📥")
-        self._btn_import_json.setToolTip("Import JSON file")
+        self._btn_import_json.setToolTip("Import file")
         self._btn_import_json.setFixedSize(26, 26)
-        self._btn_import_json.clicked.connect(self.tree._import_json_file)
+        self._btn_import_json.clicked.connect(self.tree._import_data_file_dialog)
         
         self._btn_export_json = QToolButton(toolbar)
         icon_export = _icon("file_export_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg")
@@ -1412,60 +1413,161 @@ class JsonTreeWidget(QTreeWidget):
             print(f"[INFO] Could not load tree data (this is normal on first run): {e}")
     
     @Slot(bool)
-    def _import_json_file(self, checked: bool = False) -> None:
-        """Import JSON data from a file."""
+    def _import_data_file_dialog(
+        self,
+        checked: bool = False,
+        *,
+        preset_format: str | None = None,
+    ) -> None:
+        """Import structured data from Python/JSON/YAML/TOML files."""
         from PySide6.QtWidgets import QFileDialog, QInputDialog
-        
-        file_path, _ = QFileDialog.getOpenFileName(
+
+        _ = checked
+
+        supported_formats = ["Python", "JSON", "YAML", "TOML"]
+        selected_format = str(preset_format or "").strip().upper()
+        if selected_format not in {fmt.upper() for fmt in supported_formats}:
+            selected_format, ok = QInputDialog.getItem(
+                self,
+                "Import Format",
+                "Choose file type:",
+                supported_formats,
+                0,
+                False,
+            )
+            if not ok or not selected_format:
+                return
+
+        selected_format = str(selected_format).strip().upper()
+        file_filters = {
+            "PYTHON": "Python Files (*.py);;All Files (*)",
+            "JSON": "JSON Files (*.json);;All Files (*)",
+            "YAML": "YAML Files (*.yaml *.yml);;All Files (*)",
+            "TOML": "TOML Files (*.toml);;All Files (*)",
+        }
+
+        file_path, _selected_filter = QFileDialog.getOpenFileName(
             self,
-            "Import JSON File",
+            f"Import {selected_format} File",
             str(Path.home()),
-            "JSON Files (*.json);;All Files (*)"
+            file_filters.get(selected_format, "All Files (*)"),
         )
-        
         if not file_path:
             return
-        
+
         try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                imported_data = json.load(f)
-            
-            # Ask which section to add the data to
-            sections = list(self._root_sections.keys())
-            section_name, ok = QInputDialog.getItem(
-                self,
-                "Select Section",
-                "Add imported data to section:",
-                sections,
-                0,
-                False
-            )
-            
-            if not ok or not section_name:
-                return
-            
-            # Ask for a key name
-            file_name = Path(file_path).stem
-            key_name, ok = QInputDialog.getText(
-                self,
-                "Item Name",
-                "Enter name for imported data:",
-                text=file_name
-            )
-            
-            if ok and key_name:
-                self.add_to_section(section_name, key_name, imported_data)
-                QMessageBox.information(
-                    self,
-                    "Import Success",
-                    f"Data imported to {section_name}/{key_name}"
-                )
-        except Exception as e:
+            imported_data = self._load_import_payload(file_path, selected_format)
+        except Exception as exc:
             QMessageBox.critical(
                 self,
                 "Import Error",
-                f"Failed to import JSON file:\n{e}"
+                f"Failed to import {selected_format} file:\n{exc}",
             )
+            return
+
+        self._commit_imported_data(file_path, imported_data, selected_format)
+
+    def _load_import_payload(self, file_path: str, import_format: str) -> Any:
+        fmt = str(import_format or "").strip().upper()
+        if fmt == "JSON":
+            with open(file_path, "r", encoding="utf-8") as handle:
+                return json.load(handle)
+
+        if fmt == "YAML":
+            try:
+                import yaml  # type: ignore
+            except Exception as exc:
+                raise RuntimeError("YAML import requires the PyYAML package.") from exc
+            with open(file_path, "r", encoding="utf-8") as handle:
+                return yaml.safe_load(handle)
+
+        if fmt == "TOML":
+            try:
+                import tomllib  # Python 3.11+
+            except Exception as exc:
+                raise RuntimeError("TOML import is not available in this Python runtime.") from exc
+            with open(file_path, "rb") as handle:
+                return tomllib.load(handle)
+
+        if fmt == "PYTHON":
+            with open(file_path, "r", encoding="utf-8") as handle:
+                return self._parse_python_import_payload(handle.read(), file_path)
+
+        raise ValueError(f"Unsupported import format: {import_format}")
+
+    def _parse_python_import_payload(self, source: str, file_path: str = "") -> Any:
+        """Parse Python files that contain literal data or literal assignments."""
+        import ast
+
+        payload = str(source or "").strip()
+        if not payload:
+            raise ValueError("Python file is empty.")
+
+        try:
+            return ast.literal_eval(payload)
+        except Exception:
+            pass
+
+        module = ast.parse(payload, filename=file_path or "<python-import>")
+        for node in module.body:
+            value_node = None
+            if isinstance(node, ast.Assign):
+                value_node = node.value
+            elif isinstance(node, ast.AnnAssign):
+                value_node = node.value
+
+            if value_node is None:
+                continue
+
+            try:
+                return ast.literal_eval(value_node)
+            except Exception:
+                continue
+
+        raise ValueError(
+            "Python import supports literal values (dict/list/etc.) or assignments to literal values."
+        )
+
+    def _commit_imported_data(self, file_path: str, imported_data: Any, import_format: str) -> None:
+        from PySide6.QtWidgets import QInputDialog
+
+        sections = list(self._root_sections.keys())
+        if not sections:
+            QMessageBox.warning(self, "Import Error", "No target section available.")
+            return
+
+        section_name, ok = QInputDialog.getItem(
+            self,
+            "Select Section",
+            "Add imported data to section:",
+            sections,
+            0,
+            False,
+        )
+        if not ok or not section_name:
+            return
+
+        file_name = Path(file_path).stem
+        key_name, ok = QInputDialog.getText(
+            self,
+            "Item Name",
+            "Enter name for imported data:",
+            text=file_name,
+        )
+        if not ok or not key_name:
+            return
+
+        self.add_to_section(section_name, key_name, imported_data)
+        QMessageBox.information(
+            self,
+            "Import Success",
+            f"{import_format} data imported to {section_name}/{key_name}",
+        )
+
+    @Slot(bool)
+    def _import_json_file(self, checked: bool = False) -> None:
+        """Backward-compatible JSON import entry point."""
+        self._import_data_file_dialog(checked, preset_format="JSON")
     
     @Slot(bool)
     def _export_json_file(self, checked: bool = False) -> None:
