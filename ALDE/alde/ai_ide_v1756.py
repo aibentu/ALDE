@@ -402,7 +402,6 @@ QStatusBar {{
     background: {col5};
     color: {col6};
     font-size: 13px;
-    border-top: 1px solid {col10};
     }}
 
 QToolBar {{
@@ -746,8 +745,8 @@ from PySide6.QtWidgets import QWidget          # dito
 
 def _draw_fallback(symbol: str = "x") -> QIcon:
     """
-    Paints a very small 32 × 32 px pixmap with either a  ❌  or  ➕  in the
-    centre.  Used whenever no SVG file (and no theme-icon) exists.
+    Paints a very small 32 × 32 px pixmap with simple fallback symbols.
+    Used whenever no SVG file (and no theme-icon) exists.
     """
     size = 32
     pm = QPixmap(size, size)
@@ -763,6 +762,17 @@ def _draw_fallback(symbol: str = "x") -> QIcon:
     if symbol == "+":
         p.drawLine(size // 2, 6, size // 2, size - 6)
         p.drawLine(6, size // 2, size - 6, size // 2)
+    elif symbol == "[/]":
+        # Draw a compact bracket-slash-bracket glyph for the control panel.
+        p.drawLine(7, 8, 7, size - 8)
+        p.drawLine(7, 8, 12, 8)
+        p.drawLine(7, size - 8, 12, size - 8)
+
+        p.drawLine(14, size - 8, 19, 8)
+
+        p.drawLine(size - 7, 8, size - 7, size - 8)
+        p.drawLine(size - 12, 8, size - 7, 8)
+        p.drawLine(size - 12, size - 8, size - 7, size - 8)
     else:                             # default:  ❌
         p.drawLine(8, 8, size - 8, size - 8)
         p.drawLine(8, size - 8, size - 8, 8)
@@ -3624,6 +3634,8 @@ class ControlPlaneWidget(QWidget):
     _RUNTIME_LAYOUT_SETTINGS_PATH_KEY = "controlPlaneRuntimeLayoutPath"
     _RUNTIME_LAYOUT_DEFAULT_REL_PATH = "AppData/control_plane_runtime_tabs.json"
     _RUNTIME_LAYOUT_SCHEMA = 1
+    _BUILD_RUNTIME_TAB_LABEL = "</Build>"
+    _LEGACY_BUILD_RUNTIME_TAB_LABEL = "Builder"
 
     def __init__(self, accent: dict[str, str], base: dict[str, str], parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -3814,6 +3826,10 @@ class ControlPlaneWidget(QWidget):
             return "yaml"
         if widget_kind == "code_python":
             return "python"
+        if widget_kind == "code_markdown":
+            return "markdown"
+        if widget_kind == "code_toml":
+            return "toml"
         if widget_kind == "text_view":
             return "text"
         return "json"
@@ -4188,7 +4204,7 @@ class ControlPlaneWidget(QWidget):
 
         self.btn_add_runtime_tab = ToolButton(
             "add_tab_dock.svg",
-            "Neuen Runtime-Tab anlegen",
+            "Neuen </Build>-Runtime-Tab anlegen (Builder-Start)",
             slot=self._open_new_runtime_tab,
             parent=hero,
         )
@@ -4648,7 +4664,11 @@ class ControlPlaneWidget(QWidget):
                 if candidate not in self._runtime_tab_records:
                     continue
                 role = str(candidate.property("runtime_role") or "").strip().lower()
-                if role == "builder" or self.tabs.tabText(i).strip().lower() == "builder":
+                tab_name = self.tabs.tabText(i).strip().lower()
+                if role == "builder" or tab_name in {
+                    self._LEGACY_BUILD_RUNTIME_TAB_LABEL.strip().lower(),
+                    self._BUILD_RUNTIME_TAB_LABEL.strip().lower(),
+                }:
                     builder_tab = candidate
                     break
             self._builder_runtime_tab = builder_tab
@@ -4672,6 +4692,25 @@ class ControlPlaneWidget(QWidget):
                 return candidate
         return None
 
+    def _resolve_runtime_target_tab(self, *, preferred_name: str = "") -> QWidget | None:
+        current_widget = self.tabs.currentWidget()
+        if current_widget in self._runtime_tab_records:
+            return current_widget
+
+        by_name = self._find_runtime_tab_by_name(preferred_name)
+        if by_name is not None:
+            return by_name
+
+        builder_tab = getattr(self, "_builder_runtime_tab", None)
+        if builder_tab in self._runtime_tab_records:
+            return builder_tab
+
+        for i in range(self.tabs.count()):
+            candidate = self.tabs.widget(i)
+            if candidate in self._runtime_tab_records:
+                return candidate
+        return None
+
     def _ensure_builder_runtime_tab(self, *, activate: bool = False, persist: bool = False) -> QWidget:
         builder_tab = getattr(self, "_builder_runtime_tab", None)
         if builder_tab not in self._runtime_tab_records:
@@ -4688,23 +4727,31 @@ class ControlPlaneWidget(QWidget):
                     break
 
         if builder_tab is None:
-            by_name = self._find_runtime_tab_by_name("Builder")
+            by_name = self._find_runtime_tab_by_name(self._BUILD_RUNTIME_TAB_LABEL)
+            if by_name is not None:
+                builder_tab = by_name
+
+        if builder_tab is None:
+            by_name = self._find_runtime_tab_by_name(self._LEGACY_BUILD_RUNTIME_TAB_LABEL)
             if by_name is not None:
                 builder_tab = by_name
 
         if builder_tab is None:
             builder_tab = self.create_runtime_tab(
-                "Builder",
+                self._BUILD_RUNTIME_TAB_LABEL,
                 activate=activate,
                 add_default_widget=False,
                 persist=persist,
+                default_widget_kind="builder_panel",
             )
 
         builder_tab.setProperty("runtime_role", "builder")
         self._builder_runtime_tab = builder_tab
+        self._set_runtime_tab_default_widget_kind(builder_tab, "builder_panel", persist=False)
 
         builder_index = self.tabs.indexOf(builder_tab)
         if builder_index >= 0:
+            self.tabs.setTabText(builder_index, self._BUILD_RUNTIME_TAB_LABEL)
             self.tabs.setTabIcon(builder_index, QIcon())
 
         has_builder_widget = False
@@ -4732,7 +4779,7 @@ class ControlPlaneWidget(QWidget):
         return builder_tab
 
     def _open_new_runtime_tab(self) -> None:
-        default_name = f"Runtime {self._runtime_tab_counter + 1}"
+        default_name = self._next_runtime_tab_name(self._BUILD_RUNTIME_TAB_LABEL)
         tab_name, ok = QInputDialog.getText(
             self,
             "Neuer Runtime-Tab",
@@ -4741,7 +4788,59 @@ class ControlPlaneWidget(QWidget):
         )
         if not ok:
             return
-        self.create_runtime_tab(tab_name.strip() or default_name, activate=True)
+        tab_widget = self.create_runtime_tab(
+            tab_name.strip() or default_name,
+            activate=True,
+            add_default_widget=True,
+            persist=False,
+            default_widget_kind="builder_panel",
+        )
+        self._set_runtime_tab_default_widget_kind(tab_widget, "builder_panel", persist=False)
+        self._schedule_runtime_state_save()
+
+    def create_runtime_tab_for_kind(
+        self,
+        widget_kind: str,
+        *,
+        tab_name: str = "Runtime",
+        activate: bool = True,
+    ) -> QWidget:
+        allowed = {kind for _label, kind in self._runtime_widget_menu_options()}
+        resolved_kind = str(widget_kind or "code_json").strip().lower()
+        if resolved_kind not in allowed:
+            resolved_kind = "code_json"
+
+        target_tab = self._resolve_runtime_target_tab(preferred_name=tab_name)
+        if target_tab is None:
+            target_tab = self.create_runtime_tab(
+                tab_name.strip() or "Runtime",
+                activate=activate,
+                add_default_widget=False,
+                persist=False,
+            )
+        elif activate:
+            target_index = self.tabs.indexOf(target_tab)
+            if target_index >= 0:
+                self.tabs.setCurrentIndex(target_index)
+        self._set_runtime_tab_default_widget_kind(target_tab, resolved_kind, persist=False)
+
+        content = ""
+        title = None
+        if resolved_kind == "code_markdown":
+            title = "runtime_notes.md"
+            content = "# Runtime Notes\n"
+        elif resolved_kind == "text_view":
+            title = "runtime_notes.txt"
+            content = "Runtime notes\n"
+
+        self._add_widget_to_runtime_tab(
+            target_tab,
+            widget_kind=resolved_kind,
+            title=title,
+            content=content,
+            persist=True,
+        )
+        return target_tab
 
     def _next_runtime_tab_name(self, requested_name: str) -> str:
         base_name = str(requested_name or "").strip() or f"Runtime {self._runtime_tab_counter + 1}"
@@ -4760,15 +4859,20 @@ class ControlPlaneWidget(QWidget):
             return "code_yaml"
         if normalized in {"python", "py"}:
             return "code_python"
+        if normalized in {"markdown", "md"}:
+            return "code_markdown"
+        if normalized == "toml":
+            return "code_toml"
         return "code_json"
 
     def _runtime_widget_menu_options(self) -> list[tuple[str, str]]:
         return [
-            ("Builder", "builder_panel"),
-            ("Json", "code_json"),
-            ("Yaml", "code_yaml"),
+            ("</Build>", "builder_panel"),
             ("Python", "code_python"),
-            ("Text", "text_view"),
+            ("JSON", "code_json"),
+            ("YAML", "code_yaml"),
+            ("Markdown", "code_markdown"),
+            ("TOML", "code_toml"),
         ]
 
     def _runtime_widget_label_for_kind(self, widget_kind: str) -> str:
@@ -4776,7 +4880,7 @@ class ControlPlaneWidget(QWidget):
         for label, kind in self._runtime_widget_menu_options():
             if kind == target:
                 return label
-        return "Json"
+        return "JSON"
 
     def _runtime_tab_default_widget_kind(self, tab_widget: QWidget) -> str:
         record = self._runtime_tab_records.get(tab_widget) or {}
@@ -4848,16 +4952,49 @@ class ControlPlaneWidget(QWidget):
             return "yaml", "runtime:\n  agents: []\n  workflows: []\n"
         if kind == "code_python":
             return "python", "runtime_config = {\n    \"agents\": [],\n    \"workflows\": [],\n}\n"
+        if kind == "code_markdown":
+            return "markdown", "# Runtime Notes\n\n- Build-Pipeline\n"
+        if kind == "code_toml":
+            return "toml", "[runtime]\nagents = []\nworkflows = []\n"
         if kind == "text_view":
             return "text", "Runtime notes\n"
         return "json", "{\n  \"runtime\": {\n    \"agents\": [],\n    \"workflows\": []\n  }\n}\n"
 
+    def _locate_runtime_tab_for_panel(self, panel: QWidget) -> tuple[QWidget | None, QSplitter | None]:
+        for tab_widget, record in self._runtime_tab_records.items():
+            splitter = record.get("splitter") if isinstance(record, dict) else None
+            if not isinstance(splitter, QSplitter):
+                continue
+            for idx in range(splitter.count()):
+                if splitter.widget(idx) is panel:
+                    return tab_widget, splitter
+        return None, None
+
     def _remove_runtime_widget_panel(self, panel: QWidget) -> None:
         if panel is None:
             return
+
+        tab_widget, splitter = self._locate_runtime_tab_for_panel(panel)
         panel.setParent(None)
         panel.deleteLater()
-        self._schedule_runtime_state_save()
+
+        def _finalize_removal() -> None:
+            if tab_widget is None or splitter is None:
+                self._schedule_runtime_state_save()
+                return
+
+            remaining_panels = [
+                splitter.widget(i)
+                for i in range(splitter.count())
+                if isinstance(splitter.widget(i), QWidget)
+            ]
+            if not remaining_panels:
+                self._dispose_runtime_tab(tab_widget, persist=True)
+                return
+
+            self._schedule_runtime_state_save()
+
+        QTimer.singleShot(0, _finalize_removal)
 
     def _create_runtime_widget_panel(
         self,
@@ -5047,6 +5184,8 @@ class ControlPlaneWidget(QWidget):
                 "code_json": "runtime_config.json",
                 "code_yaml": "runtime_config.yaml",
                 "code_python": "runtime_config.py",
+                "code_markdown": "runtime_notes.md",
+                "code_toml": "runtime_config.toml",
                 "text_view": "runtime_notes.txt",
             }
             display_title = f"{label_by_kind.get(resolved_kind, 'runtime_widget')} #{counter}"
@@ -5076,8 +5215,14 @@ class ControlPlaneWidget(QWidget):
         activate: bool = True,
         add_default_widget: bool = True,
         persist: bool = True,
+        default_widget_kind: str = "code_json",
     ) -> QWidget:
         resolved_name = self._next_runtime_tab_name(tab_name)
+
+        allowed = {kind for _label, kind in self._runtime_widget_menu_options()}
+        resolved_default_kind = str(default_widget_kind or "code_json").strip().lower()
+        if resolved_default_kind not in allowed:
+            resolved_default_kind = "code_json"
 
         tab_widget = QWidget(self.tabs)
         tab_layout = QVBoxLayout(tab_widget)
@@ -5091,14 +5236,14 @@ class ControlPlaneWidget(QWidget):
             "selector": None,
             "selector_menu": None,
             "selector_actions": {},
-            "default_widget_kind": "code_json",
+            "default_widget_kind": resolved_default_kind,
             "splitter": workspace_splitter,
             "widget_count": 0,
         }
-        self._set_runtime_tab_default_widget_kind(tab_widget, "code_json", persist=False)
+        self._set_runtime_tab_default_widget_kind(tab_widget, resolved_default_kind, persist=False)
 
         if add_default_widget:
-            self._add_widget_to_runtime_tab(tab_widget, widget_kind="code_json", persist=False)
+            self._add_widget_to_runtime_tab(tab_widget, widget_kind=resolved_default_kind, persist=False)
 
         tab_index = self.tabs.addTab(tab_widget, resolved_name)
         if activate:
@@ -5258,12 +5403,15 @@ class ControlPlaneWidget(QWidget):
         panel_parent = parent_container if isinstance(parent_container, QWidget) else self
         panel = QFrame(panel_parent)
         panel.setObjectName("controlBuilderPanel")
+        panel_bg = self.scheme["col5"] if show_toolbar else "transparent"
+        panel_border = f"1px solid {self.scheme['col10']}" if show_toolbar else "none"
+        panel_radius = "10px" if show_toolbar else "0px"
         panel.setStyleSheet(
             f"""
             QFrame#controlBuilderPanel {{
-                background: {self.scheme['col5']};
-                border: 1px solid {self.scheme['col10']};
-                border-radius: 10px;
+                background: {panel_bg};
+                border: {panel_border};
+                border-radius: {panel_radius};
             }}
             QPushButton#builderTemplateButton,
             QPushButton#builderBuildButton,
@@ -5287,8 +5435,12 @@ class ControlPlaneWidget(QWidget):
         )
 
         panel_layout = QVBoxLayout(panel)
-        panel_layout.setContentsMargins(12, 12, 12, 12)
-        panel_layout.setSpacing(8)
+        if show_toolbar:
+            panel_layout.setContentsMargins(12, 12, 12, 12)
+            panel_layout.setSpacing(8)
+        else:
+            panel_layout.setContentsMargins(0, 0, 0, 0)
+            panel_layout.setSpacing(0)
 
         toolbar_widget = QWidget(panel)
         top_buttons = QHBoxLayout(toolbar_widget)
@@ -7169,7 +7321,7 @@ class MainAIEditor(QMainWindow):
         except Exception:
             init_level = 999
 
-        self.setWindowTitle('/\ | /\/\ |_IDE')
+        self.setWindowTitle('[/] AI IDE')
         self.resize(1280, 800)
         #self.showFullScreen
         # ---- create primary widgets/layout --------------------------------
@@ -7484,7 +7636,7 @@ class MainAIEditor(QMainWindow):
         self.act_toggle_chat.setToolTip("AI-Chat anzeigen/ausblenden")
 
         self.act_toggle_control_plane = QAction(
-            _icon("menu_24.svg"),
+            _draw_fallback("[/]"),
             "Control Plane",
             self,
             checkable=True,
@@ -7624,6 +7776,7 @@ class MainAIEditor(QMainWindow):
         self.tb_top = QToolBar("Main", self)
         # QMainWindow.saveState/restoreState rely on unique objectName values.
         self.tb_top.setObjectName("ToolbarTop")
+        self.tb_top.setStyleSheet("QToolBar { border: none; }")
 
         """ +3 px auf die Standard-Icongröße der Toolbar addieren """
 
@@ -7652,6 +7805,9 @@ class MainAIEditor(QMainWindow):
             bar.setMovable(False)
             bar.setFloatable(False)
             bar.setStyleSheet(
+                "QToolBar {"
+                " border: none;"
+                " }"
                 "QToolButton {"
                 " min-width: 34px;"
                 " min-height: 34px;"
@@ -7713,14 +7869,57 @@ class MainAIEditor(QMainWindow):
         # -------------- ACP -------------------------------------------------
         acp = mbar.addMenu("ACP")
         acp_select = acp.addMenu("Select")
-        act_acp_new_code_tab = QAction(
-            "Code - New Tab",
+        act_acp_json_tab = QAction(
+            "JSON öffnen",
             self,
-            shortcut=QKeySequence("Ctrl+Alt+Shift+N"),
-            triggered=self._acp_new_code_tab,
+            triggered=self._acp_open_json_tab,
         )
-        act_acp_new_code_tab.setEnabled(getattr(self, "control_plane_widget", None) is not None)
-        acp_select.addAction(act_acp_new_code_tab)
+        act_acp_yaml_tab = QAction(
+            "YAML öffnen",
+            self,
+            triggered=self._acp_open_yaml_tab,
+        )
+        act_acp_python_tab = QAction(
+            "Python öffnen",
+            self,
+            triggered=self._acp_open_python_tab,
+        )
+        act_acp_markdown_tab = QAction(
+            "Markdown öffnen",
+            self,
+            triggered=self._acp_open_markdown_tab,
+        )
+        act_acp_toml_tab = QAction(
+            "TOML öffnen",
+            self,
+            triggered=self._acp_open_toml_tab,
+        )
+   
+
+        act_acp_new_runtime_tab = QAction(
+            "Neuen Runtime-Tab öffnen",
+            self,
+            triggered=self._acp_open_new_runtime_tab,
+        )
+
+        acp_enabled = getattr(self, "control_plane_widget", None) is not None
+        for action in (
+            act_acp_json_tab,
+            act_acp_yaml_tab,
+            act_acp_python_tab,
+            act_acp_markdown_tab,
+            act_acp_toml_tab,
+            act_acp_new_runtime_tab,
+        ):
+            action.setEnabled(acp_enabled)
+
+        acp_select.addAction(act_acp_json_tab)
+        acp_select.addAction(act_acp_yaml_tab)
+        acp_select.addAction(act_acp_python_tab)
+        acp_select.addAction(act_acp_markdown_tab)
+        acp_select.addAction(act_acp_toml_tab)
+        acp_select.addSeparator()
+        acp.addAction(act_acp_new_runtime_tab)
 
         # -------------- VIEW ------------------------------------------------
         view = mbar.addMenu("View")
@@ -7824,7 +8023,30 @@ class MainAIEditor(QMainWindow):
         self.statusBar().showMessage("Control Plane refreshed", 2500)
 
     @Slot()
-    def _acp_new_code_tab(self) -> None:
+   
+
+    @Slot()
+    def _acp_open_json_tab(self) -> None:
+        self._acp_open_runtime_widget_tab("code_json", "JSON")
+
+    @Slot()
+    def _acp_open_yaml_tab(self) -> None:
+        self._acp_open_runtime_widget_tab("code_yaml", "YAML")
+
+    @Slot()
+    def _acp_open_python_tab(self) -> None:
+        self._acp_open_runtime_widget_tab("code_python", "Python")
+
+    @Slot()
+    def _acp_open_markdown_tab(self) -> None:
+        self._acp_open_runtime_widget_tab("code_markdown", "Markdown")
+
+    @Slot()
+    def _acp_open_toml_tab(self) -> None:
+        self._acp_open_runtime_widget_tab("code_toml", "TOML")
+
+    @Slot()
+    def _acp_open_new_runtime_tab(self) -> None:
         control_plane = getattr(self, "control_plane_widget", None)
         if control_plane is None:
             self.statusBar().showMessage("ACP disabled", 2500)
@@ -7835,12 +8057,27 @@ class MainAIEditor(QMainWindow):
                 self.control_plane_dock.show()
 
         try:
-            control_plane.create_runtime_tab("Code", activate=True, add_default_widget=True, persist=True)
+            control_plane._open_new_runtime_tab()
         except Exception as exc:
-            QMessageBox.warning(self, "ACP", f"Code-Tab konnte nicht erstellt werden: {exc}")
+            QMessageBox.warning(self, "ACP", f"Runtime-Tab konnte nicht erstellt werden: {exc}")
+
+    def _acp_open_runtime_widget_tab(self, widget_kind: str, tab_name: str) -> None:
+        control_plane = getattr(self, "control_plane_widget", None)
+        if control_plane is None:
+            self.statusBar().showMessage("ACP disabled", 2500)
             return
 
-        self.statusBar().showMessage("ACP Code-Tab erstellt", 2500)
+        if hasattr(self, "control_plane_dock") and isinstance(self.control_plane_dock, QDockWidget):
+            if not self.control_plane_dock.isVisible():
+                self.control_plane_dock.show()
+
+        try:
+            control_plane.create_runtime_tab_for_kind(widget_kind, tab_name=tab_name, activate=True)
+        except Exception as exc:
+            QMessageBox.warning(self, "ACP", f"{tab_name}-Tab konnte nicht erstellt werden: {exc}")
+            return
+
+        self.statusBar().showMessage(f"ACP {tab_name}-Tab erstellt", 2500)
 
     def _update_control_plane_status(self, snapshot: dict[str, Any] | None) -> None:
         configuration_snapshot = (snapshot or {}).get("configuration") if isinstance(snapshot, dict) else {}
@@ -7972,18 +8209,17 @@ class MainAIEditor(QMainWindow):
     @Slot()
     def _new_tab(self) -> None:
         """
-        Öffnet einen neuen, noch ungespeicherten Tab im **ersten** Tab-Dock
-        und setzt die benötigten run-time-Properties.
-
-        – Greift sicher auf `self._tab_docks[0]` zu
-        – benutzt die korrekte Variable `idx` (statt des nicht existierenden
-          Namens `index`)
-        – aktiviert den neuen Tab sofort
+        Öffnet einen neuen, noch ungespeicherten Tab im fokussierten Tab-Dock.
         """
-        if not self._tab_docks:           # noch kein Tab-Dock vorhanden
+        tabs = self._get_focused_tab_dock()
+        if tabs is None and hasattr(self, "_clone_tab_dock"):
+            try:
+                self._clone_tab_dock(set_current=True)
+            except Exception:
+                pass
+            tabs = self._get_focused_tab_dock()
+        if tabs is None:
             return
-
-        tabs: EditorTabs = self._tab_docks[0].widget()
 
         idx = tabs.addTab(                        # Tab anlegen
             QTextEdit("# new file …"),
@@ -7992,16 +8228,20 @@ class MainAIEditor(QMainWindow):
 
         tabs.widget(idx).setProperty("file_path", "")   # wichtig für Save-Logik
         tabs.setCurrentIndex(idx)
+        self._update_status_encoding()
     
         # ------------------------------------------------ close tab -----------
 
     @Slot()
     def _close_tab(self):
-        if not self._tab_docks:
+        tabs = self._get_focused_tab_dock()
+        if tabs is None:
             return
-        tabs: EditorTabs = self._tab_docks[0].widget()
-        i = tabs.currentIndex()
-        if i >= 0:tabs.removeTab(i)
+        tabs._close_tab()
+        self._prune_empty_tab_docks()
+        self._update_tabdock_toggle_state()
+        self._rebalance_workspace_columns()
+        self._update_status_encoding()
     
     # ------------------------------------------------ close dock -----------
 
@@ -8037,10 +8277,9 @@ class MainAIEditor(QMainWindow):
         Existiert noch kein Dateiname, wird automatisch »Speichern unter …«
         ausgeführt.
         """
-        if not self._tab_docks:
+        tabs = self._get_focused_tab_dock()
+        if tabs is None:
             return
-
-        tabs: EditorTabs = self._tab_docks[0].widget()
         idx               = tabs.currentIndex()
         if idx < 0:
             return
@@ -8072,10 +8311,9 @@ class MainAIEditor(QMainWindow):
         Öffnet immer den Dateidialog „Speichern unter …“, schreibt den Inhalt
         und aktualisiert Tab-Titel & file_path-Property.
         """
-        if not self._tab_docks:
+        tabs = self._get_focused_tab_dock()
+        if tabs is None:
             return
-
-        tabs: EditorTabs = self._tab_docks[0].widget()
         idx               = tabs.currentIndex()
         if idx < 0:
             return
@@ -8104,9 +8342,27 @@ class MainAIEditor(QMainWindow):
         self.statusBar().showMessage(f"{fname} gespeichert", 3000)
 
 
+    def _prune_empty_tab_docks(self) -> None:
+        cleaned: list[QDockWidget] = []
+        for dock in list(getattr(self, "_tab_docks", [])):
+            if not isinstance(dock, QDockWidget):
+                continue
+            tabs = dock.widget()
+            if isinstance(tabs, EditorTabs) and tabs.count() == 0:
+                try:
+                    dock.setParent(None)
+                    dock.deleteLater()
+                except Exception:
+                    pass
+                continue
+            cleaned.append(dock)
+        self._tab_docks = cleaned
+
     @Slot()
     def _get_focused_tab_dock(self) -> EditorTabs | None:
         """Findet das aktuell fokussierte TabDock oder gibt das erste zurück."""
+        self._prune_empty_tab_docks()
+
         # Versuche das fokussierte Widget zu finden
         focused = QApplication.focusWidget()
         
@@ -8121,12 +8377,14 @@ class MainAIEditor(QMainWindow):
         for dock in self._tab_docks:
             if dock.isVisible() and not dock.isFloating():
                 tabs = dock.widget()
-                if isinstance(tabs, EditorTabs):
+                if isinstance(tabs, EditorTabs) and tabs.count() > 0:
                     return tabs
-        
-        # Letzter Fallback: erstes Dock
-        if self._tab_docks:
-            return self._tab_docks[0].widget()
+
+        # Letzter Fallback: irgendein Dock mit Tabs
+        for dock in self._tab_docks:
+            tabs = dock.widget()
+            if isinstance(tabs, EditorTabs) and tabs.count() > 0:
+                return tabs
         
         return None
 
