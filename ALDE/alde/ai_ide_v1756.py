@@ -5727,11 +5727,11 @@ class ControlPlaneWidget(QWidget):
             if __package__:
                 from .agents_config import AgentSystemBuilderRequestObject  # type: ignore
             else:
-                from ALDE_Projekt.ALDE.alde.agents_configurator import AgentSystemBuilderRequestObject  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_config import AgentSystemBuilderRequestObject  # type: ignore
         except ImportError as exc:
             msg = str(exc)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from ALDE_Projekt.ALDE.alde.agents_configurator import AgentSystemBuilderRequestObject  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_config import AgentSystemBuilderRequestObject  # type: ignore
             else:
                 raise
 
@@ -6449,7 +6449,7 @@ class ControlPlaneWidget(QWidget):
                     get_workflow_configs,
                 )
             else:
-                from ALDE_Projekt.ALDE.alde.agents_configurator import (  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_config import (  # type: ignore
                     get_agent_manifests,
                     get_tool_configs,
                     get_tool_group_configs,
@@ -6458,7 +6458,7 @@ class ControlPlaneWidget(QWidget):
         except ImportError as exc:
             msg = str(exc)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from ALDE_Projekt.ALDE.alde.agents_configurator import (  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_config import (  # type: ignore
                     get_agent_manifests,
                     get_tool_configs,
                     get_tool_group_configs,
@@ -7447,7 +7447,7 @@ class ControlPlaneWidget(QWidget):
 class MainAIEditor(QMainWindow):
     ORG_NAME: Final = "ai.bentu"
 
-    APP_NAME: Final = "[\_|"
+    APP_NAME: Final = "[/] AI IDE "
     _SCHEMA:  Final = 2
 
     # ---------------------------------------------------------------- init --

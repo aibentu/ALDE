@@ -2297,7 +2297,7 @@ BATCH_WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
 
 AGENTS_DB_STRUCTURE_CONFIGS: dict[str, dict[str, Any]] = {
     "document_knowledge_pipeline": {
-        "description": "Canonical structure for the agents_db document pipeline that bridges operational persistence in tools.py to the Mongo-backed knowledge projection in agents_dbs.py.",
+        "description": "Canonical structure for the agents_db document pipeline that bridges operational persistence in tools.py to the Mongo-backed knowledge projection in agents_db.py.",
         "modules": {
             "tools.py": {
                 "role": "operational_runtime",
