@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from alde.runtime_events import (
+from ALDE_Projekt.ALDE.alde.agents_runtime_events import (
     create_agent_handoff_event,
     create_query_event,
     load_projected_runtime_events,

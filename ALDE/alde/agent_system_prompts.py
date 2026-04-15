@@ -15,7 +15,7 @@ try:
         get_system_prompt,
     )
 except Exception:
-    from ALDE.alde.agents_config import (  # type: ignore
+    from ALDE_Projekt.ALDE.alde.agents_configurator import (  # type: ignore
         SYSTEM_PROMPT,
         _SYSTEM_PROMPT,
         get_specialized_system_prompt,

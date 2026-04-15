@@ -1319,11 +1319,11 @@ class ChatCom(ChatCompletion,ChatHistory):
         # Use the unified tool registry (shared with agenszie_factory) instead of a
         # custom, inconsistent schema. Keep the list small to reduce model confusion.
         try:
-            from .tools import UNIFIED_TOOLS  # type: ignore
+            from .agents_tools import UNIFIED_TOOLS  # type: ignore
         except ImportError as e:
             msg = str(e)
             if "no known parent package" in msg or "attempted relative import" in msg:
-                from alde.tools import UNIFIED_TOOLS  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_tools import UNIFIED_TOOLS  # type: ignore
             else:
                 raise
         try:
@@ -1348,7 +1348,7 @@ class ChatCom(ChatCompletion,ChatHistory):
         except ImportError as e:
             msg = str(e)
             if "no known parent package" in msg or "attempted relative import" in msg:
-                from alde.agents_config import get_agent_config, resolve_forced_route  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_configurator import get_agent_config, resolve_forced_route  # type: ignore
             else:
                 raise
 
@@ -1390,11 +1390,11 @@ class ChatCom(ChatCompletion,ChatHistory):
         self._deterministic_action_meta: dict[str, Any] | None = None
         try:
             try:
-                from .tools import execute_deterministic_action_request, resolve_configured_request_payload  # type: ignore
+                from .agents_tools import execute_deterministic_action_request, resolve_configured_request_payload  # type: ignore
             except ImportError as e:
                 msg = str(e)
                 if "no known parent package" in msg or "attempted relative import" in msg:
-                    from alde.tools import execute_deterministic_action_request, resolve_configured_request_payload  # type: ignore
+                    from ALDE_Projekt.ALDE.alde.agents_tools import execute_deterministic_action_request, resolve_configured_request_payload  # type: ignore
                 else:
                     raise
             self._deterministic_action_result = execute_deterministic_action_request(self._input_text)

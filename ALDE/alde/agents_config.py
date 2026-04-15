@@ -3,7 +3,7 @@ from __future__ import annotations
 from copy import deepcopy
 import json
 from pprint import pformat
-from alde.agents_pconfig import (
+from alde.agents_runtime import (
     ACTION_REQUEST_NAME_ALIASES,
     ACTION_REQUEST_SCHEMA_CONFIGS,
     AGENT_MANIFEST_OVERRIDES,
@@ -1959,7 +1959,7 @@ def validate_all_workflows() -> dict[str, Any]:
     return WORKFLOW_VALIDATION_SERVICE.validate_all_objects()
 
 
-class AgentSystemActionRequestObject:
+class ActionRequestObject:
     def __init__(
         self,
         object_name: str,
@@ -2251,15 +2251,15 @@ class AgentSystemActionRequestObject:
         }
 
 
-class AgentSystemBasicConfigService:
+class AgentBasicConfigService:
     def load_action_request(
         self,
         object_name: str,
         action_request: dict[str, Any] | None = None,
-    ) -> AgentSystemActionRequestObject:
-        return AgentSystemActionRequestObject(object_name, action_request)
+    ) -> ActionRequestObject:
+        return ActionRequestObject(object_name, action_request)
 
-    def validate_action_request(self, action_request: AgentSystemActionRequestObject) -> dict[str, Any]:
+    def validate_action_request(self, action_request: ActionRequestObject) -> dict[str, Any]:
         report = action_request.build_validation_report()
         if not report.get("valid"):
             raise ValueError("invalid agent system action request: " + "; ".join(report.get("errors") or []))
@@ -2281,7 +2281,7 @@ class AgentSystemBasicConfigService:
 
     def render_persisted_config_module(
         self,
-        action_request: AgentSystemActionRequestObject,
+        action_request: ActionRequestObject,
         persisted_updates: dict[str, Any],
     ) -> dict[str, Any]:
         variable_map = {
@@ -2317,7 +2317,7 @@ class AgentSystemBasicConfigService:
             "content": content,
         }
 
-    def build_assistant_workflow_config(self, action_request: AgentSystemActionRequestObject) -> dict[str, Any]:
+    def build_assistant_workflow_config(self, action_request: ActionRequestObject) -> dict[str, Any]:
         planner_agent_name = action_request.load_planner_agent_name()
         workflow_config = create_workflow_config("xplaner_xrouter_router")
         states = dict(workflow_config.get("states") or {})
@@ -2737,10 +2737,10 @@ class AgentSystemBasicConfigService:
         return config_bundle
 
 
-AGENT_SYSTEM_BASIC_CONFIG_SERVICE = AgentSystemBasicConfigService()
+AGENT_SYSTEM_BASIC_CONFIG_SERVICE = AgentBasicConfigService()
 
 
-AgentSystemBuilderRequestObject = AgentSystemActionRequestObject
+AgentSystemBuilderRequestObject = ActionRequestObject
 
 
 def create_agent_system_basic_config(system_name: str, action_request: dict[str, Any] | None = None) -> dict[str, Any]:

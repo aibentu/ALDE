@@ -3,10 +3,10 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from alde.policy_store import append_event
-from alde.event_store import append_runtime_event
-from alde.runtime_events import create_outcome_event, create_query_event, create_tool_call_event
-from alde.runtime_metrics import load_runtime_metrics
+from ALDE_Projekt.ALDE.alde.agents_policy_store import append_event
+from ALDE_Projekt.ALDE.alde.agents_event_store import append_runtime_event
+from ALDE_Projekt.ALDE.alde.agents_runtime_events import create_outcome_event, create_query_event, create_tool_call_event
+from ALDE_Projekt.ALDE.alde.agents_runtime_metrics import load_runtime_metrics
 
 
 class TestRuntimeMetrics(unittest.TestCase):

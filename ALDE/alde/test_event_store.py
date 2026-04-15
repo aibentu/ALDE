@@ -3,8 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 
-from alde.event_store import append_runtime_event, load_runtime_events
-from alde.runtime_events import create_query_event
+from ALDE_Projekt.ALDE.alde.agents_event_store import append_runtime_event, load_runtime_events
+from ALDE_Projekt.ALDE.alde.agents_runtime_events import create_query_event
 
 
 class TestEventStore(unittest.TestCase):

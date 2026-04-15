@@ -574,6 +574,7 @@ class JsonTreeWidget(QTreeWidget):
         self._item_to_key: dict[QTreeWidgetItem, str] = {}
         self._item_kind: dict[QTreeWidgetItem, str] = {}
         self._item_badge: dict[QTreeWidgetItem, str] = {}
+        self._lazy_children: dict[QTreeWidgetItem, tuple[Any, str | None]] = {}
 
         self._style_template = """
                QTreeWidget, QTreeView {{
@@ -626,9 +627,38 @@ class JsonTreeWidget(QTreeWidget):
         self._initialize_root_sections()
 
         # Connect signal for handling item edits (after initial load).
+        self.itemExpanded.connect(self._on_item_expanded)
         self.itemChanged.connect(self._on_item_changed)
         self._remember_tree_texts()
         self._initializing = False
+
+    def _should_lazy_load_children(self, section_name: str | None, value: Any) -> bool:
+        section_upper = (section_name or "").upper()
+        return section_upper == "HISTORY" and isinstance(value, (dict, list, tuple)) and bool(value)
+
+    def _add_lazy_placeholder(self, item: QTreeWidgetItem, value: Any, section_name: str | None) -> None:
+        placeholder = QTreeWidgetItem(["..."])
+        placeholder.setFlags(placeholder.flags() & ~Qt.ItemIsEditable)
+        item.addChild(placeholder)
+        self._lazy_children[item] = (value, section_name)
+
+    @Slot(QTreeWidgetItem)
+    def _on_item_expanded(self, item: QTreeWidgetItem) -> None:
+        lazy_payload = self._lazy_children.pop(item, None)
+        if lazy_payload is None:
+            return
+
+        value, section_name = lazy_payload
+        item.takeChildren()
+
+        if isinstance(value, dict):
+            for key, child_value in value.items():
+                item.addChild(self._build_item(key, child_value, section_name=section_name))
+        elif isinstance(value, (list, tuple)):
+            for index, child_value in enumerate(value):
+                item.addChild(self._build_item(index, child_value, section_name=section_name))
+
+        self._remember_item_texts_recursive(item)
 
     def _remember_tree_texts(self) -> None:
         for section in self._root_sections.values():
@@ -974,14 +1004,20 @@ class JsonTreeWidget(QTreeWidget):
             item = QTreeWidgetItem([label])
             item.setFlags(item.flags() | Qt.ItemIsEditable)
             self._item_kind[item] = "dict"
-            for k, v in value.items():
-                item.addChild(self._build_item(k, v, section_name=section_name))
+            if self._should_lazy_load_children(section_name, value):
+                self._add_lazy_placeholder(item, value, section_name)
+            else:
+                for k, v in value.items():
+                    item.addChild(self._build_item(k, v, section_name=section_name))
         elif isinstance(value, (list, tuple)):
             item = QTreeWidgetItem([f"{key_label} [{len(value)}]"])
             item.setFlags(item.flags() | Qt.ItemIsEditable)
             self._item_kind[item] = "list"
-            for i, v in enumerate(value):
-                item.addChild(self._build_item(i, v, section_name=section_name))
+            if self._should_lazy_load_children(section_name, value):
+                self._add_lazy_placeholder(item, value, section_name)
+            else:
+                for i, v in enumerate(value):
+                    item.addChild(self._build_item(i, v, section_name=section_name))
         else:
             text = json.dumps(value, ensure_ascii=False)
             item = QTreeWidgetItem([f"{key_label}: {text}"])

@@ -14,8 +14,8 @@ if str(PKG_ROOT) not in sys.path:
 
 import alde.agents_factory as agents_factory
 import alde.chat_completion as chat_mod
-from alde import agents_config
-from alde.agents_config import get_agent_workflow_config
+from ALDE_Projekt.ALDE.alde import agents_configurator
+from ALDE_Projekt.ALDE.alde.agents_configurator import get_agent_workflow_config
 
 
 def _tool_call(name: str, arguments: str, call_id: str = "call_1") -> SimpleNamespace:
@@ -335,7 +335,7 @@ class TestAgentRouting(unittest.TestCase):
         self.assertTrue(agents_factory._agent_can_route("_xplaner_xrouter"))
 
     def test_create_agents_command_resolves_to_xplaner_planning_job(self) -> None:
-        route = agents_config.resolve_forced_route(
+        route = agents_configurator.resolve_forced_route(
             "_xplaner_xrouter",
             "/create agents build a qa system with planner and worker",
             set(agents_factory.AGENTS_REGISTRY.keys()),
@@ -347,13 +347,13 @@ class TestAgentRouting(unittest.TestCase):
         self.assertEqual(route["user_question"], "build a qa system with planner and worker")
 
     def test_available_job_names_include_runtime_default_jobs(self) -> None:
-        job_names = agents_config.get_available_job_names()
+        job_names = agents_configurator.get_available_job_names()
 
         self.assertIn("interactive_planning", job_names)
         self.assertIn("generic_execution", job_names)
 
     def test_job_config_drives_default_object_projection(self) -> None:
-        job_config = agents_config.get_job_config("cover_letter_writer")
+        job_config = agents_configurator.get_job_config("cover_letter_writer")
 
         self.assertEqual(job_config.get("default_object_name"), "cover_letters")
 
@@ -367,7 +367,7 @@ class TestAgentRouting(unittest.TestCase):
         self.assertIsNone(route)
 
     def test_route_contract_prefers_two_agent_schema(self) -> None:
-        contract = agents_config.get_handoff_route_contract(
+        contract = agents_configurator.get_handoff_route_contract(
             "_xplaner_xrouter",
             "_xworker",
         )

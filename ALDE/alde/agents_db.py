@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import os
 import re
+import pymongo
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Iterable, Mapping, Sequence
@@ -12,7 +13,11 @@ Collection = Any
 
 def _load_mongo_client_class() -> Any | None:
     try:
-        pymongo_module = importlib.import_module("pymongo") 
+        pymongo_module:pymongo = importlib.import_module("pymongo") or pymongo
+        pymongo_version = getattr(pymongo_module, "__version__", "0.0.0")
+        major_version = int(pymongo_version.split(".")[0]) if isinstance(pymongo_version, str) else 0
+        if major_version < 3:
+            return None
     except Exception:
         return None
     return getattr(pymongo_module, "MongoClient", None)

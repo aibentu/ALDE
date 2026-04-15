@@ -5,11 +5,11 @@ from typing import Any
 import json
 
 try:
-    from .runtime_events import validate_runtime_event
+    from .agents_runtime_events import validate_runtime_event
 except ImportError as e:
     msg = str(e)
     if "attempted relative import" in msg or "no known parent package" in msg:
-        from runtime_events import validate_runtime_event  # type: ignore
+        from ALDE_Projekt.ALDE.alde.agents_runtime_events import validate_runtime_event  # type: ignore
     else:
         raise
 

@@ -11,8 +11,8 @@ if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
 
 import alde.agents_factory as agents_factory
-import alde.agents_config as agents_config
-from alde.agents_config import get_agent_config, get_agent_manifest, get_agent_workflow_config, validate_agent_manifest
+import ALDE_Projekt.ALDE.alde.agents_configurator as agents_configurator
+from ALDE_Projekt.ALDE.alde.agents_configurator import get_agent_config, get_agent_manifest, get_agent_workflow_config, validate_agent_manifest
 
 
 class TestWorkflowEngine(unittest.TestCase):
@@ -145,7 +145,7 @@ class TestWorkflowEngine(unittest.TestCase):
         self.assertEqual(config["history_policy"]["followup_history_depth"], 6)
 
     def test_set_config_values_supports_nested_paths(self) -> None:
-        config = agents_config.set_config_values(
+        config = agents_configurator.set_config_values(
             {"routing_policy": {}, "history_policy": {}},
             {
                 "routing_policy.can_route": True,
@@ -157,7 +157,7 @@ class TestWorkflowEngine(unittest.TestCase):
         self.assertEqual(config["history_policy"]["followup_history_depth"], 12)
 
     def test_create_prompt_config_builds_missing_prompt_projection(self) -> None:
-        config = agents_config.create_prompt_config(
+        config = agents_configurator.create_prompt_config(
             "custom_agent",
             {
                 "prompt": "Custom prompt",
@@ -171,7 +171,7 @@ class TestWorkflowEngine(unittest.TestCase):
         self.assertEqual(config["output_schema"]["agent"], "custom_agent")
 
     def test_create_agent_runtime_config_uses_existing_projection_as_base(self) -> None:
-        config = agents_config.create_agent_runtime_config(
+        config = agents_configurator.create_agent_runtime_config(
             "_xworker",
             {
                 "model": "gpt-5-mini",
@@ -184,7 +184,7 @@ class TestWorkflowEngine(unittest.TestCase):
         self.assertEqual(config["workflow"]["definition"], "custom_xworker_flow")
 
     def test_create_tool_config_normalizes_alias_and_applies_updates(self) -> None:
-        config = agents_config.create_tool_config(
+        config = agents_configurator.create_tool_config(
             "dispatch_docs",
             {
                 "description": "Dispatcher alias config",
@@ -195,7 +195,7 @@ class TestWorkflowEngine(unittest.TestCase):
         self.assertEqual(config["description"], "Dispatcher alias config")
 
     def test_create_workflow_config_builds_named_missing_workflow(self) -> None:
-        config = agents_config.create_workflow_config(
+        config = agents_configurator.create_workflow_config(
             "custom_flow",
             {
                 "entry_state": "start",
@@ -211,7 +211,7 @@ class TestWorkflowEngine(unittest.TestCase):
         self.assertTrue(config["states"]["done"]["terminal"])
 
     def test_create_handoff_schema_config_builds_default_schema(self) -> None:
-        config = agents_config.create_handoff_schema_config(
+        config = agents_configurator.create_handoff_schema_config(
             "custom_schema",
             {
                 "workflow_name": "custom_flow",
@@ -226,7 +226,7 @@ class TestWorkflowEngine(unittest.TestCase):
         self.assertEqual(config["instructions"], ["Use structured payload"])
 
     def test_create_agent_system_basic_config_builds_planner_builder_bundle(self) -> None:
-        config_bundle = agents_config.create_agent_system_basic_config(
+        config_bundle = agents_configurator.create_agent_system_basic_config(
             "qa_agency",
             {
                 "route_prefix": "/create agents",
@@ -249,7 +249,7 @@ class TestWorkflowEngine(unittest.TestCase):
 
     def test_create_agent_system_basic_config_rejects_missing_required_planning_fields(self) -> None:
         with self.assertRaisesRegex(ValueError, "invalid agent system action request"):
-            agents_config.create_agent_system_basic_config(
+            agents_configurator.create_agent_system_basic_config(
                 "qa_agency",
                 {
                     "agent_specs": [{"name": "planner"}],
@@ -259,12 +259,12 @@ class TestWorkflowEngine(unittest.TestCase):
             )
 
     def test_tool_projection_resolves_alias_to_canonical_config(self) -> None:
-        config = agents_config.TOOL_CONFIG_SERVICE.load_object_projection("dispatch_docs").to_config_dict()
+        config = agents_configurator.TOOL_CONFIG_SERVICE.load_object_projection("dispatch_docs").to_config_dict()
 
         self.assertEqual(config["name"], "dispatch_documents")
 
     def test_agent_workflow_projection_returns_named_workflow_config(self) -> None:
-        config = agents_config.WORKFLOW_CONFIG_SERVICE.load_agent_object_projection("_xplaner_xrouter").to_config_dict()
+        config = agents_configurator.WORKFLOW_CONFIG_SERVICE.load_agent_object_projection("_xplaner_xrouter").to_config_dict()
 
         self.assertEqual(config["name"], "xplaner_xrouter_router")
         self.assertEqual(config["entry_state"], "xplaner_ready")

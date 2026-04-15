@@ -435,6 +435,35 @@ JOB_PROMPT_CONFIGS: dict[str, dict[str, Any]] = {
             ],
         },
     },
+    "mail_agent_runtime": {
+        "prompt": _text(
+            """
+            === Job: mail_agent_runtime ===
+            Description: Runtime bridge job for the standalone Projekt_Mail_Agent process.
+            Goal: Start the external mail agent in deterministic once-mode or background watch-mode via run_mail_agent.
+
+            Rules:
+            - Prefer mode=once for bounded execution.
+            - Use mode=watch only when the user explicitly asks for continuous inbox watching.
+            - Return the run_mail_agent result payload unchanged.
+            - Do not invent IMAP/SMTP/Drive status.
+            """
+        ),
+        "task": {
+            "mode": "mail_agent_runtime",
+            "action_tool": "run_mail_agent",
+        },
+        "output_schema": {
+            "status": "ok|error|started",
+            "mode": "once|watch",
+            "exit_code": 0,
+            "project_dir": "...",
+            "python": "...",
+            "stdout": "...",
+            "stderr": "...",
+            "pid": 12345,
+        },
+    },
     "code_analysis": {
         "prompt": _text(
             """
@@ -520,6 +549,11 @@ JOB_CONFIGS: dict[str, dict[str, Any]] = {
         "skill_profile": "xworker_agent_system_builder",
         "default_object_name": "agent_system_configs",
     },
+    "mail_agent_runtime": {
+        "runtime_agent": "_xworker",
+        "skill_profile": "xworker_mail_agent_runtime",
+        "default_object_name": "emails",
+    },
     "code_analysis": {
         "runtime_agent": "_xworker",
         "skill_profile": "xworker_code_analysis",
@@ -559,6 +593,7 @@ def _tool_skill_profiles_for_agent(agent_label: str) -> dict[str, str]:
         "ingest_object": "xworker_dispatch",
         "store_object_result": "xworker_dispatch",
         "batch_generate_documents": "xworker_cover_letter_writer",
+        "run_mail_agent": "xworker_mail_agent_runtime",
         "vdb_worker": "xworker_core",
         "dispatch_documents": "xworker_dispatch",
         "read_document": "xworker_core",
@@ -570,7 +605,7 @@ def _tool_skill_profiles_for_agent(agent_label: str) -> dict[str, str]:
     }
 
 
-_SPECIALIZED_JOB_PROMPT_MAP: dict[tuple[str, str], str] = {
+SPECIALIZED_JOB_PROMPT_MAP: dict[tuple[str, str], str] = {
     (str(prompt_ref.get("agent_type") or "").strip(), str(prompt_ref.get("task_name") or "").strip()): job_name
     for job_name, config in JOB_CONFIGS.items()
     for prompt_ref in [config.get("specialized_prompt") or {}]
@@ -580,13 +615,12 @@ _SPECIALIZED_JOB_PROMPT_MAP: dict[tuple[str, str], str] = {
 }
 
 
-_LEGACY_AGENT_NAME_MAP: dict[str, str] = {
+LEGACY_AGENT_NAME_MAP: dict[str, str] = {
     "_xplaner_xrouter": "xplaner_xrouter",
     "_xworker": "xworker",
 }
 
-
-_CANONICAL_AGENT_LABEL_MAP: dict[str, str] = {
+CANONICAL_AGENT_LABEL_MAP: dict[str, str] = {
     "xplaner_xrouter": "_xplaner_xrouter",
     "xworker": "_xworker",
 }
@@ -615,6 +649,7 @@ AGENT_RUNTIME_CONFIG: dict[str, dict[str, Any]] = {
             "ingest_object",
             "store_object_result",
             "batch_generate_documents",
+            "run_mail_agent",
             "vdb_worker",
             "@dispatcher",
             "@doc_ro",
@@ -1122,6 +1157,12 @@ AGENT_SKILL_PROFILES: dict[str, dict[str, Any]] = {
         "description": "Worker profile for materializing persisted agent-system config bundles.",
         "job_name": "agent_system_builder",
     },
+    "xworker_mail_agent_runtime": {
+        "role": "xworker",
+        "prompt_fragments": ["source_grounding"],
+        "description": "Worker profile for running the standalone mail-agent runtime bridge.",
+        "job_name": "mail_agent_runtime",
+    },
     "xworker_code_analysis": {
         "role": "xworker",
         "prompt_fragments": ["source_grounding"],
@@ -1307,6 +1348,17 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
             {"name": "recipient", "type": "string", "description": "Email address of the recipient.", "required": True},
             {"name": "subject", "type": "string", "description": "Subject line of the email.", "required": True},
             {"name": "body", "type": "string", "description": "Body content of the email.", "required": True},
+        ],
+    },
+    {
+        "name": "run_mail_agent",
+        "description": "Start the standalone Projekt_Mail_Agent in once or watch mode.",
+        "parameters": [
+            {"name": "mode", "type": "string", "description": "Execution mode: once or watch.", "required": False, "enum": ["once", "watch"], "default": "once"},
+            {"name": "project_dir", "type": "string", "description": "Optional absolute path to Projekt_Mail_Agent. If omitted, default path or MAIL_AGENT_PROJECT_DIR is used.", "required": False},
+            {"name": "python_executable", "type": "string", "description": "Optional Python executable for the mail-agent process. If omitted, .venv/bin/python is preferred.", "required": False},
+            {"name": "timeout_seconds", "type": "integer", "description": "Timeout for once mode execution.", "required": False, "default": 120},
+            {"name": "background", "type": "boolean", "description": "When mode=watch, run detached in background.", "required": False, "default": True},
         ],
     },
     {
@@ -1675,7 +1727,7 @@ TOOL_GROUP_CONFIGS: dict[str, list[str]] = {
         "md_to_pdf",
     ],
     "web": ["fetch_url", "fetch_data", "call_api"],
-    "comms": ["send_mail", "calendar", "call", "accept_call", "reject_call"],
+    "comms": ["send_mail", "run_mail_agent", "calendar", "call", "accept_call", "reject_call"],
     "code": ["code_tool", "iter_documents"],
     "dispatcher": ["dispatch_documents", "execute_action_request", "upsert_object_record", "ingest_object", "store_object_result", "batch_generate_documents", "vdb_worker"],
 }
@@ -2314,7 +2366,7 @@ AGENTS_DB_STRUCTURE_CONFIGS: dict[str, dict[str, Any]] = {
                     },
                 ],
             },
-            "agents_dbs.py": {
+            "agents_db.py": {
                 "role": "knowledge_projection",
                 "layers": [
                     {
@@ -2387,7 +2439,7 @@ AGENTS_DB_STRUCTURE_CONFIGS: dict[str, dict[str, Any]] = {
                     "sync_parser_result_to_mongodb_knowledge",
                 ],
                 "from_module": "tools.py",
-                "to_module": "agents_dbs.py",
+                "to_module": "agents_db.py",
                 "target_objects": ["ObjectMappingService", "KnowledgeObjectService"],
                 "responsibility": "Bridge operational parser-result persistence to Mongo knowledge projection.",
             },
@@ -2399,7 +2451,7 @@ AGENTS_DB_STRUCTURE_CONFIGS: dict[str, dict[str, Any]] = {
                     "sync_retrieval_run_to_mongodb_knowledge",
                 ],
                 "from_module": "tools.py",
-                "to_module": "agents_dbs.py",
+                "to_module": "agents_db.py",
                 "target_objects": ["PipelineService", "KnowledgeObjectService"],
                 "responsibility": "Bridge retrieval execution telemetry to RetrievalRunObject persistence.",
             },
@@ -2478,7 +2530,7 @@ AGENTS_DB_WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
             },
             {
                 "name": "knowledge_projection",
-                "module": "agents_dbs.py",
+                "module": "agents_db.py",
                 "owner_objects": ["ObjectMappingService", "KnowledgeObjectService"],
                 "entry_functions": [
                     "sync_parser_result_to_mongodb_knowledge",
@@ -2514,7 +2566,7 @@ AGENTS_DB_WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
             },
             {
                 "name": "retrieval_telemetry_projection",
-                "module": "agents_dbs.py",
+                "module": "agents_db.py",
                 "owner_objects": ["PipelineService", "KnowledgeObjectService"],
                 "entry_functions": [
                     "sync_retrieval_run_to_mongodb_knowledge",
@@ -2530,7 +2582,7 @@ AGENTS_DB_WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
             },
             {
                 "name": "retrieval_validation",
-                "module": "agents_dbs.py",
+                "module": "agents_db.py",
                 "owner_objects": ["KnowledgeObjectService"],
                 "entry_functions": [
                     "find_objects",

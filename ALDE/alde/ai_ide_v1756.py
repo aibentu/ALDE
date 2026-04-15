@@ -26,6 +26,10 @@ _workspace_root = os.path.dirname(_repo_root)
 if _workspace_root not in sys.path:
     sys.path.insert(0, _workspace_root)
 
+_projects_root = os.path.dirname(_workspace_root)
+if _projects_root not in sys.path:
+    sys.path.insert(0, _projects_root)
+
 # Workaround für GNOME GLib-GIO-ERROR mit antialiasing
 # Verhindert Crash durch fehlende GNOME-Settings-Keys
 os.environ.setdefault('GDK_BACKEND', 'x11')
@@ -265,13 +269,13 @@ from PySide6.QtWidgets import (
 
 try:
     if __package__:
-        from .agents_ccompletion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore
+        from .agents_ccomp import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore
     else:
-        from alde.agents_ccompletion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore
+        from agents_ccomp import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore
 except ImportError as e:
     msg = str(e)
     if "attempted relative import" in msg or "no known parent package" in msg:
-        from agents_ccompletion import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore  # noqa: E402
+        from ALDE_Projekt.ALDE.alde.agents_ccomp import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore  # noqa: E402
     else:
         raise
 
@@ -762,8 +766,25 @@ def _draw_fallback(symbol: str = "x") -> QIcon:
     if symbol == "+":
         p.drawLine(size // 2, 6, size // 2, size - 6)
         p.drawLine(6, size // 2, size - 6, size // 2)
+    elif symbol == "(/)":
+        # Chat marker: draw a compact (/) glyph.
+        chat_pen = QPen(p.pen())
+        chat_pen.setWidth(3)
+        p.setPen(chat_pen)
+
+        p.drawLine(9, 8, 7, size // 2)
+        p.drawLine(7, size // 2, 9, size - 8)
+
+        p.drawLine(size - 9, 8, size - 7, size // 2)
+        p.drawLine(size - 7, size // 2, size - 9, size - 8)
+
+        p.drawLine(13, size - 8, 19, 8)
     elif symbol == "[/]":
         # Draw a compact bracket-slash-bracket glyph for the control panel.
+        control_pen = QPen(p.pen())
+        control_pen.setWidth(3)
+        p.setPen(control_pen)
+
         p.drawLine(7, 8, 7, size - 8)
         p.drawLine(7, 8, 12, 8)
         p.drawLine(7, size - 8, 12, size - 8)
@@ -773,6 +794,20 @@ def _draw_fallback(symbol: str = "x") -> QIcon:
         p.drawLine(size - 7, 8, size - 7, size - 8)
         p.drawLine(size - 12, 8, size - 7, 8)
         p.drawLine(size - 12, size - 8, size - 7, size - 8)
+    elif symbol == "[\\_|":
+        # Left-toolbar marker: [\_| (bracket, backslash, underscore, bar).
+        left_pen = QPen(p.pen())
+        left_pen.setWidth(3)
+        p.setPen(left_pen)
+
+        p.drawLine(6, 8, 6, size - 8)
+        p.drawLine(6, 8, 11, 8)
+        p.drawLine(6, size - 8, 11, size - 8)
+
+        p.drawLine(12, 9, 18, size - 10)
+        p.drawLine(18, size - 10, 24, size - 10)
+        p.drawLine(24, 8, 24, size - 8)
+
     else:                             # default:  ❌
         p.drawLine(8, 8, size - 8, size - 8)
         p.drawLine(8, size - 8, size - 8, 8)
@@ -1034,13 +1069,13 @@ class ChatAttachmentService:
         read_document = None
         try:
             if __package__:
-                from .tools import read_document  # type: ignore
+                from .agents_tools import read_document  # type: ignore
             else:
-                from alde.tools import read_document  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_tools import read_document  # type: ignore
         except ImportError as e:
             msg = str(e)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from tools import read_document  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_tools import read_document  # type: ignore
             else:
                 raise
 
@@ -1999,6 +2034,8 @@ class AIWidget(QWidget):
     '''AI-Chat-Dock – fehlerbereinigte Version'''
 
     _PROMPT_SNAP_HEIGHT = 90
+    _PROMPT_MAX_HEIGHT = 260
+    _PROMPT_AUTOFIT_PADDING = 12
 
     def __init__(self,
         accent, 
@@ -2071,46 +2108,23 @@ class AIWidget(QWidget):
             placeholderText="Prompt …",
             objectName="aiInput"       )
         self.prompt_edit.setAttribute(Qt.WA_StyledBackground, True)
-        self.prompt_edit.setMinimumHeight(self._PROMPT_SNAP_HEIGHT )
+        self.prompt_edit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.prompt_edit.setMinimumHeight(self._PROMPT_SNAP_HEIGHT)
+        self.prompt_edit.setMaximumHeight(self._PROMPT_MAX_HEIGHT)
+        self.prompt_edit.setFixedHeight(self._PROMPT_SNAP_HEIGHT)
+        self.prompt_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.prompt_edit.setStyleSheet("QTextEdit#aiInput { font-size: 15px; }")
 
-        # 3) Splitter  ▌ ChatHistory ▌ Prompt ▌
-        splitter = QSplitter(Qt.Vertical, self)
-        splitter.setObjectName("chatPaneSplitter")
-        splitter.setChildrenCollapsible(True)
-        splitter.setHandleWidth(7)
-        splitter.setOpaqueResize(True)
-        handle_idle, handle_hover, handle_pressed = _splitter_handle_palette(self.scheme)
-        splitter.setStyleSheet(
-            f"""
-            QSplitter#chatPaneSplitter::handle:horizontal {{
-                background: {handle_idle};
-                margin: 0px 12px;
-                min-height: 7px;
-                border-radius: 999px;
-            }}
-            QSplitter#chatPaneSplitter::handle:vertical {{
-                background: {handle_idle};
-                margin: 0px;
-                min-width: 7px;
-                border-radius: 999px;
-            }}
-            QSplitter#chatPaneSplitter::handle:hover {{
-                background: {handle_hover};
-            }}
-            QSplitter#chatPaneSplitter::handle:pressed {{
-                background: {handle_pressed};
-            }}
-            """
-        )
-        splitter.addWidget(self.chat_view)
-        splitter.addWidget(self.prompt_edit)
-        splitter.setSizes([400, self._PROMPT_SNAP_HEIGHT ])
+        # 3) Prompt in ChatWindow integrieren
+        self.chat_view.set_prompt_widget(self.prompt_edit, snap_height=self._PROMPT_SNAP_HEIGHT)
+        QTimer.singleShot(0, self._apply_prompt_snap_height)
 
         # 4) Footer-Buttons
-        footer = QWidget(self, objectName="footer")
+        footer = QWidget(self)
+        footer.setObjectName("chatFooterControls")
         flay   = QHBoxLayout(footer)
         flay.setContentsMargins(0, 0, 0, 0)
+        flay.setSpacing(4)
 
         self.btn_img_create  = ToolButton("photo.svg",   "Create image",
                                           slot=self._create_img)
@@ -2125,22 +2139,64 @@ class AIWidget(QWidget):
                   self.btn_send,
                   self.btn_mic):
             flay.addWidget(w, 0, Qt.AlignLeft)
-        flay.addStretch()
+
+        # Buttons ebenfalls in den ChatWindow-Container einhängen.
+        self.chat_view.set_footer_widget(footer)
 
         # 5) Gesamtlayout
         vbox = QVBoxLayout(self)
         vbox.setContentsMargins(0, 0, 0, 0)
         vbox.setSpacing(0)
-        vbox.addWidget(splitter, 1)
-        vbox.addWidget(footer)
+        vbox.addWidget(self.chat_view, 1)
         # ------------------------------------------------------------------- SIGNALS
 
         # ---------------------------------------------------------------------------
         #  SIGNAL-VERDRAHTUNG   (nur noch das Prompt-Feld liefert FilesDropped)
         # ---------------------------------------------------------------------------
     def _wire(self) -> None:
-            self.prompt_edit.filesDropped.connect(
-               self. _remember_files)
+        self.prompt_edit.filesDropped.connect(self._remember_files)
+        self.prompt_edit.textChanged.connect(self._schedule_prompt_autofit)
+        try:
+            self.prompt_edit.document().documentLayout().documentSizeChanged.connect(
+                lambda _size: self._schedule_prompt_autofit()
+            )
+        except Exception:
+            pass
+        self._schedule_prompt_autofit()
+
+    def _apply_prompt_snap_height(self) -> None:
+        editor = getattr(self, "prompt_edit", None)
+        if editor is None:
+            return
+
+        editor.setFixedHeight(self._PROMPT_SNAP_HEIGHT)
+        editor.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+    def _schedule_prompt_autofit(self) -> None:
+        QTimer.singleShot(0, self._autofit_prompt_editor)
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._schedule_prompt_autofit()
+
+    def _autofit_prompt_editor(self) -> None:
+        editor = getattr(self, "prompt_edit", None)
+        if editor is None:
+            return
+
+        document = editor.document()
+        document.setTextWidth(max(1, editor.viewport().width()))
+        layout = document.documentLayout()
+        content_height = layout.documentSize().height() if layout is not None else document.size().height()
+
+        target_height = int(content_height) + int(document.documentMargin() * 2) + self._PROMPT_AUTOFIT_PADDING
+        target_height = max(self._PROMPT_SNAP_HEIGHT, min(target_height, self._PROMPT_MAX_HEIGHT))
+
+        editor.setFixedHeight(target_height)
+        editor.setVerticalScrollBarPolicy(
+            Qt.ScrollBarAsNeeded if target_height >= self._PROMPT_MAX_HEIGHT else Qt.ScrollBarAlwaysOff
+        )
+
     @Slot(list)
     def _remember_files(self, paths:list|None) -> None:
                 self._dropped_files = CHAT_ATTACHMENT_SERVICE.normalize_object_paths(paths)
@@ -3189,24 +3245,43 @@ class ChatWindow(QWidget):
         rf"^{re.escape(ChatAttachmentService._SOURCE_HEADER_PREFIX)}\s+(?P<path>.+?)\s*$"
     )
     _LANGUAGE_BY_SUFFIX = dict(ChatAttachmentService._LANGUAGE_BY_SUFFIX)
+    _OUTER_MARGIN_LEFT_RIGHT = 0
+    _OUTER_MARGIN_BOTTOM = 0
 
     def __init__(self, scheme: dict[str, str] | None = None):
         super().__init__()
         self._scheme = dict(scheme or {})
+        self._prompt_widget: QWidget | None = None
+        self._footer_widget: QWidget | None = None
+        self._prompt_snap_height = 90
+
         root = QVBoxLayout(self)
-        root.setContentsMargins(0, 0, 0, 0)
+        root.setContentsMargins(
+            self._OUTER_MARGIN_LEFT_RIGHT,
+            0,
+            self._OUTER_MARGIN_LEFT_RIGHT,
+            self._OUTER_MARGIN_BOTTOM,
+        )
+        root.setSpacing(0)
         self.setObjectName("chatHistoryWindow")
 
         from PySide6.QtWidgets import QScrollArea
 
-        self.scroller = QScrollArea(self)
+        self._shell = QFrame(self)
+        self._shell.setObjectName("chatHistoryShell")
+        self._shell_layout = QVBoxLayout(self._shell)
+        self._shell_layout.setContentsMargins(0, 0, 0, 0)
+        self._shell_layout.setSpacing(0)
+        root.addWidget(self._shell, 1)
+
+        self.scroller = QScrollArea(self._shell)
         self.scroller.setObjectName("chatHistoryScroller")
         self.scroller.setWidgetResizable(True)
         self.scroller.setFrameShape(QFrame.NoFrame)
         self.scroller.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroller.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.scroller.viewport().setObjectName("chatHistoryScrollViewport")
-        root.addWidget(self.scroller, 1)
+        self._shell_layout.addWidget(self.scroller, 1)
 
         self.viewport = QWidget()
         self.viewport.setObjectName("chatHistoryViewport")
@@ -3215,10 +3290,61 @@ class ChatWindow(QWidget):
         self.vlayout.setSpacing(2)
         self.vlayout.setAlignment(Qt.AlignTop)
         self.scroller.setWidget(self.viewport)
+
+        self._prompt_container = QFrame(self._shell)
+        self._prompt_container.setObjectName("chatPromptContainer")
+        self._prompt_layout = QVBoxLayout(self._prompt_container)
+        self._prompt_layout.setContentsMargins(12, 10, 12, 0)
+        self._prompt_layout.setSpacing(6)
+        self._shell_layout.addWidget(self._prompt_container, 0)
+        self._prompt_container.hide()
+
         self._apply_history_style()
+
+    def set_prompt_widget(self, prompt_widget: QWidget, *, snap_height: int = 90) -> None:
+        if prompt_widget is None:
+            return
+
+        self._prompt_snap_height = max(64, int(snap_height))
+        if self._prompt_widget is prompt_widget:
+            self._prompt_widget.setFixedHeight(self._prompt_snap_height)
+            self._prompt_container.show()
+            return
+
+        if self._prompt_widget is not None:
+            self._prompt_layout.removeWidget(self._prompt_widget)
+            self._prompt_widget.setParent(None)
+
+        prompt_widget.setParent(self._prompt_container)
+        prompt_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        prompt_widget.setFixedHeight(self._prompt_snap_height)
+        self._prompt_layout.insertWidget(0, prompt_widget, 0)
+        self._prompt_widget = prompt_widget
+        self._prompt_container.show()
+        prompt_widget.show()
+
+    def set_footer_widget(self, footer_widget: QWidget | None) -> None:
+        if footer_widget is None:
+            return
+
+        if self._footer_widget is footer_widget:
+            self._prompt_container.show()
+            return
+
+        if self._footer_widget is not None:
+            self._prompt_layout.removeWidget(self._footer_widget)
+            self._footer_widget.setParent(None)
+
+        footer_widget.setParent(self._prompt_container)
+        footer_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        self._prompt_layout.addWidget(footer_widget, 0, Qt.AlignLeft)
+        self._footer_widget = footer_widget
+        self._prompt_container.show()
+        footer_widget.show()
 
     def _apply_history_style(self) -> None:
         history_bg = self._scheme.get("col9", "#181818")
+        prompt_bg = history_bg
         history_border = self._scheme.get("col10", "#404040")
         history_accent = self._scheme.get("col2", self._scheme.get("col1", "#6280ff"))
         slot_handle_idle, slot_handle_hover, slot_handle_pressed = _splitter_handle_palette(self._scheme)
@@ -3227,18 +3353,36 @@ class ChatWindow(QWidget):
             QWidget#chatHistoryWindow {{
                 background: transparent;
             }}
-            QScrollArea#chatHistoryScroller {{
+            QFrame#chatHistoryShell {{
                 background: {history_bg};
                 border: 1px solid {history_border};
                 border-radius: 12px;
             }}
+            QScrollArea#chatHistoryScroller {{
+                background: transparent;
+                border: none;
+            }}
             QWidget#chatHistoryScrollViewport {{
-                background: {history_bg};
-                border-radius: 12px;
+                background: transparent;
+                border: none;
             }}
             QWidget#chatHistoryViewport {{
+                background: transparent;
+                border: none;
+            }}
+            QFrame#chatPromptContainer {{
+                background: {prompt_bg};
+                border-top: 1px solid {history_border};
+                border-bottom-left-radius: 12px;
+                border-bottom-right-radius: 12px;
+            }}
+            QFrame#chatPromptContainer QTextEdit#aiInput {{
                 background: {history_bg};
-                border-radius: 12px;
+                border: 1px solid {history_accent};
+            }}
+            QWidget#chatFooterControls {{
+                background: transparent;
+                border: none;
             }}
             QScrollArea#chatHistoryScroller QScrollBar:vertical,
             QScrollArea#chatHistoryScroller QScrollBar:horizontal {{
@@ -5583,11 +5727,11 @@ class ControlPlaneWidget(QWidget):
             if __package__:
                 from .agents_config import AgentSystemBuilderRequestObject  # type: ignore
             else:
-                from alde.agents_config import AgentSystemBuilderRequestObject  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_configurator import AgentSystemBuilderRequestObject  # type: ignore
         except ImportError as exc:
             msg = str(exc)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from agents_config import AgentSystemBuilderRequestObject  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_configurator import AgentSystemBuilderRequestObject  # type: ignore
             else:
                 raise
 
@@ -5680,13 +5824,13 @@ class ControlPlaneWidget(QWidget):
     ) -> dict[str, Any]:
         try:
             if __package__:
-                from .tools import build_agent_system_configs_tool  # type: ignore
+                from .agents_tools import build_agent_system_configs_tool  # type: ignore
             else:
-                from alde.tools import build_agent_system_configs_tool  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_tools import build_agent_system_configs_tool  # type: ignore
         except ImportError as exc:
             msg = str(exc)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from tools import build_agent_system_configs_tool  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_tools import build_agent_system_configs_tool  # type: ignore
             else:
                 raise
 
@@ -6305,7 +6449,7 @@ class ControlPlaneWidget(QWidget):
                     get_workflow_configs,
                 )
             else:
-                from alde.agents_config import (  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_configurator import (  # type: ignore
                     get_agent_manifests,
                     get_tool_configs,
                     get_tool_group_configs,
@@ -6314,7 +6458,7 @@ class ControlPlaneWidget(QWidget):
         except ImportError as exc:
             msg = str(exc)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from agents_config import (  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_configurator import (  # type: ignore
                     get_agent_manifests,
                     get_tool_configs,
                     get_tool_group_configs,
@@ -7055,13 +7199,13 @@ class ControlPlaneWidget(QWidget):
         try:
             try:
                 if __package__:
-                    from .tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
+                    from .agents_tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
                 else:
-                    from alde.tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
+                    from ALDE_Projekt.ALDE.alde.agents_tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
             except ImportError as exc:
                 msg = str(exc)
                 if "attempted relative import" in msg or "no known parent package" in msg:
-                    from tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
+                    from ALDE_Projekt.ALDE.alde.agents_tools import DOCUMENT_DISPATCH_SERVICE, _default_dispatcher_db_path  # type: ignore
                 else:
                     raise
 
@@ -7111,13 +7255,13 @@ class ControlPlaneWidget(QWidget):
     def _repair_dispatcher_store_path(self, dispatcher_db_path: str | None = None) -> dict[str, Any]:
         try:
             if __package__:
-                from .tools import DOCUMENT_DISPATCH_SERVICE, DOCUMENT_REPOSITORY, _default_dispatcher_db_path  # type: ignore
+                from .agents_tools import DOCUMENT_DISPATCH_SERVICE, DOCUMENT_REPOSITORY, _default_dispatcher_db_path  # type: ignore
             else:
-                from alde.tools import DOCUMENT_DISPATCH_SERVICE, DOCUMENT_REPOSITORY, _default_dispatcher_db_path  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_tools import DOCUMENT_DISPATCH_SERVICE, DOCUMENT_REPOSITORY, _default_dispatcher_db_path  # type: ignore
         except ImportError as exc:
             msg = str(exc)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from tools import DOCUMENT_DISPATCH_SERVICE, DOCUMENT_REPOSITORY, _default_dispatcher_db_path  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_tools import DOCUMENT_DISPATCH_SERVICE, DOCUMENT_REPOSITORY, _default_dispatcher_db_path  # type: ignore
             else:
                 raise
 
@@ -7303,7 +7447,7 @@ class ControlPlaneWidget(QWidget):
 class MainAIEditor(QMainWindow):
     ORG_NAME: Final = "ai.bentu"
 
-    APP_NAME: Final = "/\|-/\/\|_IDE"
+    APP_NAME: Final = "[\_|"
     _SCHEMA:  Final = 2
 
     # ---------------------------------------------------------------- init --
@@ -7321,7 +7465,7 @@ class MainAIEditor(QMainWindow):
         except Exception:
             init_level = 999
 
-        self.setWindowTitle('[/] AI IDE')
+        self.setWindowTitle(self.APP_NAME)
         self.resize(1280, 800)
         #self.showFullScreen
         # ---- create primary widgets/layout --------------------------------
@@ -7627,7 +7771,7 @@ class MainAIEditor(QMainWindow):
         # ---------- NEU: Chat-Toggle --------------- # <– 10.07.2025 ---------
 
         self.act_toggle_chat = QAction(
-            _draw_circle_icon(),
+            _draw_fallback("(/)"),
             "Chat", self, 
             checkable = True, 
             checked = True
@@ -7681,12 +7825,13 @@ class MainAIEditor(QMainWindow):
         
         # ---- project-overview / explorer ---------------------------------
         self.act_toggle_explorer = QAction(
-               _icon("explorer.svg"),
-             "Explorer", self,
-             checkable=True, checked=True
-             )
+            _icon("explorer.svg"),
+            "Explorer", self,
+            checkable=True, checked=True
+        )
 
         self.act_toggle_explorer.setToolTip("Project-Explorer anzeigen")
+
 
         # ---- tabable dock ------------------------------------------------
         self.act_toggle_tabdock = QAction(
@@ -7770,8 +7915,8 @@ class MainAIEditor(QMainWindow):
         Creates and configures the main and side toolbars for the application window.
         - Initializes the top toolbar (`tb_top`) with a custom icon size (3 pixels larger than the default).
         - Adds a set of predefined actions to the top toolbar.
-        - Initializes left (`tb_left`) and right (`tb_right`) vertical toolbars, applying the same icon size as the top toolbar.
-        - Adds specific actions to the side toolbars and places them in the appropriate toolbar areas.
+        - Initializes the right (`tb_right`) vertical toolbar, applying the same icon size as the top toolbar.
+        - Adds the control plane actions to the side toolbar.
         """
         self.tb_top = QToolBar("Main", self)
         # QMainWindow.saveState/restoreState rely on unique objectName values.
@@ -7792,14 +7937,12 @@ class MainAIEditor(QMainWindow):
 
         # ---------------- seitliche Toolbars ------------------------------- 
 
-        self.tb_left  = QToolBar(self, orientation=Qt.Vertical)
         self.tb_right = QToolBar(self, orientation=Qt.Vertical)
-        self.tb_left.setObjectName("ToolbarLeft")
         self.tb_right.setObjectName("ToolbarRight")
 
         # auch hier die größere Icongröße übernehmen
 
-        for bar in (self.tb_left, self.tb_right):
+        for bar in (self.tb_right,):
             bar.setIconSize(self.tb_top.iconSize())
             bar.setToolButtonStyle(Qt.ToolButtonIconOnly)
             bar.setMovable(False)
@@ -7815,13 +7958,7 @@ class MainAIEditor(QMainWindow):
                 " margin: 0px;"
                 " }"
             )
-            self.addToolBar(Qt.LeftToolBarArea if bar is self.tb_left
-                            else Qt.RightToolBarArea, bar)
-
-        # Left toolbar: Explorer toggle (JsonTree / project explorer dock)
-        if hasattr(self, "act_toggle_explorer"):
-            self.tb_left.addSeparator()
-            self.tb_left.addAction(self.act_toggle_explorer)
+            self.addToolBar(Qt.RightToolBarArea, bar)
 
         # Right toolbar: Agentic Control Plane toggle + refresh
         if hasattr(self, "act_toggle_control_plane"):
@@ -7901,6 +8038,16 @@ class MainAIEditor(QMainWindow):
             self,
             triggered=self._acp_open_new_runtime_tab,
         )
+        act_acp_import_runtime = QAction(
+            "Runtime importieren (Layout-Pfad)",
+            self,
+            triggered=self._acp_import_runtime_layout,
+        )
+        act_acp_export_runtime = QAction(
+            "Runtime exportieren (Layout-Pfad)",
+            self,
+            triggered=self._acp_export_runtime_layout,
+        )
 
         acp_enabled = getattr(self, "control_plane_widget", None) is not None
         for action in (
@@ -7910,6 +8057,8 @@ class MainAIEditor(QMainWindow):
             act_acp_markdown_tab,
             act_acp_toml_tab,
             act_acp_new_runtime_tab,
+            act_acp_import_runtime,
+            act_acp_export_runtime,
         ):
             action.setEnabled(acp_enabled)
 
@@ -7919,7 +8068,13 @@ class MainAIEditor(QMainWindow):
         acp_select.addAction(act_acp_markdown_tab)
         acp_select.addAction(act_acp_toml_tab)
         acp_select.addSeparator()
+        self._acp_saved_runtimes_menu = acp_select.addMenu("Runtime")
+        self._acp_saved_runtimes_menu.aboutToShow.connect(self._rebuild_acp_saved_runtimes_menu)
+        self._acp_saved_runtimes_menu.setEnabled(acp_enabled)
         acp.addAction(act_acp_new_runtime_tab)
+        acp.addSeparator()
+        acp.addAction(act_acp_import_runtime)
+        acp.addAction(act_acp_export_runtime)
 
         # -------------- VIEW ------------------------------------------------
         view = mbar.addMenu("View")
@@ -8060,6 +8215,379 @@ class MainAIEditor(QMainWindow):
             control_plane._open_new_runtime_tab()
         except Exception as exc:
             QMessageBox.warning(self, "ACP", f"Runtime-Tab konnte nicht erstellt werden: {exc}")
+
+    @Slot()
+    def _acp_import_runtime_layout(self) -> None:
+        control_plane = getattr(self, "control_plane_widget", None)
+        if control_plane is None:
+            self.statusBar().showMessage("ACP disabled", 2500)
+            return
+
+        try:
+            configured_layout_path = Path(str(control_plane.runtime_layout_path()))
+        except Exception:
+            configured_layout_path = Path()
+        if not configured_layout_path.exists():
+            QMessageBox.warning(
+                self,
+                "ACP",
+                f"Runtime-Import fehlgeschlagen: Layout-Datei nicht gefunden ({configured_layout_path})",
+            )
+            return
+
+        if hasattr(self, "control_plane_dock") and isinstance(self.control_plane_dock, QDockWidget):
+            if not self.control_plane_dock.isVisible():
+                self.control_plane_dock.show()
+
+        try:
+            reload_runtime = getattr(control_plane, "_reload_runtime_layout_from_path", None)
+            if not callable(reload_runtime):
+                raise RuntimeError("Runtime-Import nicht verfügbar")
+            reload_runtime()
+        except Exception as exc:
+            QMessageBox.warning(self, "ACP", f"Runtime-Import fehlgeschlagen: {exc}")
+            return
+
+        try:
+            layout_path = str(control_plane.runtime_layout_path())
+        except Exception:
+            layout_path = ""
+        if layout_path:
+            self.statusBar().showMessage(f"Runtime importiert: {layout_path}", 3200)
+        else:
+            self.statusBar().showMessage("Runtime importiert", 3200)
+
+    @Slot()
+    def _acp_export_runtime_layout(self) -> None:
+        control_plane = getattr(self, "control_plane_widget", None)
+        if control_plane is None:
+            self.statusBar().showMessage("ACP disabled", 2500)
+            return
+
+        if hasattr(self, "control_plane_dock") and isinstance(self.control_plane_dock, QDockWidget):
+            if not self.control_plane_dock.isVisible():
+                self.control_plane_dock.show()
+
+        try:
+            persist_runtime = getattr(control_plane, "persist_runtime_tabs_state", None)
+            if not callable(persist_runtime):
+                raise RuntimeError("Runtime-Export nicht verfügbar")
+            export_path = persist_runtime(force=True)
+        except Exception as exc:
+            QMessageBox.warning(self, "ACP", f"Runtime-Export fehlgeschlagen: {exc}")
+            return
+
+        if export_path is not None:
+            self.statusBar().showMessage(f"Runtime exportiert: {export_path}", 3200)
+        else:
+            QMessageBox.warning(self, "ACP", "Runtime-Export fehlgeschlagen.")
+
+    def _acp_runtime_layout_payload(self) -> dict[str, Any] | None:
+        control_plane = getattr(self, "control_plane_widget", None)
+        if control_plane is None:
+            return None
+
+        try:
+            layout_path = Path(str(control_plane.runtime_layout_path()))
+        except Exception:
+            return None
+        if not layout_path.is_file():
+            return None
+
+        try:
+            payload = json.loads(layout_path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+        if not isinstance(payload, dict):
+            return None
+
+        return payload
+
+    def _acp_saved_runtime_names(self) -> list[str]:
+        payload = self._acp_runtime_layout_payload()
+        if not isinstance(payload, dict):
+            return []
+
+        tabs_payload = payload.get("tabs")
+        if not isinstance(tabs_payload, list):
+            return []
+
+        names: list[str] = []
+        seen: set[str] = set()
+        for entry in tabs_payload:
+            if not isinstance(entry, dict):
+                continue
+            name = str(entry.get("name") or "").strip()
+            if not name:
+                continue
+            dedupe_key = name.lower()
+            if dedupe_key in seen:
+                continue
+            seen.add(dedupe_key)
+            names.append(name)
+        return names
+
+    def _acp_saved_runtime_widget_entries(self) -> list[tuple[str, str]]:
+        payload = self._acp_runtime_layout_payload()
+        if not isinstance(payload, dict):
+            return []
+
+        tabs_payload = payload.get("tabs")
+        if not isinstance(tabs_payload, list):
+            return []
+
+        entries: list[tuple[str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for tab_entry in tabs_payload:
+            if not isinstance(tab_entry, dict):
+                continue
+
+            tab_name = str(tab_entry.get("name") or "").strip()
+            widget_entries = tab_entry.get("widgets")
+            if not tab_name or not isinstance(widget_entries, list):
+                continue
+
+            for widget in widget_entries:
+                if not isinstance(widget, dict):
+                    continue
+
+                widget_title = str(widget.get("title") or "").strip()
+                source_path = str(widget.get("source_path") or "").strip()
+                source_name = Path(source_path).name.lower() if source_path else ""
+                normalized_title = widget_title.lower()
+
+                is_runtime_config_entry = (
+                    "runtime_config" in normalized_title
+                    or source_name.startswith("runtime_config")
+                )
+                if not is_runtime_config_entry:
+                    continue
+
+                key = (tab_name.lower(), widget_title.lower())
+                if key in seen:
+                    continue
+                seen.add(key)
+                entries.append((tab_name, widget_title or "runtime_config.json"))
+
+        return entries
+
+    def _acp_saved_runtime_config_paths(self) -> list[Path]:
+        control_plane = getattr(self, "control_plane_widget", None)
+        if control_plane is None:
+            return []
+
+        candidate_dirs: list[Path] = []
+        try:
+            candidate_dirs.append(Path(str(control_plane.runtime_layout_path())).parent)
+        except Exception:
+            pass
+
+        try:
+            project_root = Path(__file__).resolve().parents[2]
+            candidate_dirs.append(project_root / "AppData")
+            candidate_dirs.append(project_root / "ALDE" / "AppData")
+        except Exception:
+            pass
+
+        runtime_paths: list[Path] = []
+        seen: set[str] = set()
+        for base_dir in candidate_dirs:
+            if not base_dir.is_dir():
+                continue
+            try:
+                matches = sorted(base_dir.rglob("runtime_config*.json"))
+            except Exception:
+                continue
+            for path in matches:
+                try:
+                    resolved = str(path.resolve())
+                except Exception:
+                    resolved = str(path)
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
+                runtime_paths.append(path)
+
+        return runtime_paths
+
+    @Slot(str)
+    def _acp_open_runtime_config_file(self, file_path: str) -> None:
+        selected_path = Path(str(file_path or "").strip()).expanduser()
+        if not selected_path.is_file():
+            QMessageBox.information(self, "ACP", f"Runtime-Datei nicht gefunden: {selected_path}")
+            return
+
+        control_plane = getattr(self, "control_plane_widget", None)
+        if control_plane is None:
+            self.statusBar().showMessage("ACP disabled", 2500)
+            return
+
+        if hasattr(self, "control_plane_dock") and isinstance(self.control_plane_dock, QDockWidget):
+            if not self.control_plane_dock.isVisible():
+                self.control_plane_dock.show()
+
+        try:
+            runtime_text = selected_path.read_text(encoding="utf-8", errors="replace")
+            append_runtime_widget = getattr(control_plane, "append_runtime_widget", None)
+            if not callable(append_runtime_widget):
+                raise RuntimeError("Runtime-Datei-Import nicht verfügbar")
+            append_runtime_widget(
+                tab_name=selected_path.stem or "Runtime",
+                widget_kind="code_json",
+                content=runtime_text,
+                source_path=str(selected_path),
+                title=selected_path.name,
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "ACP", f"Runtime-Datei konnte nicht geöffnet werden: {exc}")
+            return
+
+        self.statusBar().showMessage(f"Runtime-Datei geöffnet: {selected_path.name}", 3200)
+
+    def _rebuild_acp_saved_runtimes_menu(self) -> None:
+        menu = getattr(self, "_acp_saved_runtimes_menu", None)
+        if not isinstance(menu, QMenu):
+            return
+
+        menu.clear()
+        control_plane = getattr(self, "control_plane_widget", None)
+        if control_plane is None:
+            disabled_action = QAction("ACP disabled", self)
+            disabled_action.setEnabled(False)
+            menu.addAction(disabled_action)
+            return
+
+        runtime_paths = self._acp_saved_runtime_config_paths()
+        runtime_widget_entries = self._acp_saved_runtime_widget_entries()
+        runtime_names = self._acp_saved_runtime_names()
+        if not runtime_paths and not runtime_widget_entries and not runtime_names:
+            empty_action = QAction("Keine gespeicherten Runtimes", self)
+            empty_action.setEnabled(False)
+            menu.addAction(empty_action)
+            return
+
+        current_runtime_name = ""
+        try:
+            tabs = getattr(control_plane, "tabs", None)
+            runtime_records = getattr(control_plane, "_runtime_tab_records", {})
+            if tabs is not None and hasattr(tabs, "currentWidget") and hasattr(tabs, "tabText"):
+                current_widget = tabs.currentWidget()
+                if isinstance(runtime_records, dict) and current_widget in runtime_records:
+                    current_runtime_name = str(tabs.tabText(tabs.currentIndex()) or "").strip()
+        except Exception:
+            current_runtime_name = ""
+
+        if runtime_paths:
+            files_header = QAction("Runtime-Dateien", self)
+            files_header.setEnabled(False)
+            menu.addAction(files_header)
+
+            name_counts: dict[str, int] = {}
+            for runtime_path in runtime_paths:
+                runtime_name = runtime_path.name
+                name_counts[runtime_name] = int(name_counts.get(runtime_name) or 0) + 1
+
+            for runtime_path in runtime_paths:
+                runtime_name = runtime_path.name
+                if int(name_counts.get(runtime_name) or 0) > 1:
+                    try:
+                        label = str(runtime_path.relative_to(runtime_path.parents[1]))
+                    except Exception:
+                        label = str(runtime_path)
+                else:
+                    label = runtime_name
+
+                action = QAction(label, self)
+                action.setToolTip(str(runtime_path))
+                action.triggered.connect(
+                    lambda _checked=False, selected_path=str(runtime_path): self._acp_open_runtime_config_file(selected_path)
+                )
+                menu.addAction(action)
+
+        if runtime_widget_entries:
+            if menu.actions():
+                menu.addSeparator()
+            widgets_header = QAction("Gespeicherte Runtime-Widgets", self)
+            widgets_header.setEnabled(False)
+            menu.addAction(widgets_header)
+
+            for tab_name, widget_title in runtime_widget_entries:
+                label = f"{widget_title} ({tab_name})"
+                action = QAction(label, self)
+                action.setToolTip(f"Runtime-Tab: {tab_name}")
+                action.triggered.connect(
+                    lambda _checked=False, selected_runtime_name=tab_name: self._acp_select_saved_runtime(selected_runtime_name)
+                )
+                menu.addAction(action)
+
+        if runtime_names:
+            if menu.actions():
+                menu.addSeparator()
+            tabs_header = QAction("Runtime-Tabs", self)
+            tabs_header.setEnabled(False)
+            menu.addAction(tabs_header)
+
+            for runtime_name in runtime_names:
+                action = QAction(runtime_name, self)
+                action.setCheckable(True)
+                action.setChecked(bool(current_runtime_name) and runtime_name.strip().lower() == current_runtime_name.lower())
+                action.triggered.connect(
+                    lambda _checked=False, selected_runtime_name=runtime_name: self._acp_select_saved_runtime(selected_runtime_name)
+                )
+                menu.addAction(action)
+
+    @Slot(str)
+    def _acp_select_saved_runtime(self, runtime_name: str) -> None:
+        selected_name = str(runtime_name or "").strip()
+        if not selected_name:
+            return
+
+        control_plane = getattr(self, "control_plane_widget", None)
+        if control_plane is None:
+            self.statusBar().showMessage("ACP disabled", 2500)
+            return
+
+        if hasattr(self, "control_plane_dock") and isinstance(self.control_plane_dock, QDockWidget):
+            if not self.control_plane_dock.isVisible():
+                self.control_plane_dock.show()
+
+        finder = getattr(control_plane, "_find_runtime_tab_by_name", None)
+        tab_widget = None
+        if callable(finder):
+            try:
+                tab_widget = finder(selected_name)
+            except Exception:
+                tab_widget = None
+
+        # If the tab is not currently loaded, pull the latest state from the
+        # configured runtime layout path and try again.
+        if tab_widget is None:
+            reload_runtime = getattr(control_plane, "_reload_runtime_layout_from_path", None)
+            if callable(reload_runtime):
+                try:
+                    reload_runtime()
+                except Exception:
+                    pass
+            if callable(finder):
+                try:
+                    tab_widget = finder(selected_name)
+                except Exception:
+                    tab_widget = None
+
+        tabs = getattr(control_plane, "tabs", None)
+        tab_index = -1
+        if tabs is not None and tab_widget is not None and hasattr(tabs, "indexOf"):
+            try:
+                tab_index = int(tabs.indexOf(tab_widget))
+            except Exception:
+                tab_index = -1
+
+        if tabs is not None and tab_index >= 0 and hasattr(tabs, "setCurrentIndex"):
+            tabs.setCurrentIndex(tab_index)
+            self.statusBar().showMessage(f"Runtime ausgewählt: {selected_name}", 3200)
+            return
+
+        QMessageBox.information(self, "ACP", f"Runtime nicht gefunden: {selected_name}")
 
     def _acp_open_runtime_widget_tab(self, widget_kind: str, tab_name: str) -> None:
         control_plane = getattr(self, "control_plane_widget", None)
@@ -8871,9 +9399,9 @@ def main() -> None:
         try:
             # Import locally to keep Qt startup out of the path.
             try:
-                from .agents_ccompletion import ChatCom  # type: ignore
+                from .agents_ccomp import ChatCom  # type: ignore
             except Exception:
-                from agents_ccompletion import ChatCom  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_ccomp import ChatCom  # type: ignore
 
             model_name = os.getenv("AI_IDE_MODEL", "").strip() or "gpt-4.1-mini-2025-04-14"
             reply = ChatCom(_model=model_name, _input_text=one_shot).get_response()
@@ -8927,7 +9455,7 @@ def main() -> None:
                         obj.setAutoFillBackground(False)
                 except Exception:
                     pass
-                return super().eventFilter(obj, event)
+                return False
 
         filt = _MenuShadowFilter(qapp)
         qapp.installEventFilter(filt)

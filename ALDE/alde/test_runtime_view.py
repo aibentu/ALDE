@@ -6,9 +6,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from alde.policy_store import append_event
-from alde.runtime_metrics import load_runtime_observability_snapshot
-from alde.runtime_view import export_control_plane_snapshot, export_runtime_view, load_desktop_monitoring_snapshot, load_operator_status_snapshot, load_runtime_trace, load_runtime_view
+from ALDE_Projekt.ALDE.alde.agents_policy_store import append_event
+from ALDE_Projekt.ALDE.alde.agents_runtime_metrics import load_runtime_observability_snapshot
+from ALDE_Projekt.ALDE.alde.agents_runtime_view import export_control_plane_snapshot, export_runtime_view, load_desktop_monitoring_snapshot, load_operator_status_snapshot, load_runtime_trace, load_runtime_view
 
 
 class TestRuntimeView(unittest.TestCase):

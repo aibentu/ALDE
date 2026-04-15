@@ -14,10 +14,10 @@ PKG_ROOT = Path(__file__).resolve().parents[1]
 if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
 
-import alde.agents_ccompletion as chat_mod
-import alde.agents_config as agents_config
+import ALDE_Projekt.ALDE.alde.agents_ccomp as chat_mod
+import ALDE_Projekt.ALDE.alde.agents_configurator as agents_configurator
 import alde.agents_factory as agents_factory
-import alde.tools as tools_mod
+import ALDE_Projekt.ALDE.alde.agents_tools as tools_mod
 
 
 SAMPLE_WORKFLOW_REQUEST = {
@@ -799,7 +799,7 @@ class TestWorkflowIntegration(unittest.TestCase):
         self.assertFalse(tool_spec.tool_response_required)
 
     def test_xworker_prompt_config_supports_tool_name_selection_and_tools_task_option(self) -> None:
-        prompt_config = agents_config.get_prompt_config("_xworker")
+        prompt_config = agents_configurator.get_prompt_config("_xworker")
         task_config = prompt_config.get("task") or {}
         selection_policy = task_config.get("job_skill_profile_policy") or {}
 
@@ -809,8 +809,8 @@ class TestWorkflowIntegration(unittest.TestCase):
         self.assertEqual(selection_policy.get("fallback_skill_profile"), "xworker_core")
 
     def test_direct_file_read_guidance_prefers_read_document_over_retrieval(self) -> None:
-        router_prompt = agents_config.get_system_prompt("_xplaner_xrouter")
-        worker_prompt = agents_config.get_system_prompt("_xworker")
+        router_prompt = agents_configurator.get_system_prompt("_xplaner_xrouter")
+        worker_prompt = agents_configurator.get_system_prompt("_xworker")
         read_document_spec = tools_mod.get_tool_spec("read_document")
         memorydb_spec = tools_mod.get_tool_spec("memorydb")
         vectordb_spec = tools_mod.get_tool_spec("vectordb")

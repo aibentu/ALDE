@@ -11,7 +11,7 @@ if str(PKG_ROOT) not in sys.path:
 
 import alde.agents_factory as agents_factory
 import alde.chat_completion as chat_mod
-from alde.agents_config import get_agent_workflow_config, get_batch_workflow_config, get_handoff_route_contract, validate_all_job_configs, validate_all_workflows, validate_batch_workflow_config, validate_runtime_contracts, validate_workflow_config
+from ALDE_Projekt.ALDE.alde.agents_configurator import get_agent_workflow_config, get_batch_workflow_config, get_handoff_route_contract, validate_all_job_configs, validate_all_workflows, validate_batch_workflow_config, validate_runtime_contracts, validate_workflow_config
 
 
 class TestWorkflowVisibility(unittest.TestCase):

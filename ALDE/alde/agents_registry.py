@@ -12,7 +12,7 @@ This module must be safe to import (no side effects). It only defines
 try:
     from .agents_config import get_agents_registry_data  # type: ignore
 except Exception:
-    from ALDE.alde.agents_config import get_agents_registry_data  # type: ignore
+    from ALDE_Projekt.ALDE.alde.agents_configurator import get_agents_registry_data  # type: ignore
 
 
 class AgentRegistryService:

@@ -9,11 +9,11 @@ import uuid
 from typing import Any
 
 try:
-    from .runtime_core import AgentRuntimeCoreService, InMemoryMessageRunnerService  # type: ignore
+    from .agents_runtime_core import AgentRuntimeCoreService, InMemoryMessageRunnerService  # type: ignore
 except ImportError as e:
     msg = str(e)
     if "attempted relative import" in msg or "no known parent package" in msg:
-        from ALDE.alde.runtime_core import AgentRuntimeCoreService, InMemoryMessageRunnerService  # type: ignore
+        from ALDE_Projekt.ALDE.alde.agents_runtime_core import AgentRuntimeCoreService, InMemoryMessageRunnerService  # type: ignore
     else:
         raise
 
@@ -225,13 +225,13 @@ class DesktopAgentRunMonitorService:
     def load_runtime_observability_snapshot(self) -> dict[str, Any]:
         try:
             if __package__:
-                from .runtime_metrics import load_runtime_observability_snapshot  # type: ignore
+                from .agents_runtime_metrics import load_runtime_observability_snapshot  # type: ignore
             else:
-                from alde.runtime_metrics import load_runtime_observability_snapshot  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_runtime_metrics import load_runtime_observability_snapshot  # type: ignore
         except ImportError as exc:
             msg = str(exc)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from runtime_metrics import load_runtime_observability_snapshot  # type: ignore
+                from ALDE_Projekt.ALDE.alde.agents_runtime_metrics import load_runtime_observability_snapshot  # type: ignore
             else:
                 raise
 

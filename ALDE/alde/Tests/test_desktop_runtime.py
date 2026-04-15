@@ -12,7 +12,7 @@ PKG_ROOT = Path(__file__).resolve().parents[2]
 if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
 
-from alde.desktop_runtime import (
+from ALDE_Projekt.ALDE.alde.agents_desktop_runtime import (
     DesktopAgentRun,
     DesktopAgentRunFacadeService,
     DesktopAgentRunMonitorService,
@@ -21,7 +21,7 @@ from alde.desktop_runtime import (
     DesktopAgentRunStoreService,
     DesktopAgentRuntimeExecutionService,
 )
-from alde.runtime_core import AgentRuntimeCoreService, InMemoryMessageRunnerService
+from ALDE_Projekt.ALDE.alde.agents_runtime_core import AgentRuntimeCoreService, InMemoryMessageRunnerService
 
 
 class TestDesktopRuntime(unittest.TestCase):

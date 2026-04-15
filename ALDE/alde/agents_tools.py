@@ -41,7 +41,7 @@ try:
 except ImportError as e:
     msg = str(e)
     if "attempted relative import" in msg or "no known parent package" in msg:
-        from ALDE.alde.agents_config import (  # type: ignore
+        from ALDE_Projekt.ALDE.alde.agents_configurator import (  # type: ignore
             build_agent_handoff,
             create_agent_system_basic_config,
             create_agent_system_persisted_config_module,
@@ -80,13 +80,13 @@ def _noop_sync_parser_result_to_mongodb_knowledge(**_: Any) -> None:
 
 
 try:
-    from .agents_dbs import (
+    from .agents_db import (
         sync_parser_result_to_mongodb_knowledge,
         sync_retrieval_run_to_mongodb_knowledge,
     )
 except Exception:
     try:
-        from ALDE.alde.agents_dbs import (  # type: ignore
+        from ALDE_Projekt.ALDE.alde.agents_pydb import (  # type: ignore
             sync_parser_result_to_mongodb_knowledge,
             sync_retrieval_run_to_mongodb_knowledge,
         )
@@ -150,7 +150,7 @@ def _close_process_handle(proc: Any) -> None:
         pass
 
 try:
-    from .learning_signals import (  # type: ignore
+    from .agents_learning_signals import (  # type: ignore
         compute_reward,
         validate_outcome_event,
         validate_query_event,
@@ -158,7 +158,7 @@ try:
 except ImportError as e:
     msg = str(e)
     if "attempted relative import" in msg or "no known parent package" in msg:
-        from learning_signals import (  # type: ignore
+        from ALDE_Projekt.ALDE.alde.agents_learning_signals import (  # type: ignore
             compute_reward,
             validate_outcome_event,
             validate_query_event,
@@ -167,11 +167,11 @@ except ImportError as e:
         raise
 
 try:
-    from .policy_store import append_event  # type: ignore
+    from .agents_policy_store import append_event  # type: ignore
 except ImportError as e:
     msg = str(e)
     if "attempted relative import" in msg or "no known parent package" in msg:
-        from policy_store import append_event  # type: ignore
+        from ALDE_Projekt.ALDE.alde.agents_policy_store import append_event  # type: ignore
     else:
         raise
 # Extractor import (local module)
@@ -3452,6 +3452,96 @@ def send_mail(recipient: str, subject: str, body: str) -> str:
     """Placeholder for sending an email."""
     return f"Email sent to {recipient} with subject '{subject}'.\nBody:\n{body}"
 
+
+def run_mail_agent(
+    mode: str = "once",
+    project_dir: str | None = None,
+    python_executable: str | None = None,
+    timeout_seconds: int = 120,
+    background: bool = True,
+) -> str:
+    """Run the external Projekt_Mail_Agent in once or watch mode."""
+    normalized_mode = str(mode or "once").strip().lower()
+    if normalized_mode not in {"once", "watch"}:
+        return "run_mail_agent error: mode must be 'once' or 'watch'."
+
+    resolved_project_dir = ""
+    if project_dir:
+        resolved_project_dir = str(project_dir).strip()
+    elif os.getenv("MAIL_AGENT_PROJECT_DIR"):
+        resolved_project_dir = str(os.getenv("MAIL_AGENT_PROJECT_DIR") or "").strip()
+    else:
+        try:
+            resolved_project_dir = str(Path(__file__).resolve().parents[3] / "Projekt_Mail_Agent")
+        except Exception:
+            return "run_mail_agent error: could not resolve default Projekt_Mail_Agent path."
+
+    project_path = Path(resolved_project_dir).expanduser().resolve()
+    script_path = project_path / "mail_agent.py"
+    if not script_path.exists():
+        return f"run_mail_agent error: missing script at {script_path}."
+
+    resolved_python = str(python_executable or "").strip()
+    if not resolved_python:
+        resolved_python = str(os.getenv("MAIL_AGENT_PYTHON") or "").strip()
+    if not resolved_python:
+        venv_python = project_path / ".venv" / "bin" / "python"
+        if venv_python.exists():
+            resolved_python = str(venv_python)
+    if not resolved_python:
+        resolved_python = "python3"
+
+    cmd = [resolved_python, str(script_path), "--mode", normalized_mode]
+
+    if normalized_mode == "watch" and bool(background):
+        try:
+            proc = subprocess.Popen(  # noqa: S603
+                cmd,
+                cwd=str(project_path),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            return json.dumps(
+                {
+                    "status": "started",
+                    "mode": normalized_mode,
+                    "pid": proc.pid,
+                    "project_dir": str(project_path),
+                    "python": resolved_python,
+                },
+                ensure_ascii=False,
+            )
+        except Exception as exc:
+            return f"run_mail_agent error: failed to start watch mode ({type(exc).__name__}: {exc})."
+
+    run_timeout = max(10, int(timeout_seconds or 120))
+    try:
+        proc = subprocess.run(  # noqa: S603
+            cmd,
+            cwd=str(project_path),
+            capture_output=True,
+            text=True,
+            timeout=run_timeout,
+        )
+    except subprocess.TimeoutExpired:
+        return f"run_mail_agent error: timed out after {run_timeout}s."
+    except Exception as exc:
+        return f"run_mail_agent error: execution failed ({type(exc).__name__}: {exc})."
+
+    stdout = (proc.stdout or "").strip()
+    stderr = (proc.stderr or "").strip()
+    payload = {
+        "status": "ok" if proc.returncode == 0 else "error",
+        "mode": normalized_mode,
+        "exit_code": int(proc.returncode),
+        "project_dir": str(project_path),
+        "python": resolved_python,
+        "stdout": stdout[-4000:],
+        "stderr": stderr[-2000:],
+    }
+    return json.dumps(payload, ensure_ascii=False)
+
 def dml_tool(operation: str, data: str) -> str:
     """Placeholder for Data Manipulation Language tool."""
     return f"DML Tool executed: operation='{operation}', data='{data}...'"
@@ -4870,6 +4960,7 @@ _TOOL_IMPLEMENTATIONS: dict[str, Callable | None] = {
     "md_to_pdf": md_to_pdf,
     "calendar": calendar,
     "send_mail": send_mail,
+    "run_mail_agent": run_mail_agent,
     "dml_tool": dml_tool,
     "dsl_tool": dsl_tool,
     "code_tool": code_tool,
