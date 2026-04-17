@@ -20,7 +20,7 @@ try:
 except ImportError as e:
     msg = str(e)
     if "no known parent package" in msg or "attempted relative import" in msg:
-        from ALDE_Projekt.ALDE.alde.agents_configurator import build_agent_handoff, get_agent_config, get_agent_workflow_config, get_default_job_name, get_handoff_route_contract, get_job_config, get_specialized_system_prompt, normalize_agent_label, normalize_tool_name, prepare_incoming_handoff, validate_handoff_for_target  # type: ignore
+        from alde.agents_config import build_agent_handoff, get_agent_config, get_agent_workflow_config, get_default_job_name, get_handoff_route_contract, get_job_config, get_specialized_system_prompt, normalize_agent_label, normalize_tool_name, prepare_incoming_handoff, validate_handoff_for_target  # type: ignore
     else:
         raise
 

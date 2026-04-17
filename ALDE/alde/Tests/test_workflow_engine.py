@@ -11,8 +11,8 @@ if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
 
 import alde.agents_factory as agents_factory
-import ALDE_Projekt.ALDE.alde.agents_configurator as agents_configurator
-from ALDE_Projekt.ALDE.alde.agents_configurator import get_agent_config, get_agent_manifest, get_agent_workflow_config, validate_agent_manifest
+import alde.agents_configurator as agents_configurator
+from alde.agents_configurator import get_agent_config, get_agent_manifest, get_agent_workflow_config, validate_agent_manifest
 
 
 class TestWorkflowEngine(unittest.TestCase):

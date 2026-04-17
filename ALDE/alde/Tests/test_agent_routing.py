@@ -14,8 +14,8 @@ if str(PKG_ROOT) not in sys.path:
 
 import alde.agents_factory as agents_factory
 import alde.chat_completion as chat_mod
-from ALDE_Projekt.ALDE.alde import agents_configurator
-from ALDE_Projekt.ALDE.alde.agents_configurator import get_agent_workflow_config
+from alde import agents_configurator
+from alde.agents_configurator import get_agent_workflow_config
 
 
 def _tool_call(name: str, arguments: str, call_id: str = "call_1") -> SimpleNamespace:

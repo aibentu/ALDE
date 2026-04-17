@@ -1319,15 +1319,15 @@ class ChatCom(ChatCompletion,ChatHistory):
         # Use the unified tool registry (shared with agenszie_factory) instead of a
         # custom, inconsistent schema. Keep the list small to reduce model confusion.
         try:
-            from .agents_tools import UNIFIED_TOOLS  # type: ignore
+            from alde.agents_tools import UNIFIED_TOOLS  # type: ignore
         except ImportError as e:
             msg = str(e)
             if "no known parent package" in msg or "attempted relative import" in msg:
-                from ALDE_Projekt.ALDE.alde.agents_tools import UNIFIED_TOOLS  # type: ignore
+                from alde.agents_tools import UNIFIED_TOOLS  # type: ignore
             else:
                 raise
         try:
-            from .agents_factory import get_agent_runtime_tools, get_agent_tools  # type: ignore
+            from alde.agents_factory import get_agent_runtime_tools, get_agent_tools  # type: ignore
         except ImportError as e:
             msg = str(e)
             if "no known parent package" in msg or "attempted relative import" in msg:
@@ -1348,7 +1348,7 @@ class ChatCom(ChatCompletion,ChatHistory):
         except ImportError as e:
             msg = str(e)
             if "no known parent package" in msg or "attempted relative import" in msg:
-                from ALDE_Projekt.ALDE.alde.agents_configurator import get_agent_config, resolve_forced_route  # type: ignore
+                from alde.agents_config import get_agent_config, resolve_forced_route  # type: ignore
             else:
                 raise
 

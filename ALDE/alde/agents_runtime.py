@@ -140,8 +140,20 @@ JOB_PROMPT_CONFIGS: dict[str, dict[str, Any]] = {
         ),
         "task": {
             "input_contract": {
-                "required": ["scan_dir", "db", "thread_id", "dispatcher_message_id"],
-                "optional": ["recursive", "extensions", "max_files", "agent_name", "dry_run", "handoff_message_id"],
+                "required": ["scan_dir"],
+                "optional": [
+                    "db",
+                    "db_path",
+                    "obj_name",
+                    "thread_id",
+                    "dispatcher_message_id",
+                    "recursive",
+                    "extensions",
+                    "max_files",
+                    "agent_name",
+                    "dry_run",
+                    "handoff_message_id",
+                ],
             },
             "workflow": [
                 "If the request already contains structured non-file payloads for job/profile ingestion or DB synchronization, execute the matching deterministic action tool instead of scanning directories.",
@@ -624,6 +636,11 @@ CANONICAL_AGENT_LABEL_MAP: dict[str, str] = {
     "xplaner_xrouter": "_xplaner_xrouter",
     "xworker": "_xworker",
 }
+
+# Backward-compatible aliases consumed by agents_config imports.
+_SPECIALIZED_JOB_PROMPT_MAP = SPECIALIZED_JOB_PROMPT_MAP
+_LEGACY_AGENT_NAME_MAP = LEGACY_AGENT_NAME_MAP
+_CANONICAL_AGENT_LABEL_MAP = CANONICAL_AGENT_LABEL_MAP
 
 
 AGENT_RUNTIME_CONFIG: dict[str, dict[str, Any]] = {

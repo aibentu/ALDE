@@ -10,12 +10,12 @@ MessageObject = TypeVar("MessageObject")
 
 class AgentRuntimeCoreService:
     def load_chat_components(self) -> tuple[Any, Any, Any]:
-        from ALDE_Projekt.ALDE.alde.agents_ccomp import ChatCom, ImageCreate, ImageDescription  # type: ignore
+        from alde.agents_ccomp import ChatCom, ImageCreate, ImageDescription  # type: ignore
 
         return ChatCom, ImageDescription, ImageCreate
 
     def load_runtime_components(self) -> tuple[Any, Any, Any]:
-        from ALDE_Projekt.ALDE.alde.agents_configurator import get_agent_config, normalize_agent_label  # type: ignore
+        from alde.agents_config import get_agent_config, normalize_agent_label  # type: ignore
         from alde.agents_factory import execute_forced_route  # type: ignore
 
         return get_agent_config, normalize_agent_label, execute_forced_route
@@ -28,11 +28,11 @@ class AgentRuntimeCoreService:
 
     def load_object_job_name(self, normalized_target: str) -> str:
         try:
-            from ALDE_Projekt.ALDE.alde.agents_configurator import get_default_job_name  # type: ignore
+            from alde.agents_config import get_default_job_name  # type: ignore
         except ImportError as e:
             msg = str(e)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from ALDE_Projekt.ALDE.alde.agents_configurator import get_default_job_name  # type: ignore
+                from alde.agents_config import get_default_job_name  # type: ignore
             else:
                 raise
         return str(get_default_job_name(normalized_target) or "").strip()

@@ -19,6 +19,7 @@ buttons will show a placeholder message.
 
 from typing import Any
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -1545,24 +1546,110 @@ class JsonTreeWidget(QTreeWidget):
             pass
 
         module = ast.parse(payload, filename=file_path or "<python-import>")
+        assignment_total = 0
+        literal_assignments: dict[str, Any] = {}
         for node in module.body:
             value_node = None
+            target_name = ""
             if isinstance(node, ast.Assign):
                 value_node = node.value
+                if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+                    target_name = str(node.targets[0].id or "").strip()
             elif isinstance(node, ast.AnnAssign):
                 value_node = node.value
+                if isinstance(node.target, ast.Name):
+                    target_name = str(node.target.id or "").strip()
 
             if value_node is None:
                 continue
+            assignment_total += 1
 
             try:
-                return ast.literal_eval(value_node)
+                literal_value = ast.literal_eval(value_node)
+                if target_name:
+                    literal_assignments[target_name] = literal_value
+                elif assignment_total == 1:
+                    # Keep backward compatibility for anonymous single-value imports.
+                    return literal_value
             except Exception:
                 continue
+
+        # If the file contains runtime expressions (e.g. function calls/comprehensions),
+        # project the executed module so the tree can represent the full config surface.
+        has_non_literal_assignments = assignment_total > len(literal_assignments)
+        if file_path and has_non_literal_assignments:
+            module_projection = self._load_python_module_projection(file_path)
+            if module_projection:
+                return module_projection
+
+        if literal_assignments:
+            if len(literal_assignments) == 1:
+                return next(iter(literal_assignments.values()))
+            return literal_assignments
 
         raise ValueError(
             "Python import supports literal values (dict/list/etc.) or assignments to literal values."
         )
+
+    def _load_python_module_projection(self, file_path: str) -> dict[str, Any]:
+        source_path = Path(file_path).expanduser().resolve()
+        if not source_path.is_file():
+            return {}
+
+        module_name = f"data_tree_projection_{source_path.stem}_{hashlib.sha256(str(source_path).encode('utf-8')).hexdigest()[:12]}"
+        spec = importlib.util.spec_from_file_location(module_name, str(source_path))
+        if spec is None or spec.loader is None:
+            return {}
+
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        projected_symbols: dict[str, Any] = {}
+        for symbol_name, symbol_value in vars(module).items():
+            normalized_name = str(symbol_name or "").strip()
+            if not normalized_name or normalized_name.startswith("__"):
+                continue
+            if not normalized_name.lstrip("_").isupper():
+                continue
+
+            normalized_value = self._normalize_python_projection_value(symbol_value)
+            projected_symbols[normalized_name] = normalized_value
+
+        return {
+            "module_path": str(source_path),
+            "module_name": source_path.stem,
+            "symbol_count": len(projected_symbols),
+            "symbols": projected_symbols,
+        }
+
+    def _normalize_python_projection_value(self, value: Any, *, _depth: int = 0) -> Any:
+        if _depth > 12:
+            return "<max_depth_reached>"
+
+        if value is None or isinstance(value, (str, int, float, bool)):
+            return value
+
+        if isinstance(value, dict):
+            return {
+                str(key): self._normalize_python_projection_value(item, _depth=_depth + 1)
+                for key, item in value.items()
+            }
+
+        if isinstance(value, (list, tuple)):
+            return [self._normalize_python_projection_value(item, _depth=_depth + 1) for item in value]
+
+        if isinstance(value, set):
+            normalized_items = [self._normalize_python_projection_value(item, _depth=_depth + 1) for item in value]
+            return sorted(normalized_items, key=lambda item: json.dumps(item, ensure_ascii=False, sort_keys=True))
+
+        if callable(value):
+            return f"<callable:{getattr(value, '__name__', type(value).__name__)}>"
+
+        module_name = getattr(value, "__module__", "")
+        class_name = type(value).__name__
+        if module_name:
+            return f"<{module_name}.{class_name}>"
+        return f"<{class_name}>"
 
     def _commit_imported_data(self, file_path: str, imported_data: Any, import_format: str) -> None:
         from PySide6.QtWidgets import QInputDialog

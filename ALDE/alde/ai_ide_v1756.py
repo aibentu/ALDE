@@ -275,7 +275,7 @@ try:
 except ImportError as e:
     msg = str(e)
     if "attempted relative import" in msg or "no known parent package" in msg:
-        from ALDE_Projekt.ALDE.alde.agents_ccomp import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore  # noqa: E402
+        from alde.agents_ccomp import ChatCom, ImageDescription, ImageCreate, ChatHistory  # type: ignore  # noqa: E402
     else:
         raise
 
@@ -1071,11 +1071,11 @@ class ChatAttachmentService:
             if __package__:
                 from .agents_tools import read_document  # type: ignore
             else:
-                from ALDE_Projekt.ALDE.alde.agents_tools import read_document  # type: ignore
+                from alde.agents_tools import read_document  # type: ignore
         except ImportError as e:
             msg = str(e)
             if "attempted relative import" in msg or "no known parent package" in msg:
-                from ALDE_Projekt.ALDE.alde.agents_tools import read_document  # type: ignore
+                from alde.agents_tools import read_document  # type: ignore
             else:
                 raise
 
@@ -1162,6 +1162,9 @@ class ChatFileContext:
 
 class ToolButton(QPushButton):
     """
+
+
+UNIFIED_TOOLS: list[ToolSpec] = _build_unified_tools()
     con-Button für die Corner-Leiste.
     Eigenes objectName (#cornerBtn) => Stylesheet hat höhere Priorität
     als die globale 'QPushButton:hover'-Regel.
@@ -1733,7 +1736,7 @@ class EditorTabs(QTabWidget):
 
     def _apply_highlighter(self, editor: QTextEdit | QPlainTextEdit, path: str | None) -> None:
         """Wendet – falls verfügbar – einen passenden Highlighter an.
-
+    
         Unterstützt derzeit: Python, Markdown, JSON. Idempotent: ersetzt nur,
         wenn sich der benötigte Highlighter-Typ unterscheidet.
         """
@@ -2477,7 +2480,18 @@ class AIWidget(QWidget):
                 min-height: 22px;
             }
             QPushButton#builderPrimaryButton:hover {
-                background: rgba(255, 255, 255, 0.08);
+                background: rgba(255, 255, 255, 0.08);                )
+
+    return {
+        "name": normalized_job_name,
+        "valid": not errors,
+        "errors": errors,
+        "warnings": warnings,
+        "runtime_agent": runtime_agent or None,
+        "skill_profile": skill_profile_name or None,
+        "default_object_name": default_object_name or None,
+    }
+
                 border-color: rgba(255, 255, 255, 0.18);
             }
             QPushButton#builderIconButton {
@@ -3178,7 +3192,7 @@ class MsgWidget(QWidget):
             if status_bar is not None:
                 status_bar.showMessage(message, 3000)
                 return
-        QMessageBox.information(self, "Gespeichert", message)
+        QMessageBox.information(self, "Gespeichert",  )
 
     def resizeEvent(self, ev):  # noqa: N802
         super().resizeEvent(ev)
@@ -7621,12 +7635,86 @@ class MainAIEditor(QMainWindow):
         # Add current project
         project_path = os.path.dirname(os.path.abspath(__file__))
         project_name = os.path.basename(os.path.dirname(project_path))
-        
-        self.explorer.add_to_section("PROJECTS", project_name, {
+
+        self._upsert_explorer_item("PROJECTS", project_name, {
             "path": project_path,
-            "files": ["ai_ide_v1756.py", "jstree_widget.py", "chat_completion.py"],
-            "type": "Python Project"
+            "files": ["ai_ide_v1756.py", "jstree_widget.py", "chat_completion.py", "agents_runtime.py"],
+            "type": "Python Project",
+            "runtime_projection_ref": "PROJECTS/agents_runtime",
         })
+
+        agents_runtime_path = Path(project_path) / "agents_runtime.py"
+        runtime_projection = self._load_agents_runtime_projection(agents_runtime_path)
+        if runtime_projection:
+            self._upsert_explorer_item("PROJECTS", "agents_runtime", runtime_projection)
+
+    def _upsert_explorer_item(self, section_name: str, key: str, value: Any) -> None:
+        explorer = getattr(self, "explorer", None)
+        if explorer is None:
+            return
+
+        remove_from_section = getattr(explorer, "remove_from_section", None)
+        add_to_section = getattr(explorer, "add_to_section", None)
+        if not callable(add_to_section):
+            return
+
+        if callable(remove_from_section):
+            while bool(remove_from_section(section_name, key)):
+                pass
+
+        add_to_section(section_name, key, value)
+
+    def _load_agents_runtime_projection(self, agents_runtime_path: Path) -> dict[str, Any]:
+        source_path = Path(agents_runtime_path)
+        if not source_path.is_file():
+            return {}
+
+        tree_widget = getattr(getattr(self, "explorer", None), "tree", None)
+        projection_loader = getattr(tree_widget, "_load_python_module_projection", None)
+        if callable(projection_loader):
+            try:
+                projection = projection_loader(str(source_path))
+                if isinstance(projection, dict) and projection:
+                    return projection
+            except Exception:
+                pass
+
+        # Fallback: import the module and project uppercase runtime symbols.
+        try:
+            module_name = f"runtime_projection_{uuid.uuid4().hex}"
+            spec = importlib.util.spec_from_file_location(module_name, str(source_path))
+            if spec is None or spec.loader is None:
+                return {}
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+        except Exception as exc:
+            return {
+                "module_path": str(source_path),
+                "module_name": source_path.stem,
+                "symbol_count": 0,
+                "symbols": {},
+                "error": f"{type(exc).__name__}: {exc}",
+            }
+
+        symbols: dict[str, Any] = {}
+        for symbol_name, symbol_value in vars(module).items():
+            normalized_name = str(symbol_name or "").strip()
+            if not normalized_name or normalized_name.startswith("__"):
+                continue
+            if not normalized_name.lstrip("_").isupper():
+                continue
+            try:
+                json.dumps(symbol_value, ensure_ascii=False)
+                symbols[normalized_name] = symbol_value
+            except Exception:
+                symbols[normalized_name] = str(symbol_value)
+
+        return {
+            "module_path": str(source_path),
+            "module_name": source_path.stem,
+            "symbol_count": len(symbols),
+            "symbols": symbols,
+        }
 
     # ================================================= zentraler Splitter ==
     
@@ -7921,13 +8009,37 @@ class MainAIEditor(QMainWindow):
         self.tb_top = QToolBar("Main", self)
         # QMainWindow.saveState/restoreState rely on unique objectName values.
         self.tb_top.setObjectName("ToolbarTop")
-        self.tb_top.setStyleSheet("QToolBar { border: none; }")
+        self.tb_top.setMovable(False)
+        self.tb_top.setFloatable(False)
+        self.tb_top.setContentsMargins(8, 8, 8, 8)
+        self.tb_top.setStyleSheet(
+            "QToolBar {"
+            " background: #1f1f1f;"
+            " border: none;"
+            " border-radius: 0px;"
+            " padding: 6px;"
+            " spacing: 8px;"
+            " }"
+            "QToolButton {"
+            " background: #1f1f1f;"
+            " min-width: 40px;"
+            " min-height: 40px;"
+            " padding: 4px;"
+            " margin: 1px;"
+            " border: none;"
+            " border-radius: 0px;"
+            " }"
+            "QToolButton:hover, QToolButton:pressed, QToolButton:checked {"
+            " background: #1f1f1f;"
+            " border: none;"
+            " }"
+        )
 
         """ +3 px auf die Standard-Icongröße der Toolbar addieren """
 
         base = self.tb_top.iconSize()                   # z. B. 24 px
-        self.tb_top.setIconSize(QSize(base.width() + 3,
-                                      base.height() + 3))
+        self.tb_top.setIconSize(QSize(base.width() + 5,
+                          base.height() + 5))
 
         self.addToolBar(Qt.TopToolBarArea, self.tb_top)
         self.tb_top.addActions([
@@ -7947,22 +8059,51 @@ class MainAIEditor(QMainWindow):
             bar.setToolButtonStyle(Qt.ToolButtonIconOnly)
             bar.setMovable(False)
             bar.setFloatable(False)
+            bar.setContextMenuPolicy(Qt.PreventContextMenu)
+            bar.setFixedWidth(56)
+            bar.setLayoutDirection(Qt.RightToLeft)
+            bar.setContentsMargins(8, 8, 8, 8)
             bar.setStyleSheet(
                 "QToolBar {"
+                " background: #1f1f1f;"
                 " border: none;"
+                " border-radius: 0px;"
+                " padding: 6px 0px 6px 6px;"
+                " spacing: 8px;"
+                " }"
+                "QToolBar::handle {"
+                " width: 0px;"
+                " height: 0px;"
+                " margin: 0px;"
+                " padding: 0px;"
+                " image: none;"
+                " }"
+                "QToolBarExtension {"
+                " width: 0px;"
+                " height: 0px;"
+                " image: none;"
+                " border: none;"
+                " margin: 0px;"
+                " padding: 0px;"
                 " }"
                 "QToolButton {"
-                " min-width: 34px;"
-                " min-height: 34px;"
-                " padding: 0px;"
-                " margin: 0px;"
+                " background: #1f1f1f;"
+                " min-width: 42px;"
+                " min-height: 42px;"
+                " padding: 4px;"
+                " margin: 1px 0px 1px 0px;"
+                " border: none;"
+                " border-radius: 0px;"
+                " }"
+                "QToolButton:hover, QToolButton:pressed, QToolButton:checked {"
+                " background: #1f1f1f;"
+                " border: none;"
                 " }"
             )
             self.addToolBar(Qt.RightToolBarArea, bar)
 
         # Right toolbar: Agentic Control Plane toggle + refresh
         if hasattr(self, "act_toggle_control_plane"):
-            self.tb_right.addSeparator()
             self.tb_right.addAction(self.act_toggle_control_plane)
         if hasattr(self, "act_refresh_control_plane"):
             self.tb_right.addAction(self.act_refresh_control_plane)
@@ -7972,6 +8113,18 @@ class MainAIEditor(QMainWindow):
     def _create_menu(self) -> None:
         # ------------------------------------------------------------------ ui
         mbar: QMenuBar = QMenuBar(self)               # own menu-bar instance
+        mbar.setStyleSheet(
+            "QMenuBar {"
+            " background: #1f1f1f;"
+            " border: none;"
+            " }"
+            "QMenuBar::item {"
+            " background: #1f1f1f;"
+            " }"
+            "QMenuBar::item:selected {"
+            " background: #1f1f1f;"
+            " }"
+        )
         self.setMenuBar(mbar)                         # make it the window bar
         # -------------- FILE ------------------------------------------------
         filem = mbar.addMenu("File")
@@ -8121,6 +8274,7 @@ class MainAIEditor(QMainWindow):
     
     def _create_status(self):
         st = QStatusBar(self)
+        st.setStyleSheet("QStatusBar { background: #1f1f1f; border: none; }")
         st.showMessage("Ready")
         self._st_agents = QLabel("0 agents")
         self._st_workflows = QLabel("0 workflows")

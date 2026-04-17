@@ -80,7 +80,7 @@ def _try_chathistory_log(
 try:
     from .agents_config import get_batch_workflow_config, get_specialized_system_prompt, validate_batch_workflow_config  # type: ignore
 except Exception:
-    from ALDE_Projekt.ALDE.alde.agents_configurator import get_batch_workflow_config, get_specialized_system_prompt, validate_batch_workflow_config  # type: ignore
+    from alde.agents_config import get_batch_workflow_config, get_specialized_system_prompt, validate_batch_workflow_config  # type: ignore
 
 try:
     from .agents_tools import DOCUMENT_DISPATCH_SERVICE, DOCUMENT_REPOSITORY, write_document  # type: ignore

@@ -41,7 +41,7 @@ try:
 except ImportError as e:
     msg = str(e)
     if "attempted relative import" in msg or "no known parent package" in msg:
-        from ALDE_Projekt.ALDE.alde.agents_configurator import (  # type: ignore
+        from alde.agents_config import (  # type: ignore
             build_agent_handoff,
             create_agent_system_basic_config,
             create_agent_system_persisted_config_module,
@@ -86,7 +86,7 @@ try:
     )
 except Exception:
     try:
-        from ALDE_Projekt.ALDE.alde.agents_pydb import (  # type: ignore
+        from alde.agents_db import (  # type: ignore
             sync_parser_result_to_mongodb_knowledge,
             sync_retrieval_run_to_mongodb_knowledge,
         )
@@ -158,7 +158,7 @@ try:
 except ImportError as e:
     msg = str(e)
     if "attempted relative import" in msg or "no known parent package" in msg:
-        from ALDE_Projekt.ALDE.alde.agents_learning_signals import (  # type: ignore
+        from alde.agents_learning_signals import (  # type: ignore
             compute_reward,
             validate_outcome_event,
             validate_query_event,
@@ -171,7 +171,7 @@ try:
 except ImportError as e:
     msg = str(e)
     if "attempted relative import" in msg or "no known parent package" in msg:
-        from ALDE_Projekt.ALDE.alde.agents_policy_store import append_event  # type: ignore
+        from alde.agents_policy_store import append_event  # type: ignore
     else:
         raise
 # Extractor import (local module)

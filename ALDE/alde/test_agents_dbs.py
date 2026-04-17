@@ -10,7 +10,7 @@ PKG_ROOT = Path(__file__).resolve().parents[1]
 if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
 
-from ALDE_Projekt.ALDE.alde.agents_pydb import KnowledgeObjectService, ObjectMappingService, RuntimeConfigObject
+from alde.agents_db import KnowledgeObjectService, ObjectMappingService, RuntimeConfigObject
 
 
 class _RecordingKnowledgeRepository:

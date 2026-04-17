@@ -15,7 +15,7 @@ if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
 
 import ALDE_Projekt.ALDE.alde.agents_ccomp as chat_mod
-import ALDE_Projekt.ALDE.alde.agents_configurator as agents_configurator
+import alde.agents_configurator as agents_configurator
 import alde.agents_factory as agents_factory
 import ALDE_Projekt.ALDE.alde.agents_tools as tools_mod
 
