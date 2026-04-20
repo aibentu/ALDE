@@ -6516,9 +6516,20 @@ class ControlPlaneWidget(QWidget):
         if os.getenv("OLLAMA_HOST") or os.getenv("OLLAMA_BASE_URL"):
             providers.append("Ollama")
 
+        agentsdb_env_configured = any(
+            bool(str(os.getenv(env_name, "")).strip())
+            for env_name in (
+                "AI_IDE_KNOWLEDGE_AGENTS_DB_URI",
+                "AI_IDE_KNOWLEDGE_AGENTS_DB_BACKEND_URI",
+                "AI_IDE_KNOWLEDGE_AGENTS_DB_CONFIG_PATH",
+            )
+        )
+        legacy_mongo_configured = bool(str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_URI", "")).strip())
+
         env_rows = [
             ("OpenAI key", bool(os.getenv("OPENAI_API_KEY"))),
-            ("Mongo knowledge", bool(os.getenv("AI_IDE_KNOWLEDGE_MONGO_URI"))),
+            ("Knowledge DB (AgentsDB)", agentsdb_env_configured or legacy_mongo_configured),
+            ("Legacy knowledge env", legacy_mongo_configured),
             ("GPU vstore", os.getenv("AI_IDE_VSTORE_GPU_ONLY", "0") in {"1", "true", "True"}),
             ("Verbose HTTP", os.getenv("AI_IDE_VERBOSE_HTTP", "0") in {"1", "true", "True"}),
         ]

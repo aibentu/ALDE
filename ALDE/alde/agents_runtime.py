@@ -9,20 +9,21 @@ def _text(value: str) -> str:
 
 
 SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
-    "xplaner_xrouter": {
+    "xrouter_xplanner": {
         "prompt": _text(
             """
-            === Agent: xplaner_xrouter ===
-            Description: Primary planning and routing agent.
+            === Agent: xrouter_xplanner ===
+            Description: Primary routing and planning agent.
             Goal: Understand the user request, close requirement gaps, select the correct job_name or tool_name, and route only schema-ready execution briefs.
+            Keep it simple, short, and deterministic. 
 
             Rules:
-            - Own user interaction, clarification, planning, and routing.
-            - Ask focused follow-up questions when the request is underspecified, ambiguous, or missing required inputs.
+            - Own user interaction, clarification, routing, and planning.
+            - Ask follow-up questions when the request is  missing required inputs.
             - Build a minimal explicit execution plan before delegating: goal, selected target_agent, selected job_name or tool_name, required inputs, and expected result.
             - Use direct tools only when the work is trivial, deterministic, and does not need a worker specialization.
             - If the user provides a concrete filesystem path and asks to read, open, or load it, call read_document directly instead of routing or querying memorydb or vectordb.
-            - Route execution, parsing, writing, dispatching, and builder work to xworker.
+            - Route execution, parsing, writing, dispatching to xworker.
             - Every route_to_agent call must include an explicit job_name or tool_name that matches the intended worker execution path.
             - Prefer structured handoff payloads when downstream execution depends on schema-bound input.
             - Do not delegate until the brief is specific enough for deterministic execution.
@@ -30,10 +31,10 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
             """
         ),
         "task": {
-            "mode": "xplaner_xrouter",
+            "mode": "xrouter_xplanner",
             "job_skill_profile_policy": {
                 "selection_mode": "job_name",
-                "fallback_skill_profile": "xplaner_xrouter_core",
+                "fallback_skill_profile": "xrouter_xplanner_core",
             },
         },
         "output_schema": {},
@@ -46,7 +47,7 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
             Goal: Execute the routed job or tool-focused task with the selected skill profile and return deterministic, source-grounded output.
 
             Rules:
-            - Execute only the job handed off by xplaner_xrouter or by an internal xworker handoff.
+            - Execute only the job handed off by xrouter_xplanner or by an internal xworker handoff.
             - Resolve the skill profile from tool_name first when configured, then fall back to job_name.
             - Respect explicit routed tool constraints when tools are provided as task options.
             - When the request names a concrete filesystem path to read, open, or load, use read_document; memorydb and vectordb are retrieval tools, not direct file loaders.
@@ -69,57 +70,8 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
 }
 
 
-JOB_PROMPT_CONFIGS: dict[str, dict[str, Any]] = {
-    "agent_system_planning": {
-        "prompt": _text(
-            """
-            === Job: agent_system_planning ===
-            Description: Interactive planning job for building agent systems within the two-role model.
-            Goal: Clarify the requested system, structure the plan, and hand off concrete implementation work to xworker.
-
-            Rules:
-            - Ask targeted follow-up questions until the requirements are specific enough to execute.
-            - Keep the plan aligned with the declared planning schema.
-            - Route concrete config generation only to xworker with job_name agent_system_builder.
-            - When the request is already specific, hand off immediately with a structured brief.
-            """
-        ),
-        "task": {
-            "mode": "agent_system_planning",
-            "route_prefix": "/create agents",
-            "planning_schema": {
-                "required_steps": [
-                    "capture_goal",
-                    "identify_agents",
-                    "define_workflows",
-                    "confirm_tools",
-                    "handoff_builder",
-                ],
-                "required_sections": ["agent_specs", "workflow_specs", "integration_targets"],
-                "required_agent_fields": ["name", "agent_name", "role", "responsibility", "tools"],
-                "required_workflow_fields": ["name", "kind", "entry_state", "owner_agent"],
-                "required_integration_fields": ["assistant_agent_name", "route_prefix", "persisted_config_target"],
-                "interactive": True,
-                "worker_agent": "_xworker",
-            },
-        },
-        "output_schema": {
-            "plan": {
-                "required_steps": [
-                    "capture_goal",
-                    "identify_agents",
-                    "define_workflows",
-                    "confirm_tools",
-                    "handoff_builder",
-                ],
-                "required_sections": ["agent_specs", "workflow_specs", "integration_targets"],
-                "required_agent_fields": ["name", "agent_name", "role", "responsibility", "tools"],
-                "required_workflow_fields": ["name", "kind", "entry_state", "owner_agent"],
-                "required_integration_fields": ["assistant_agent_name", "route_prefix", "persisted_config_target"],
-                "worker_agent": "_xworker",
-            },
-        },
-    },
+JOB_PROMPTS: dict[str, dict[str, Any]] = {
+    
     "document_dispatch": {
         "prompt": _text(
             """
@@ -181,6 +133,7 @@ JOB_PROMPT_CONFIGS: dict[str, dict[str, Any]] = {
             "errors": [],
         },
     },
+
     "applicant_profile_parser": {
         "prompt": _text(
             """
@@ -414,39 +367,7 @@ JOB_PROMPT_CONFIGS: dict[str, dict[str, Any]] = {
             },
         },
     },
-    "agent_system_builder": {
-        "prompt": _text(
-            """
-            === Job: agent_system_builder ===
-            Description: Config bundle materialization job.
-            Goal: Produce prompt, runtime, manifest, workflow, handoff, and forced-route configs for a requested agent system.
-
-            Rules:
-            - Use build_agent_system_configs to generate the canonical bundle.
-            - Keep names generic and reusable.
-            - Preserve Domain -> Object -> Function structure in generated configs.
-            - Return the bundle and highlight any remaining manual integration steps.
-            """
-        ),
-        "task": {
-            "mode": "agent_system_builder",
-            "action_tool": "build_agent_system_configs",
-            "action_request_schema": "agent_system_builder_request",
-        },
-        "output_schema": {
-            "bundle_sections": [
-                "prompt_configs",
-                "agent_runtime_configs",
-                "agent_manifest_override_configs",
-                "handoff_schema_configs",
-                "action_request_schema_configs",
-                "tool_configs",
-                "workflow_configs",
-                "forced_route_configs",
-                "assistant_integration",
-            ],
-        },
-    },
+   
     "mail_agent_runtime": {
         "prompt": _text(
             """
@@ -476,47 +397,13 @@ JOB_PROMPT_CONFIGS: dict[str, dict[str, Any]] = {
             "pid": 12345,
         },
     },
-    "code_analysis": {
-        "prompt": _text(
-            """
-            === Job: code_analysis ===
-            Description: Engineering analysis and implementation job.
-            Goal: Deliver precise, defensible, minimal-risk software changes and technical assessments.
-
-            Rules:
-            - Analyze code and runtime evidence before changing behavior.
-            - Prefer the smallest correct change over broad refactors.
-            - Distinguish observed facts, plausible causes, confirmed causes, and proposed fixes.
-            - Do not claim verification without actual evidence.
-            - Call out assumptions explicitly when context is incomplete.
-            """
-        ),
-        "task": {
-            "priorities": ["correctness", "determinism", "safety", "compatibility", "maintainability"],
-            "deliverables": [
-                "root cause or strongest hypothesis",
-                "concrete change or recommendation",
-                "impact on existing behavior",
-                "performed or missing verification",
-            ],
-        },
-        "output_schema": {},
-    },
+  
 }
 
 
 JOB_CONFIGS: dict[str, dict[str, Any]] = {
-    "interactive_planning": {
-        "runtime_agent": "_xplaner_xrouter",
-        "skill_profile": "xplaner_xrouter_core",
-        "default_object_name": "documents",
-        "is_default_for_agent": True,
-    },
-    "agent_system_planning": {
-        "runtime_agent": "_xplaner_xrouter",
-        "skill_profile": "xplaner_xrouter_agent_system_planning",
-        "default_object_name": "documents",
-    },
+ 
+ 
     "generic_execution": {
         "runtime_agent": "_xworker",
         "skill_profile": "xworker_core",
@@ -526,6 +413,11 @@ JOB_CONFIGS: dict[str, dict[str, Any]] = {
     "document_dispatch": {
         "runtime_agent": "_xworker",
         "skill_profile": "xworker_dispatch",
+        "default_object_name": "documents",
+    },
+    "document_dispatch_ingest_import_pipeline": {
+        "runtime_agent": "_xworker",
+        "skill_profile": "xworker_dispatch_ingest_import_pipeline",
         "default_object_name": "documents",
     },
     "generic_parser": {
@@ -556,21 +448,13 @@ JOB_CONFIGS: dict[str, dict[str, Any]] = {
         "default_object_name": "cover_letters",
         "specialized_prompt": {"agent_type": "writer", "task_name": "cover_letter"},
     },
-    "agent_system_builder": {
-        "runtime_agent": "_xworker",
-        "skill_profile": "xworker_agent_system_builder",
-        "default_object_name": "agent_system_configs",
-    },
+  
     "mail_agent_runtime": {
         "runtime_agent": "_xworker",
         "skill_profile": "xworker_mail_agent_runtime",
         "default_object_name": "emails",
     },
-    "code_analysis": {
-        "runtime_agent": "_xworker",
-        "skill_profile": "xworker_code_analysis",
-        "default_object_name": "documents",
-    },
+  
 }
 
 
@@ -597,14 +481,11 @@ def _tool_skill_profiles_for_agent(agent_label: str) -> dict[str, str]:
         return {}
 
     return {
-        "memorydb": "xworker_core",
-        "vectordb": "xworker_core",
-        "build_agent_system_configs": "xworker_agent_system_builder",
+      
         "execute_action_request": "xworker_dispatch",
         "upsert_object_record": "xworker_dispatch",
         "ingest_object": "xworker_dispatch",
         "store_object_result": "xworker_dispatch",
-        "batch_generate_documents": "xworker_cover_letter_writer",
         "run_mail_agent": "xworker_mail_agent_runtime",
         "vdb_worker": "xworker_core",
         "dispatch_documents": "xworker_dispatch",
@@ -658,14 +539,11 @@ AGENT_RUNTIME_CONFIG: dict[str, dict[str, Any]] = {
         "canonical_name": "xworker",
         "model": "gpt-4o-mini",
         "tools": [
-            "memorydb",
-            "vectordb",
-            "build_agent_system_configs",
+          
             "execute_action_request",
             "upsert_object_record",
             "ingest_object",
             "store_object_result",
-            "batch_generate_documents",
             "run_mail_agent",
             "vdb_worker",
             "@dispatcher",
@@ -681,7 +559,7 @@ AGENT_RUNTIME_CONFIG: dict[str, dict[str, Any]] = {
 }
 
 
-AGENT_ROLE_CONFIGS: dict[str, dict[str, Any]] = {
+AGENT_ROLE: dict[str, dict[str, Any]] = {
     "xplaner_xrouter": {
         "description": "Primary agent role for planning, clarification, and routing.",
         "can_route": True,
@@ -733,7 +611,7 @@ ALLOWED_INSTANCE_POLICIES = {
 }
 
 
-HANDOFF_PROTOCOL_CONFIGS: dict[str, dict[str, Any]] = {
+HANDOFF_PROTOCOL: dict[str, dict[str, Any]] = {
     "message_text": {
         "description": "Plain text handoff transported as the routed user message.",
         "transport": "user_message",
@@ -749,7 +627,7 @@ HANDOFF_PROTOCOL_CONFIGS: dict[str, dict[str, Any]] = {
 }
 
 
-HANDOFF_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
+HANDOFF_SCHEMA: dict[str, dict[str, Any]] = {
     "xplaner_to_xworker": {
         "handoff_id": "structured",
         "protocol": "agent_handoff_v1",
@@ -774,6 +652,7 @@ HANDOFF_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
                     "Execute the document_dispatch job deterministically and do not invent filesystem or DB state.",
                 ],
             },
+        
             "generic_parser": {
                 "handoff_id": "parser_brief",
                 "description": "xplaner_xrouter brief for a parser-style xworker job.",
@@ -806,16 +685,7 @@ HANDOFF_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
                     "Do not add unsupported claims beyond the provided structured input.",
                 ],
             },
-            "agent_system_builder": {
-                "handoff_id": "builder",
-                "job_name": "agent_system_builder",
-                "description": "xplaner_xrouter brief for the xworker builder job.",
-                "workflow_name": "xworker_builder_leaf",
-                "instructions": [
-                    "Treat the handoff payload as the approved build brief.",
-                    "Use the build_agent_system_configs tool to produce the canonical config bundle.",
-                ],
-            },
+        
             "cover_letter_writer": {
                 "handoff_id": "cover_letter_writer",
                 "job_name": "cover_letter_writer",
@@ -878,74 +748,33 @@ HANDOFF_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
 }
 
 
-ACTION_REQUEST_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
-    "agent_system_builder_request": {
-        "description": "Builder request for creating a basic planner/builder agent-system configuration bundle.",
-        "actions": ["build_agent_system_configs", "create_agents_basic_config", "create_agent_system"],
-        "required_paths": [
-            "action",
-            "system_name",
-            "agent_specs",
-            "workflow_specs",
-            "integration_targets.assistant_agent_name",
-            "integration_targets.route_prefix",
-            "integration_targets.persisted_config_target",
-            "planning_schema.required_steps",
-            "planning_schema.required_sections",
-            "planning_schema.required_agent_fields",
-            "planning_schema.required_workflow_fields",
-            "planning_schema.required_integration_fields",
-        ],
+ACTIONS: dict[str, dict[str, Any]] = {
+ 
+    "document_dispatch_request": {
+        "description": "Deterministic document dispatch request that scans a directory for new job-offer PDFs and updates dispatcher state.",
+        "actions": ["dispatch_documents", "document_dispatch"],
+        "required_paths": ["action", "scan_dir"],
         "recommended_paths": [
-            "assistant_agent_name",
-            "planner_agent_name",
-            "worker_agent_name",
-            "route_prefix",
+            "db_path",
+            "dispatcher_db_path",
+            "thread_id",
+            "dispatcher_message_id",
+            "recursive",
+            "extensions",
+            "target_agent",
         ],
-    },
-    "platform_job_posting_ingest_request": {
-        "description": "Deterministic non-PDF ingest request for job postings from platforms, APIs, or pre-parsed sources.",
-        "actions": ["ingest_object", "store_object_result"],
-        "required_paths": ["action"],
         "conditions": {
             "all": [
-                {"action": {"in": ["ingest_object", "store_object_result"]}},
-                {
-                    "any": [
-                        {"job_posting_result": {"exists": True}},
-                        {"job_posting": {"exists": True}},
-                    ]
-                },
+                {"action": {"in": ["dispatch_documents", "document_dispatch"]}},
+                {"scan_dir": {"exists": True}},
             ]
         },
-        "recommended_paths": ["correlation_id", "source_agent", "source_payload"],
-        "request_resolution": {
-            "objects": [
-                {
-                    "binding_name": "job_posting",
-                    "request_field": "job_posting",
-                    "result_field": "job_posting_result",
-                    "default_obj_name": "job_postings",
-                    "obj_name_config_key": "job_posting_obj_name",
-                    "db_path_field_key": "job_posting_db_path_field",
-                    "default_source": "text",
-                }
-            ],
-        },
         "action_execution": {
-            "handler_name": "ingest_object",
-            "binding_name": "job_posting",
-            "object_payload_field": "job_posting",
-            "request_payload_field": "job_posting",
-            "result_payload_field": "job_posting_result",
-            "correlation_id_fields": ["correlation_id"],
-            "db_path_fields": ["obj_db_path", "job_postings_db_path", "db_path"],
-            "source_agent_fields": ["source_agent"],
-            "source_payload_fields": ["source_payload"],
-            "parse_fields": ["parse"],
-            "default_request_source": "text",
+            "handler_name": "dispatch_documents",
         },
     },
+   
+  
     "dispatcher_job_record_upsert_request": {
         "description": "Deterministic combined request that updates both job_postings_db and dispatcher_doc_db for the same correlation id.",
         "actions": ["upsert_object_record"],
@@ -991,49 +820,7 @@ ACTION_REQUEST_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
             "dispatcher_updates_fields": ["dispatcher_updates"],
         },
     },
-    "platform_profile_ingest_request": {
-        "description": "Deterministic ingest request for applicant profiles from platforms, APIs, or pre-parsed sources.",
-        "actions": ["ingest_object", "store_object_result"],
-        "required_paths": ["action"],
-        "conditions": {
-            "all": [
-                {"action": {"in": ["ingest_object", "store_object_result"]}},
-                {
-                    "any": [
-                        {"profile_result": {"exists": True}},
-                        {"applicant_profile": {"exists": True}},
-                        {"profile": {"exists": True}},
-                    ]
-                },
-            ]
-        },
-        "recommended_paths": ["correlation_id", "source_agent"],
-        "request_resolution": {
-            "objects": [
-                {
-                    "binding_name": "profile",
-                    "request_field": "applicant_profile",
-                    "result_field": "profile_result",
-                    "default_obj_name": "profiles",
-                    "obj_name_config_key": "profile_obj_name",
-                    "db_path_field_key": "profile_db_path_field",
-                    "default_source": "text",
-                }
-            ],
-        },
-        "action_execution": {
-            "handler_name": "ingest_object",
-            "binding_name": "profile",
-            "object_payload_field": "profile",
-            "request_payload_field": "applicant_profile",
-            "result_payload_field": "profile_result",
-            "correlation_id_fields": ["correlation_id"],
-            "db_path_fields": ["obj_db_path", "profiles_db_path", "db_path"],
-            "source_agent_fields": ["source_agent"],
-            "source_payload_fields": ["source_payload"],
-            "default_request_source": "text",
-        },
-    },
+    
     "cover_letter_generation_request": {
         "description": "Cover-letter generation request that either routes directly to the writer when all structured inputs are ready or to the dispatcher when preparation/batch generation is still required.",
         "actions": ["generate_cover_letter"],
@@ -1090,14 +877,13 @@ ACTION_REQUEST_SCHEMA_CONFIGS: dict[str, dict[str, Any]] = {
             ],
             "dispatcher_route_target": "_xworker",
             "ready_route_target": "_xworker",
-            "batch_tool_name": "batch_generate_documents",
-            "batch_workflow_name": "cover_letter_batch_generation",
+ 
         },
     },
 }
 
 
-PROMPT_FRAGMENT_CONFIGS: dict[str, dict[str, Any]] = {
+PROMPT_FRAGMENTS: dict[str, dict[str, Any]] = {
     "source_grounding": {
         "text": "Use only source-grounded facts. State uncertainty explicitly instead of inventing details.",
     },
@@ -1113,19 +899,14 @@ PROMPT_FRAGMENT_CONFIGS: dict[str, dict[str, Any]] = {
 }
 
 
-AGENT_SKILL_PROFILES: dict[str, dict[str, Any]] = {
+AGENT_SKILLS: dict[str, dict[str, Any]] = {
     "xplaner_xrouter_core": {
         "role": "xplaner_xrouter",
         "prompt_fragments": ["source_grounding", "router_handoff"],
         "description": "Default planning and routing profile for the primary agent.",
         "job_name": "interactive_planning",
     },
-    "xplaner_xrouter_agent_system_planning": {
-        "role": "xplaner_xrouter",
-        "prompt_fragments": ["source_grounding", "router_handoff"],
-        "description": "Planning profile for agent-system design and routing decisions.",
-        "job_name": "agent_system_planning",
-    },
+  
     "xworker_core": {
         "role": "xworker",
         "prompt_fragments": ["source_grounding"],
@@ -1138,6 +919,7 @@ AGENT_SKILL_PROFILES: dict[str, dict[str, Any]] = {
         "description": "Worker profile for deterministic dispatch and document bucketing.",
         "job_name": "document_dispatch",
     },
+
     "xworker_generic_parser": {
         "role": "xworker",
         "prompt_fragments": ["source_grounding", "json_output"],
@@ -1168,28 +950,18 @@ AGENT_SKILL_PROFILES: dict[str, dict[str, Any]] = {
         "description": "Worker profile for cover-letter generation.",
         "job_name": "cover_letter_writer",
     },
-    "xworker_agent_system_builder": {
-        "role": "xworker",
-        "prompt_fragments": ["source_grounding", "json_output"],
-        "description": "Worker profile for materializing persisted agent-system config bundles.",
-        "job_name": "agent_system_builder",
-    },
+  
     "xworker_mail_agent_runtime": {
         "role": "xworker",
         "prompt_fragments": ["source_grounding"],
         "description": "Worker profile for running the standalone mail-agent runtime bridge.",
         "job_name": "mail_agent_runtime",
     },
-    "xworker_code_analysis": {
-        "role": "xworker",
-        "prompt_fragments": ["source_grounding"],
-        "description": "Worker profile for focused engineering analysis and implementation.",
-        "job_name": "code_analysis",
-    },
+  
 }
 
 
-AGENT_MANIFEST_OVERRIDES: dict[str, dict[str, Any]] = {
+AGENT_MANIFEST: dict[str, dict[str, Any]] = {
     "_xplaner_xrouter": {
         "role": "xplaner_xrouter",
         "skill_profile": "xplaner_xrouter_core",
@@ -1240,44 +1012,7 @@ AGENT_MANIFEST_OVERRIDES: dict[str, dict[str, Any]] = {
 
 
 TOOL_CONFIGS: list[dict[str, Any]] = [
-    {
-        "name": "memorydb",
-        "description": "Query the memory vector database (indexed code snippets / notes). Do not use this to open a concrete file path from disk.",
-        "parameters": [
-            {"name": "query", "type": "string", "description": "Free-text query or identifier.", "required": True},
-            {"name": "k", "type": "integer", "description": "Number of results.", "default": 3},
-            {
-                "name": "store_dir",
-                "type": "string",
-                "description": "Vector-store directory OR store id/name under AppData. Examples: '/abs/path/VSM_3_Data', './AppData/VSM_3_Data', '3', 'VSM_3_Data'.",
-            },
-            {"name": "manifest_file", "type": "string", "description": "Optional manifest.json path (default: <store_dir>/manifest.json)."},
-            {"name": "root_dir", "type": "string", "description": "Root directory to index when autobuild is enabled."},
-            {"name": "autobuild", "type": "boolean", "description": "Override AI_IDE_VSTORE_AUTOBUILD for this call.", "default": None},
-            {"name": "chunk_strategy", "type": "string", "description": "Optional chunking strategy for autobuild: recursive|character|markdown."},
-            {"name": "chunk_size", "type": "integer", "description": "Optional chunk size for autobuild."},
-            {"name": "overlap", "type": "integer", "description": "Optional chunk overlap for autobuild."},
-        ],
-    },
-    {
-        "name": "vectordb",
-        "description": "Query indexed vector databases for retrieval. Do not use this to open or load a concrete file path from disk.",
-        "parameters": [
-            {"name": "query", "type": "string", "description": "Free-text query or filename.", "required": True},
-            {"name": "k", "type": "integer", "description": "Number of results.", "default": 3},
-            {
-                "name": "store_dir",
-                "type": "string",
-                "description": "Vector-store directory OR store id/name under AppData. Examples: '/abs/path/VSM_1_Data', './AppData/VSM_1_Data', '1', 'VSM_1_Data'.",
-            },
-            {"name": "manifest_file", "type": "string", "description": "Optional manifest.json path (default: <store_dir>/manifest.json)."},
-            {"name": "root_dir", "type": "string", "description": "Root directory to index when autobuild is enabled."},
-            {"name": "autobuild", "type": "boolean", "description": "Override AI_IDE_VSTORE_AUTOBUILD for this call.", "default": None},
-            {"name": "chunk_strategy", "type": "string", "description": "Optional chunking strategy for autobuild: recursive|character|markdown."},
-            {"name": "chunk_size", "type": "integer", "description": "Optional chunk size for autobuild."},
-            {"name": "overlap", "type": "integer", "description": "Optional chunk overlap for autobuild."},
-        ],
-    },
+    
     {
         "name": "vdb_worker",
         "description": "Create/list/build/wipe vector store directories under AppData (runs in a subprocess).",
@@ -1358,15 +1093,7 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
             {"name": "time", "type": "string", "description": "Time of the event (e.g., '14:00').", "required": True},
         ],
     },
-    {
-        "name": "send_mail",
-        "description": "Send an email to a recipient.",
-        "parameters": [
-            {"name": "recipient", "type": "string", "description": "Email address of the recipient.", "required": True},
-            {"name": "subject", "type": "string", "description": "Subject line of the email.", "required": True},
-            {"name": "body", "type": "string", "description": "Body content of the email.", "required": True},
-        ],
-    },
+   
     {
         "name": "run_mail_agent",
         "description": "Start the standalone Projekt_Mail_Agent in once or watch mode.",
@@ -1378,30 +1105,7 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
             {"name": "background", "type": "boolean", "description": "When mode=watch, run detached in background.", "required": False, "default": True},
         ],
     },
-    {
-        "name": "dml_tool",
-        "description": "Data Manipulation Language tool.",
-        "parameters": [
-            {"name": "operation", "type": "string", "description": "The operation to perform.", "required": True},
-            {"name": "data", "type": "string", "description": "The data to operate on.", "required": True},
-        ],
-    },
-    {
-        "name": "dsl_tool",
-        "description": "Data Scripting Language tool for scripting operations.",
-        "parameters": [
-            {"name": "operation", "type": "string", "description": "The operation to perform.", "required": True},
-            {"name": "data", "type": "string", "description": "The data to operate on.", "required": True},
-        ],
-    },
-    {
-        "name": "code_tool",
-        "description": "Code Manipulation Language tool for code operations.",
-        "parameters": [
-            {"name": "operation", "type": "string", "description": "The code operation to perform.", "required": True},
-            {"name": "data", "type": "string", "description": "The code or data to operate on.", "required": True},
-        ],
-    },
+    
     {
         "name": "iter_documents",
         "description": "Load supported documents from one or more files or directories with optional type, pattern, and recursion filters.",
@@ -1588,49 +1292,7 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
             {"name": "parse", "type": "object", "description": "Optional parse metadata used when only job_posting is supplied.", "required": False},
         ],
     },
-    {
-        "name": "batch_generate_documents",
-        "description": "Generate documents for all discovered inputs in scan_dir using a declarative batch workflow from agents_config plus profile/context inputs and dispatcher DB; writes outputs to out_dir.",
-        "implementation_name": "batch_document_generator",
-        "parameters": [
-            {"name": "scan_dir", "type": "string", "description": "Directory to scan for documents.", "required": True},
-            {"name": "profile_path", "type": "string", "description": "Path to applicant_profile.json.", "required": True},
-            {"name": "db_path", "type": "string", "description": "Path to dispatcher_doc_db.json.", "required": True},
-            {"name": "out_dir", "type": "string", "description": "Output directory for generated cover letters (default: scan_dir/Cover_letters).", "required": False},
-            {"name": "workflow_name", "type": "string", "description": "Batch workflow definition in agents_config (default: cover_letter_batch_generation).", "required": False, "default": "cover_letter_batch_generation"},
-            {"name": "model", "type": "string", "description": "OpenAI model id.", "required": False, "default": "gpt-4o-mini"},
-            {"name": "max_files", "type": "integer", "description": "Optional max number of PDFs to process.", "required": False},
-            {"name": "max_text_chars", "type": "integer", "description": "Max extracted text chars per PDF to send to the model.", "required": False, "default": 20000},
-            {"name": "dry_run", "type": "boolean", "description": "If true: do not call the model and do not write files.", "required": False, "default": False},
-            {"name": "write_pdf", "type": "boolean", "description": "If true: also write each cover letter as a PDF (requires reportlab).", "required": False, "default": True},
-            {"name": "rerun_processed", "type": "boolean", "description": "If true: also regenerate cover letters for PDFs already marked processed in the dispatcher DB.", "required": False, "default": False},
-        ],
-    },
-    {
-        "name": "build_agent_system_configs",
-        "description": "Generate a basic planner/builder agent-system configuration bundle that can be persisted as agent/workflow config data.",
-        "parameters": [
-            {"name": "system_name", "type": "string", "description": "Logical system name used as the base for planner/builder config names.", "required": True},
-            {"name": "action_request", "type": "object", "description": "Optional structured overrides for agent names, workflows, route prefix, models, and integration targets.", "required": False},
-            {"name": "persist_path", "type": "string", "description": "Optional output path for writing the generated persisted config module.", "required": False},
-            {"name": "write_file", "type": "boolean", "description": "If true, write the generated persisted config module to disk.", "required": False, "default": False},
-        ],
-    },
-    {
-        "name": "fetch_url",
-        "description": "Fetch content from a URL.",
-        "parameters": [
-            {"name": "url", "type": "string", "description": "The URL to fetch content from.", "required": True},
-        ],
-    },
-    {
-        "name": "fetch_data",
-        "description": "Fetch data from a specified source.",
-        "parameters": [
-            {"name": "source", "type": "string", "description": "The data source to fetch from.", "required": True},
-            {"name": "query", "type": "string", "description": "The query to execute on the source.", "required": True},
-        ],
-    },
+ 
     {
         "name": "call_api",
         "description": "Call an external API endpoint.",
@@ -1640,29 +1302,7 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
             {"name": "payload", "type": "string", "description": "JSON payload for POST requests."},
         ],
     },
-    {
-        "name": "call",
-        "description": "Initiate a phone call.",
-        "parameters": [
-            {"name": "phone_number", "type": "string", "description": "The phone number to call.", "required": True},
-            {"name": "message", "type": "string", "description": "Optional message to deliver."},
-        ],
-    },
-    {
-        "name": "accept_call",
-        "description": "Accept an incoming call.",
-        "parameters": [
-            {"name": "call_id", "type": "string", "description": "The ID of the call to accept.", "required": True},
-        ],
-    },
-    {
-        "name": "reject_call",
-        "description": "Reject an incoming call.",
-        "parameters": [
-            {"name": "call_id", "type": "string", "description": "The ID of the call to reject.", "required": True},
-            {"name": "reason", "type": "string", "description": "Optional reason for rejecting the call."},
-        ],
-    },
+  
     {
         "name": "route_to_agent",
         "description": "Route the request to a specialized agent with an explicit job_name or tool_name so the runtime can select the correct handoff schema, worker specialization, and optional explicit tool set.",
@@ -1683,7 +1323,7 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
 ]
 
 
-TOOL_NAME_ALIASES: dict[str, str] = {
+TOOL_NAMES: dict[str, str] = {
     "dispatch_docs": "dispatch_documents",
     "dispatch_documents": "dispatch_documents",
     "dispatch_job_posting_pdfs": "dispatch_documents",
@@ -1705,7 +1345,9 @@ TOOL_NAME_ALIASES: dict[str, str] = {
 }
 
 
-ACTION_REQUEST_NAME_ALIASES: dict[str, str] = {
+ACTION_NAMES: dict[str, str] = {
+    "document_dispatch": "dispatch_documents",
+    "dispatch_documents": "dispatch_documents",
     "ingest_object": "ingest_object",
     "store_object_result": "store_object_result",
     "upsert_object_record": "upsert_object_record",
@@ -1721,7 +1363,7 @@ ACTION_REQUEST_NAME_ALIASES: dict[str, str] = {
 }
 
 
-TOOL_GROUP_CONFIGS: dict[str, list[str]] = {
+TOOL_GROUPS: dict[str, list[str]] = {
     "rag": ["memorydb", "vectordb"],
     "doc_ro": [
         "read_document",
@@ -1750,49 +1392,14 @@ TOOL_GROUP_CONFIGS: dict[str, list[str]] = {
 }
 
 
-FORCED_ROUTE_CONFIGS: dict[str, list[dict[str, Any]]] = {
+FORCED_ROUTES: dict[str, list[dict[str, Any]]] = {
     "_xplaner_xrouter": [
         {
             "name": "agent_prefix",
             "trigger": {"type": "at_prefix"},
         },
-        {
-            "name": "create_agents_command",
-            "trigger": {
-                "type": "text_prefix",
-                "prefix": "/create agents",
-                "ignore_case": True,
-            },
-            "route": {
-                "target_agent": "_xplaner_xrouter",
-                "job_name": "agent_system_planning",
-                "user_question": "__trigger_remainder__",
-            },
-        },
-        {
-            "name": "cover_letter_ready_request",
-            "trigger": {
-                "type": "json_payload",
-                "conditions": {
-                    "all": [
-                        {"action": {"eq": "generate_cover_letter"}},
-                        {"job_posting_result": {"exists": True}},
-                        {"profile_result": {"exists": True}},
-                    ]
-                },
-            },
-            "route": {
-                "target_agent": "_xworker",
-                "handoff_protocol": "agent_handoff_v1",
-                "handoff_schema": "xplaner_to_xworker",
-                "agent_response": {
-                    "agent_label": "_xplaner_xrouter",
-                    "handoff_to": "_xworker",
-                    "job_name": "cover_letter_writer",
-                    "output": "__cover_letter_writer_payload__",
-                },
-            },
-        },
+    
+        
         {
             "name": "cover_letter_request",
             "trigger": {
@@ -1811,11 +1418,12 @@ FORCED_ROUTE_CONFIGS: dict[str, list[dict[str, Any]]] = {
                 "user_question": "__original_input__",
             },
         },
+      
     ],
 }
 
 
-WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
+WORKFLOWS: dict[str, dict[str, Any]] = {
     "xplaner_xrouter_router": {
         "description": "Primary xplaner_xrouter workflow with generic xworker delegation.",
         "entry_state": "xplaner_ready",
@@ -1921,36 +1529,7 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
             },
         ],
     },
-    "xworker_builder_leaf": {
-        "description": "Leaf workflow for the xworker builder job.",
-        "entry_state": "builder_active",
-        "states": {
-            "builder_active": {
-                "actor": {"kind": "agent", "name": "_xworker"},
-                "terminal": False,
-            },
-            "builder_complete": {
-                "actor": {"kind": "state", "name": "workflow_complete"},
-                "terminal": True,
-            },
-            "builder_failed": {
-                "actor": {"kind": "state", "name": "workflow_failed"},
-                "terminal": True,
-            },
-        },
-        "transitions": [
-            {
-                "from": "builder_active",
-                "on": {"kind": "state", "name": "followup_complete"},
-                "to": "builder_complete",
-            },
-            {
-                "from": "builder_active",
-                "on": {"kind": "state", "name": ["model_failed", "tool_failed"]},
-                "to": "builder_failed",
-            },
-        ],
-    },
+  
     "xworker_generic_parser_leaf": {
         "description": "Leaf workflow for generic xworker parser jobs.",
         "entry_state": "parser_active",
@@ -2110,10 +1689,6 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
                 "actor": {"kind": "tool", "name": "upsert_object_record"},
                 "terminal": False,
             },
-            "documents_batched": {
-                "actor": {"kind": "tool", "name": "batch_generate_documents"},
-                "terminal": True,
-            },
             "parser_routed": {
                 "actor": {"kind": "tool", "name": "route_to_agent"},
                 "terminal": False,
@@ -2205,420 +1780,6 @@ WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
                 "on": {"kind": "state", "name": "retry_exhausted"},
                 "to": "dispatcher_failed",
             },
-        ],
-    },
-}
-
-
-BATCH_WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
-    "cover_letter_batch_generation": {
-        "description": "Declarative batch cover-letter generation workflow executed by the batch document generator.",
-        "dispatcher": {
-            "tool_name": "dispatch_documents",
-            "thread_id": "batch",
-            "dispatcher_message_id": "batch",
-            "recursive": True,
-            "bucket_order": ["new", "known_unprocessed", "known_processing"],
-            "rerun_bucket": "known_processed",
-        },
-        "filters": {
-            "skip_output_dir_inputs": True,
-            "skip_basenames": ["Muster_Anschreiben.pdf"],
-        },
-        "profile_result": {
-            "agent": "xworker",
-            "correlation_id_path": "profile_id",
-            "language_path": "preferences.language",
-            "default_language": "de",
-        },
-        "job_payload": {
-            "requested_actions": ["parse", "extract_text", "store_file", "mark_processed_on_success"],
-            "include_extracted_text": True,
-        },
-        "stages": [
-            {
-                "name": "job_posting_parse",
-                "prompt": {"agent_type": "parser", "task_name": "job_posting"},
-                "input": {"from_context": "job_payload"},
-                "temperature": 0.2,
-                "response_format": "json",
-                "store_as": "job_posting_result",
-                "history": {
-                    "request_stage": "job_posting_parser",
-                    "response_stage": "job_posting_parser",
-                    "tool_name": "job_posting_parser",
-                },
-            },
-            {
-                "name": "cover_letter_generate",
-                "prompt": {"agent_type": "writer", "task_name": "cover_letter"},
-                "input_template": {
-                    "job_posting_result": {"from_context": "job_posting_result"},
-                    "profile_result": {"from_context": "profile_result"},
-                    "options": {
-                        "language": {"from_profile": "preferences.language", "default": "de"},
-                        "tone": {"from_profile": "preferences.tone", "default": "modern"},
-                        "max_words": {"from_profile": "preferences.max_length", "default": 350},
-                        "date": {"from_context": "current_date"},
-                        "city": {"literal": None},
-                        "include_enclosures": {"literal": True},
-                    },
-                },
-                "temperature": 0.2,
-                "response_format": "json",
-                "store_as": "cover_letter_result",
-                "history": {
-                    "request_stage": "text_generation",
-                    "response_stage": "text_generation",
-                    "tool_name": "text_generation",
-                },
-            },
-        ],
-        "document_output": {
-            "text_writer_tool": "write_document",
-            "text_writer_input": {
-                "content": {"from_context": "cover_letter_result.cover_letter.full_text"},
-                "path": {"from_context": "out_dir"},
-                "doc_id": {"from_context": "doc_id"},
-                "correlation_id": {"from_context": "correlation_id"},
-            },
-            "pdf_writer": "internal_text_pdf",
-            "pdf_writer_input": {
-                "content": {"from_context": "cover_letter_result.cover_letter.full_text"},
-                "out_dir": {"from_context": "out_dir"},
-                "doc_id": {"from_context": "doc_id"},
-            },
-            "enabled_context_path": "write_pdf",
-        },
-        "dispatcher_record": {
-            "success_updates": {
-                "processed": {"literal": True},
-                "processing_state": {"literal": "processed"},
-                "processed_at": {"from_context": "utc_now"},
-                "document_text_path": {"from_context": "saved_text_path"},
-                "document_pdf_path": {"from_context": "saved_pdf_path"},
-                "document_path": {"from_context": "saved_document_path"},
-                "last_error": {"literal": None},
-            },
-            "failure_updates": {
-                "processed": {"literal": False},
-                "processing_state": {"literal": "failed"},
-                "failed_reason": {"from_context": "error_message"},
-                "last_error": {"from_context": "error_message"},
-                "last_error_at": {"from_context": "utc_now"},
-            },
-        },
-    },
-}
-
-
-AGENTS_DB_STRUCTURE_CONFIGS: dict[str, dict[str, Any]] = {
-    "document_knowledge_pipeline": {
-        "description": "Canonical structure for the agents_db document pipeline that bridges operational persistence in tools.py to the Mongo-backed knowledge projection in agents_db.py.",
-        "modules": {
-            "tools.py": {
-                "role": "operational_runtime",
-                "layers": [
-                    {
-                        "name": "backend_layer",
-                        "owner_objects": ["MongoDocumentBackend"],
-                        "functions": [
-                            "load_db",
-                            "save_db",
-                            "load_record",
-                            "upsert_record",
-                            "delete_record",
-                        ],
-                        "responsibility": "Backend boundary for file-based or Mongo-backed operational document stores.",
-                    },
-                    {
-                        "name": "repository_layer",
-                        "owner_objects": ["DocumentRepository"],
-                        "functions": [
-                            "load_db",
-                            "save_db",
-                            "upsert_db",
-                            "persist_document",
-                            "get_document",
-                            "get_dispatcher_record",
-                            "get_dispatcher_records",
-                        ],
-                        "responsibility": "Operational truth for document stores and dispatcher state.",
-                    },
-                    {
-                        "name": "resolution_layer",
-                        "owner_objects": ["RequestObjectResolutionService"],
-                        "functions": [
-                            "resolve_request_object",
-                            "resolve_request_payload",
-                        ],
-                        "responsibility": "Resolve incoming request payloads to generic object_name and object_result bindings.",
-                    },
-                    {
-                        "name": "object_service_layer",
-                        "owner_objects": ["DocumentObjectService"],
-                        "functions": [
-                            "store_object_result",
-                            "ingest_object",
-                            "upsert_object_record",
-                        ],
-                        "responsibility": "Object-centric persistence entry point for parser results and deterministic updates.",
-                    },
-                    {
-                        "name": "action_layer",
-                        "owner_objects": ["ActionRequestService"],
-                        "functions": [
-                            "execute_request",
-                            "execute_request_tool",
-                        ],
-                        "responsibility": "Schema-driven deterministic routing from action requests to operational services.",
-                    },
-                    {
-                        "name": "dispatch_layer",
-                        "owner_objects": ["DocumentDispatchService"],
-                        "functions": [
-                            "dispatch_documents",
-                        ],
-                        "responsibility": "Filesystem scan, dispatcher bucketing, and parser handoff orchestration.",
-                    },
-                ],
-            },
-            "agents_db.py": {
-                "role": "knowledge_projection",
-                "layers": [
-                    {
-                        "name": "knowledge_object_layer",
-                        "owner_objects": [
-                            "NamespaceObject",
-                            "DocumentObject",
-                            "BlockObject",
-                            "EntityObject",
-                            "EntityRelationObject",
-                            "EmbeddingObject",
-                            "RetrievalRunObject",
-                            "DispatcherRunObject",
-                        ],
-                        "helper_objects": [
-                            "EntityMentionObject",
-                            "EntityAliasObject",
-                            "RelationEvidenceObject",
-                        ],
-                        "responsibility": "Canonical object model for namespace, document, block, entity, relation, embedding, dispatcher, and retrieval truth.",
-                    },
-                    {
-                        "name": "knowledge_repository_layer",
-                        "owner_objects": ["KnowledgeRepository", "KnowledgeObjectService"],
-                        "functions": [
-                            "store_namespace_object",
-                            "store_document_object",
-                            "store_entity_object",
-                            "store_relation_object",
-                            "store_embedding_object",
-                            "store_retrieval_run_object",
-                            "store_dispatcher_run_object",
-                            "find_objects",
-                            "load_relation_object_graph",
-                            "build_vector_candidate_pipeline",
-                        ],
-                        "responsibility": "Mongo-backed persistence and query facade for the knowledge model.",
-                    },
-                    {
-                        "name": "mapping_layer",
-                        "owner_objects": ["ObjectMappingService"],
-                        "functions": [
-                            "build_document_object",
-                            "build_entity_objects",
-                            "build_relation_objects",
-                            "store_mapped_object",
-                        ],
-                        "responsibility": "Map parsed object_result payloads to canonical document, block, entity, and relation objects.",
-                    },
-                    {
-                        "name": "pipeline_layer",
-                        "owner_objects": ["PipelineService"],
-                        "functions": [
-                            "load_namespace_object",
-                            "build_retrieval_run_object",
-                            "store_retrieval_run",
-                        ],
-                        "responsibility": "Runtime namespace resolution and retrieval telemetry projection.",
-                    },
-                ],
-            },
-        },
-        "bridge_points": [
-            {
-                "name": "parser_result_sync",
-                "entry_functions": [
-                    "store_object_result_tool",
-                    "ingest_object_tool",
-                    "upsert_object_record_tool",
-                    "sync_parser_result_to_mongodb_knowledge",
-                ],
-                "from_module": "tools.py",
-                "to_module": "agents_db.py",
-                "target_objects": ["ObjectMappingService", "KnowledgeObjectService"],
-                "responsibility": "Bridge operational parser-result persistence to Mongo knowledge projection.",
-            },
-            {
-                "name": "retrieval_run_sync",
-                "entry_functions": [
-                    "memorydb",
-                    "vectordb",
-                    "sync_retrieval_run_to_mongodb_knowledge",
-                ],
-                "from_module": "tools.py",
-                "to_module": "agents_db.py",
-                "target_objects": ["PipelineService", "KnowledgeObjectService"],
-                "responsibility": "Bridge retrieval execution telemetry to RetrievalRunObject persistence.",
-            },
-        ],
-    },
-}
-
-
-AGENTS_DB_WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {
-    "document_to_knowledge_dataset": {
-        "description": "Persisted workflow blueprint for the end-to-end agents_db pipeline from parser result to Mongo knowledge projection and retrieval validation.",
-        "structure_ref": "document_knowledge_pipeline",
-        "entry_contract": {
-            "required_fields": ["object_name", "object_result"],
-            "recommended_fields": [
-                "correlation_id",
-                "handoff_metadata",
-                "handoff_payload",
-                "dispatcher_db_path",
-                "obj_db_path",
-                "retrieval_query",
-                "validate_retrieval",
-            ],
-        },
-        "stage_order": [
-            "request_resolution",
-            "operational_persistence",
-            "knowledge_projection",
-            "retrieval_telemetry_projection",
-            "retrieval_validation",
-        ],
-        "stages": [
-            {
-                "name": "request_resolution",
-                "module": "tools.py",
-                "owner_objects": ["RequestObjectResolutionService", "ActionRequestService"],
-                "entry_functions": [
-                    "resolve_request_object",
-                    "resolve_request_payload",
-                    "execute_request",
-                ],
-                "inputs": ["action_request", "object_name", "object_result"],
-                "outputs": ["resolved_object_name", "resolved_result_payload"],
-                "success_criteria": [
-                    "A normalized object_name is resolved.",
-                    "A parser-style result payload is available for persistence.",
-                ],
-            },
-            {
-                "name": "operational_persistence",
-                "module": "tools.py",
-                "owner_objects": ["DocumentRepository", "DocumentObjectService"],
-                "entry_functions": [
-                    "persist_document",
-                    "store_object_result_tool",
-                    "ingest_object_tool",
-                    "upsert_object_record_tool",
-                ],
-                "inputs": [
-                    "resolved_object_name",
-                    "resolved_result_payload",
-                    "correlation_id",
-                    "handoff_metadata",
-                    "handoff_payload",
-                ],
-                "outputs": [
-                    "stored_record",
-                    "obj_db_path",
-                    "dispatcher_db_path",
-                    "operational_store_status",
-                ],
-                "success_criteria": [
-                    "The object store contains the parser result.",
-                    "The dispatcher record is synchronized when dispatcher context exists.",
-                ],
-            },
-            {
-                "name": "knowledge_projection",
-                "module": "agents_db.py",
-                "owner_objects": ["ObjectMappingService", "KnowledgeObjectService"],
-                "entry_functions": [
-                    "sync_parser_result_to_mongodb_knowledge",
-                    "store_mapped_object",
-                    "build_document_object",
-                    "build_entity_objects",
-                    "build_relation_objects",
-                ],
-                "inputs": [
-                    "resolved_object_name",
-                    "resolved_result_payload",
-                    "correlation_id",
-                    "handoff_metadata",
-                    "handoff_payload",
-                ],
-                "outputs": [
-                    "namespace_id",
-                    "document_id",
-                    "entity_count",
-                    "relation_count",
-                ],
-                "materialized_objects": [
-                    "NamespaceObject",
-                    "DocumentObject",
-                    "BlockObject",
-                    "EntityObject",
-                    "EntityRelationObject",
-                ],
-                "success_criteria": [
-                    "Mongo knowledge projection stores namespace and document truth.",
-                    "Entity and relation objects are materialized from the same parser result.",
-                ],
-            },
-            {
-                "name": "retrieval_telemetry_projection",
-                "module": "agents_db.py",
-                "owner_objects": ["PipelineService", "KnowledgeObjectService"],
-                "entry_functions": [
-                    "sync_retrieval_run_to_mongodb_knowledge",
-                    "store_retrieval_run",
-                    "build_retrieval_run_object",
-                ],
-                "inputs": ["tool_name", "query_event", "outcome_event", "retrieval_result"],
-                "outputs": ["retrieval_run_id", "namespace_id"],
-                "materialized_objects": ["RetrievalRunObject"],
-                "success_criteria": [
-                    "Retrieval telemetry is persisted in the same namespace as the projected knowledge objects.",
-                ],
-            },
-            {
-                "name": "retrieval_validation",
-                "module": "agents_db.py",
-                "owner_objects": ["KnowledgeObjectService"],
-                "entry_functions": [
-                    "find_objects",
-                    "load_relation_object_graph",
-                    "build_vector_candidate_pipeline",
-                ],
-                "inputs": ["namespace_id", "retrieval_query", "validate_retrieval"],
-                "outputs": ["document_hits", "block_hits", "entity_hits", "relation_context"],
-                "success_criteria": [
-                    "A query against the projected namespace returns the stored document or one of its blocks.",
-                    "The validation query uses the same projected namespace_id instead of an external store.",
-                ],
-            },
-        ],
-        "completion_criteria": [
-            "The parser result is persisted in the operational store.",
-            "The same parser result is projected to NamespaceObject, DocumentObject, BlockObject, EntityObject, and EntityRelationObject records.",
-            "Retrieval telemetry can be projected as RetrievalRunObject records in the same namespace.",
-            "A retrieval validation query returns the projected document or one of its blocks.",
         ],
     },
 }

@@ -1,26 +1,191 @@
 from __future__ import annotations
 
 import hashlib
-import importlib
+import json
+import logging
 import os
 import re
-import pymongo
+import socket
+import socketserver
+import threading
+import time
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
-Collection = Any
+from urllib.parse import urlparse
 
 
-def _load_mongo_client_class() -> Any | None:
+_AGENTSDB_SOCKET_SERVER_LOCK = threading.RLock()
+_AGENTSDB_SOCKET_SERVER_STATE: dict[tuple[str, int], dict[str, Any]] = {}
+_LOGGER = logging.getLogger(__name__)
+_AGENTSDB_CONNECTION_CONFIG_CACHE: dict[str, Any] | None = None
+
+
+def _load_json_object_file(path: Path) -> dict[str, Any]:
     try:
-        pymongo_module:pymongo = importlib.import_module("pymongo") or pymongo
-        pymongo_version = getattr(pymongo_module, "__version__", "0.0.0")
-        major_version = int(pymongo_version.split(".")[0]) if isinstance(pymongo_version, str) else 0
-        if major_version < 3:
-            return None
+        loaded_payload = json.loads(path.read_text(encoding="utf-8"))
     except Exception:
-        return None
-    return getattr(pymongo_module, "MongoClient", None)
+        return {}
+    return dict(loaded_payload) if isinstance(loaded_payload, Mapping) else {}
+
+
+def _load_agentsdb_connection_config() -> dict[str, Any]:
+    global _AGENTSDB_CONNECTION_CONFIG_CACHE
+    if _AGENTSDB_CONNECTION_CONFIG_CACHE is not None:
+        return dict(_AGENTSDB_CONNECTION_CONFIG_CACHE)
+
+    env_config_path = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_CONFIG_PATH", "")).strip()
+    candidate_paths: list[Path] = []
+    if env_config_path:
+        raw_path = Path(env_config_path)
+        if raw_path.is_absolute():
+            candidate_paths.append(raw_path)
+        else:
+            base_paths = [Path(__file__).resolve().parents[2], Path(__file__).resolve().parents[1]]
+            candidate_paths.extend((base_path / raw_path).resolve() for base_path in base_paths)
+    else:
+        project_root = Path(__file__).resolve().parents[2]
+        package_root = Path(__file__).resolve().parents[1]
+        candidate_paths.extend(
+            [
+                (project_root / "AppData" / "agentsdb_connection.json").resolve(),
+                (package_root / "AppData" / "agentsdb_connection.json").resolve(),
+            ]
+        )
+
+    config_payload: dict[str, Any] = {}
+    for path in candidate_paths:
+        if not path.exists() or not path.is_file():
+            continue
+        config_payload = _load_json_object_file(path)
+        if config_payload:
+            break
+
+    _AGENTSDB_CONNECTION_CONFIG_CACHE = dict(config_payload)
+    return dict(_AGENTSDB_CONNECTION_CONFIG_CACHE)
+
+
+def _connection_config_value(config_payload: Mapping[str, Any], key_candidates: Sequence[str]) -> str:
+    for key_name in key_candidates:
+        value = config_payload.get(str(key_name))
+        if value is None:
+            continue
+        normalized_value = str(value).strip()
+        if normalized_value:
+            return normalized_value
+    return ""
+
+
+def _load_agentsdb_uri_from_connection_config(config_payload: Mapping[str, Any]) -> str:
+    configured_uri = _connection_config_value(config_payload, ("agents_db_uri", "agentsdb_uri", "uri", "socket_uri"))
+    if configured_uri:
+        return configured_uri
+    host_value = _connection_config_value(config_payload, ("host", "hostname")) or "127.0.0.1"
+    port_value = _connection_config_value(config_payload, ("port",)) or "2331"
+    try:
+        resolved_port = int(port_value)
+    except Exception:
+        resolved_port = 2331
+    return f"agentsdb://{host_value}:{resolved_port}"
+
+
+def _is_true_env(value: str | None, default: bool = True) -> bool:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return bool(default)
+    return normalized not in {"0", "false", "no", "off"}
+
+
+def _is_local_socket_host(host: str) -> bool:
+    normalized_host = str(host or "").strip().lower()
+    return normalized_host in {"127.0.0.1", "localhost", "::1"}
+
+
+def _socket_endpoint_reachable(host: str, port: int, timeout_seconds: float) -> bool:
+    try:
+        with socket.create_connection((host, int(port)), timeout=max(float(timeout_seconds), 0.2)):
+            return True
+    except Exception:
+        return False
+
+
+def _ensure_local_agentsdb_socket_server(agents_db_uri: str, timeout_seconds: float = 3.0) -> bool:
+    connection_config = _load_agentsdb_connection_config()
+    auto_start_value = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_AUTO_START", "")).strip()
+    if not auto_start_value:
+        auto_start_value = _connection_config_value(connection_config, ("auto_start", "autostart", "socket_auto_start"))
+    if not _is_true_env(auto_start_value, default=True):
+        return False
+    parsed_uri = urlparse(str(agents_db_uri or "").strip())
+    if str(parsed_uri.scheme or "").strip().lower() != "agentsdb":
+        return False
+    resolved_host = str(parsed_uri.hostname or "127.0.0.1").strip() or "127.0.0.1"
+    resolved_port = int(parsed_uri.port or 2331)
+    if not _is_local_socket_host(resolved_host):
+        return False
+    if _socket_endpoint_reachable(resolved_host, resolved_port, timeout_seconds):
+        return True
+
+    server_key = (resolved_host, resolved_port)
+    with _AGENTSDB_SOCKET_SERVER_LOCK:
+        server_state = _AGENTSDB_SOCKET_SERVER_STATE.get(server_key)
+        if server_state is not None:
+            server_thread = server_state.get("thread")
+            if isinstance(server_thread, threading.Thread) and server_thread.is_alive():
+                pass
+            else:
+                _AGENTSDB_SOCKET_SERVER_STATE.pop(server_key, None)
+                server_state = None
+        if server_state is None:
+            try:
+                service = AgentDbSocketServerService.load_from_env()
+                socket_server = _AgentDbSocketTCPServer((resolved_host, resolved_port), _AgentDbSocketRequestHandler, service)
+            except Exception as exc:
+                _LOGGER.warning(
+                    "agentsdb auto-start failed during server setup for %s:%s (%s: %s)",
+                    resolved_host,
+                    resolved_port,
+                    type(exc).__name__,
+                    exc,
+                )
+                return _socket_endpoint_reachable(resolved_host, resolved_port, timeout_seconds)
+
+            server_thread = threading.Thread(target=socket_server.serve_forever, name=f"agentsdb-socket:{resolved_host}:{resolved_port}", daemon=True)
+            server_thread.start()
+            _AGENTSDB_SOCKET_SERVER_STATE[server_key] = {
+                "server": socket_server,
+                "thread": server_thread,
+            }
+            _LOGGER.info(
+                "agentsdb auto-start: started local socket server on %s:%s",
+                resolved_host,
+                resolved_port,
+            )
+
+    deadline = time.monotonic() + max(float(timeout_seconds), 0.5)
+    while time.monotonic() < deadline:
+        if _socket_endpoint_reachable(resolved_host, resolved_port, timeout_seconds=0.25):
+            return True
+        time.sleep(0.05)
+    return _socket_endpoint_reachable(resolved_host, resolved_port, timeout_seconds=0.25)
+
+def _is_agentsdb_socket_uri(uri: str | None) -> bool:
+    return str(uri or "").strip().lower().startswith("agentsdb://")
+
+
+def _json_safe_object(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, Mapping):
+        return {str(key): _json_safe_object(item) for key, item in value.items()}
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return [_json_safe_object(item) for item in value]
+    try:
+        json.dumps(value)
+        return value
+    except Exception:
+        return str(value)
 
 
 def _now_utc() -> datetime:
@@ -403,7 +568,7 @@ class DispatcherRunObject:
 
 @dataclass(slots=True)
 class RuntimeConfigObject:
-    mongo_uri: str
+    agents_db_uri: str
     database_name: str = "alde_knowledge"
     tenant_id: str = "tenant_default"
     namespace_id: str = "ns_alde_default"
@@ -412,6 +577,14 @@ class RuntimeConfigObject:
     default_embedding_model: str = "text-embedding-3-large"
     default_embedding_dimension: int = 3072
     index_backend: str = "faiss"
+
+    @property
+    def mongo_uri(self) -> str:
+        return self.agents_db_uri
+
+    @mongo_uri.setter
+    def mongo_uri(self, value: str) -> None:
+        self.agents_db_uri = str(value)
 
 
 @dataclass(slots=True)
@@ -613,9 +786,8 @@ OBJECT_MAPPING_PATTERN_BY_NAME: dict[str, dict[str, Any]] = {
     },
 }
 
-class KnowledgeRepository:
+class KnowledgeRepository():
     """Knowledge repository mirroring the ALDE hybrid knowledge model."""
-
     _OBJECT_COLLECTION_MAP = {
         "namespace": "knowledge_namespaces",
         "entity": "entities",
@@ -626,136 +798,224 @@ class KnowledgeRepository:
         "dispatcher_run": "dispatcher_runs",
     }
 
-    def __init__(self, database: Any) -> None:
-        self._database = database
+    def __init__(self, database: Mapping[str, Any] | None = None, *, image_path: str | None = None) -> None:
+        self._lock = threading.RLock()
+        self._image_path = str(image_path or "").strip() or None
+        self._collections: dict[str, dict[str, dict[str, Any]]] = {
+            collection_name: {}
+            for collection_name in self._OBJECT_COLLECTION_MAP.values()
+        }
+        self._index_objects: dict[str, Any] = {}
+        self._load_from_mapping(database)
+        self._load_image()
+
+    def _load_from_mapping(self, database: Mapping[str, Any] | None) -> None:
+        if not isinstance(database, Mapping):
+            return
+        collections_payload = database.get("collections") if isinstance(database.get("collections"), Mapping) else database
+        if not isinstance(collections_payload, Mapping):
+            return
+        for collection_name, collection_payload in collections_payload.items():
+            normalized_collection_name = str(collection_name or "").strip()
+            if normalized_collection_name not in self._collections:
+                continue
+            if not isinstance(collection_payload, Mapping):
+                continue
+            self._collections[normalized_collection_name] = {
+                str(record_id): dict(record_payload)
+                for record_id, record_payload in collection_payload.items()
+                if isinstance(record_payload, Mapping)
+            }
+
+    def _load_image(self) -> None:
+        if not self._image_path:
+            return
+        path = os.path.abspath(os.path.expanduser(self._image_path))
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as image_file:
+                image_payload = json.load(image_file)
+        except Exception:
+            return
+        collections_payload = image_payload.get("collections") if isinstance(image_payload, Mapping) else None
+        if not isinstance(collections_payload, Mapping):
+            return
+        self._load_from_mapping({"collections": collections_payload})
+
+    def _flush_image(self) -> None:
+        if not self._image_path:
+            return
+        path = os.path.abspath(os.path.expanduser(self._image_path))
+        directory = os.path.dirname(path)
+        if directory:
+            os.makedirs(directory, exist_ok=True)
+        payload = {
+            "schema": "agentsdb_repository_image_v1",
+            "updated_at": _now_utc().isoformat(),
+            "collections": _json_safe_object(self._collections),
+            "index_objects": _json_safe_object(self._index_objects),
+        }
+        temp_path = f"{path}.tmp"
+        with open(temp_path, "w", encoding="utf-8") as image_file:
+            json.dump(payload, image_file, ensure_ascii=False, indent=2)
+        os.replace(temp_path, path)
 
     @classmethod
-    def create_from_uri(cls, mongo_uri: str, database_name: str = "alde_knowledge") -> KnowledgeRepository:
-        mongo_client_class = _load_mongo_client_class()
-        if mongo_client_class is None:
-            raise RuntimeError("pymongo is required to create a MongoDB repository")
-        client = mongo_client_class(mongo_uri)
-        return cls(client[database_name])
+    def create_from_uri(cls, agents_db_uri: str, database_name: str = "alde_knowledge") -> KnowledgeRepository:
+        _ = (agents_db_uri, database_name)
+        image_path = str(
+            os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_MEMORY_IMAGE_PATH", "")
+            or os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_FLUSH_IMAGE_PATH", "")
+            or os.path.join("AppData", "agentsdb_memory_image.json")
+        ).strip()
+        return cls(image_path=image_path)
 
-    def load_collection(self, object_name: str) -> Collection:
+    def load_collection(self, object_name: str) -> dict[str, dict[str, Any]]:
         collection_name = self._OBJECT_COLLECTION_MAP[str(object_name).strip().lower()]
-        return self._database[collection_name]
+        return self._collections[collection_name]
 
     def ensure_index_objects(self) -> None:
-        self._database["knowledge_namespaces"].create_index(
-            [("tenant_id", 1), ("slug", 1)],
-            unique=True,
-            name="uq_knowledge_namespaces_tenant_slug",
-        )
-        self._database["entities"].create_index(
-            [("namespace_id", 1), ("entity_type", 1), ("canonical_name", 1)],
-            unique=True,
-            name="uq_entities_namespace_type_name",
-        )
-        self._database["entities"].create_index(
-            [("canonical_name", "text"), ("summary", "text"), ("aliases.alias", "text")],
-            default_language="none",
-            name="fts_entities",
-        )
-        self._database["documents"].create_index(
-            [("namespace_id", 1), ("content_sha256", 1)],
-            unique=True,
-            name="uq_documents_namespace_sha",
-        )
-        self._database["documents"].create_index(
-            [("title", "text"), ("summary", "text"), ("blocks.heading", "text"), ("blocks.content", "text")],
-            default_language="none",
-            name="fts_documents_blocks",
-        )
-        self._database["entity_relations"].create_index(
-            [("namespace_id", 1), ("source_entity_id", 1), ("target_entity_id", 1)],
-            name="ix_entity_relations_source_target",
-        )
-        self._database["embeddings"].create_index(
-            [("namespace_id", 1), ("owner_type", 1), ("owner_id", 1), ("model_id", 1), ("content_sha256", 1)],
-            unique=True,
-            name="uq_embeddings_owner_model_sha",
-        )
-        self._database["retrieval_runs"].create_index(
-            [("namespace_id", 1), ("correlation_id", 1)],
-            name="ix_retrieval_runs_namespace_correlation_id",
-        )
-        self._database["dispatcher_runs"].create_index(
-            [("namespace_id", 1), ("correlation_id", 1)],
-            unique=True,
-            name="uq_dispatcher_runs_namespace_correlation_id",
-        )
-        self._database["dispatcher_runs"].create_index(
-            [("namespace_id", 1), ("processing_state", 1), ("updated_at", -1)],
-            name="ix_dispatcher_runs_namespace_state_updated_at",
-        )
+        self._index_objects["knowledge_namespaces"] = {
+        "slug":1,
+            "unique": True,
+            "name": "uq_knowledge_namespaces_tenant_slug",
+        }
+        self._index_objects["entities_unique"] = {
+           "namespace_id": 1, 
+           "entity_type": 1, 
+           "canonical_name": 1,
+            "unique": True,
+            "name": "uq_entities_namespace_type_name",
+        }
+
+        self._index_objects["entities_text"] = {
+          "canonical_name": "text", "summary": "text", "aliases.alias": "text",
+            "default_language": "none",
+            "name": "fts_entities",
+        }
+        self._index_objects["documents_unique"] = {
+            "namespace_id": 1, "content_sha256": 1,
+            "unique": True,
+            "name": "uq_documents_namespace_sha",
+        }
+        self._index_objects["documents_text"] = {
+          "title": "text", "summary": "text", "blocks.heading": "text", "blocks.content": "text",
+            "default_language": "none",
+            "name": "fts_documents_blocks",
+        }
+        self._index_objects["entity_relations"] = {
+            "namespace_id": 1, "source_entity_id": 1, "target_entity_id": 1,
+            "name": "ix_entity_relations_source_target",
+        }
+        self._index_objects["embeddings"] = {
+            "namespace_id": 1, "owner_type": 1, "owner_id": 1, "model_id": 1, "content_sha256": 1,
+            "unique": True,
+            "name": "uq_embeddings_owner_model_sha",
+        }
+        self._index_objects["retrieval_runs"] = {
+            "namespace_id": 1, "correlation_id": 1,
+            "name": "ix_retrieval_runs_namespace_correlation_id",
+        }
+        self._index_objects["dispatcher_runs_unique"] = {
+            "namespace_id": 1, "correlation_id": 1,
+            "unique": True,
+            "name": "uq_dispatcher_runs_namespace_correlation_id",
+        }
+        self._index_objects["dispatcher_runs_state"] = {
+            "namespace_id": 1, "processing_state": 1, "updated_at": -1,
+            "name": "ix_dispatcher_runs_namespace_state_updated_at",
+        }
+        self._flush_image()
 
     def upsert_object(self, object_name: str, object_id: str, object_payload: Mapping[str, Any]) -> Mapping[str, Any]:
-        collection = self.load_collection(object_name)
-        payload = _deepcopy_object(dict(object_payload))
-        payload["_id"] = object_id
-        if "updated_at" not in payload:
-            payload["updated_at"] = _now_utc()
-        if "created_at" not in payload:
-            payload["created_at"] = payload["updated_at"]
-        collection.update_one({"_id": object_id}, {"$set": payload, "$setOnInsert": {"created_at": payload["created_at"]}}, upsert=True)
-        return payload
+        with self._lock:
+            collection = self.load_collection(object_name)
+            existing_payload = collection.get(str(object_id)) if isinstance(collection.get(str(object_id)), Mapping) else {}
+            payload = _deepcopy_object(dict(existing_payload))
+            payload.update(_deepcopy_object(dict(object_payload)))
+            payload["_id"] = str(object_id)
+            payload["updated_at"] = payload.get("updated_at") or _now_utc().isoformat()
+            payload["created_at"] = payload.get("created_at") or existing_payload.get("created_at") or payload["updated_at"]
+            collection[str(object_id)] = dict(payload)
+            self._flush_image()
+            return payload
 
     def load_object(self, object_name: str, object_id: str) -> dict[str, Any] | None:
-        collection = self.load_collection(object_name)
-        result = collection.find_one({"_id": object_id})
-        return None if result is None else dict(result)
+        with self._lock:
+            collection = self.load_collection(object_name)
+            payload = collection.get(str(object_id))
+            return dict(payload) if isinstance(payload, Mapping) else None
 
     def load_objects(self, object_name: str, object_filter: Mapping[str, Any] | None = None, limit: int = 50) -> list[dict[str, Any]]:
-        collection = self.load_collection(object_name)
-        cursor = collection.find(dict(object_filter or {})).limit(max(1, int(limit)))
-        return [dict(item) for item in cursor]
+        with self._lock:
+            collection = self.load_collection(object_name)
+            filter_payload = dict(object_filter or {})
+            result_payload_list: list[dict[str, Any]] = []
+            for object_payload in collection.values():
+                if not isinstance(object_payload, Mapping):
+                    continue
+                if any(object_payload.get(key) != value for key, value in filter_payload.items()):
+                    continue
+                result_payload_list.append(dict(object_payload))
+                if len(result_payload_list) >= max(1, int(limit)):
+                    break
+            return result_payload_list
 
     def find_objects(self, *, namespace_id: str, query_text: str, limit: int = 10) -> list[dict[str, Any]]:
-        pipeline = [
-            {"$match": {"namespace_id": namespace_id, "$text": {"$search": query_text}}},
-            {"$addFields": {"document_score": {"$meta": "textScore"}}},
-            {"$unwind": "$blocks"},
-            {
-                "$match": {
-                    "$or": [
-                        {"blocks.heading": {"$regex": query_text, "$options": "i"}},
-                        {"blocks.content": {"$regex": query_text, "$options": "i"}},
-                    ],
-                },
-            },
-            {
-                "$project": {
-                    "_id": 0,
-                    "document_id": "$_id",
-                    "title": 1,
-                    "source_uri": 1,
-                    "document_score": 1,
-                    "block": "$blocks",
-                },
-            },
-            {"$sort": {"document_score": -1, "block.block_no": 1}},
-            {"$limit": max(1, int(limit))},
-        ]
-        return [dict(item) for item in self._database["documents"].aggregate(pipeline)]
+        normalized_query = str(query_text or "").strip().lower()
+        if not normalized_query:
+            return []
+        with self._lock:
+            collection = self._collections["documents"]
+            result_payload_list: list[dict[str, Any]] = []
+            for document_payload in collection.values():
+                if not isinstance(document_payload, Mapping):
+                    continue
+                if str(document_payload.get("namespace_id") or "").strip() != str(namespace_id):
+                    continue
+                haystack = json.dumps(_json_safe_object(document_payload), ensure_ascii=False).lower()
+                if normalized_query not in haystack:
+                    continue
+                result_payload_list.append(
+                    {
+                        "document_id": str(document_payload.get("_id") or ""),
+                        "title": str(document_payload.get("title") or ""),
+                        "source_uri": str(document_payload.get("source_uri") or ""),
+                        "document_score": 1.0,
+                        "block": {},
+                    }
+                )
+                if len(result_payload_list) >= max(1, int(limit)):
+                    break
+            return result_payload_list
 
     def load_relation_graph(self, *, namespace_id: str, source_entity_id: str, max_depth: int = 2) -> list[dict[str, Any]]:
-        pipeline = [
-            {"$match": {"namespace_id": namespace_id, "source_entity_id": source_entity_id}},
-            {
-                "$graphLookup": {
-                    "from": "entity_relations",
-                    "startWith": "$target_entity_id",
-                    "connectFromField": "target_entity_id",
-                    "connectToField": "source_entity_id",
-                    "as": "reachable_relations",
-                    "maxDepth": max(0, int(max_depth)),
-                    "depthField": "hop_count",
-                    "restrictSearchWithMatch": {"namespace_id": namespace_id},
-                },
-            },
-        ]
-        return [dict(item) for item in self._database["entity_relations"].aggregate(pipeline)]
+        max_hops = max(0, int(max_depth))
+        with self._lock:
+            relation_collection = self._collections["entity_relations"]
+            visited_sources = {str(source_entity_id)}
+            frontier = {str(source_entity_id)}
+            result_payload_list: list[dict[str, Any]] = []
+            for _ in range(max_hops + 1):
+                if not frontier:
+                    break
+                next_frontier: set[str] = set()
+                for relation_payload in relation_collection.values():
+                    if not isinstance(relation_payload, Mapping):
+                        continue
+                    if str(relation_payload.get("namespace_id") or "") != str(namespace_id):
+                        continue
+                    src = str(relation_payload.get("source_entity_id") or "")
+                    tgt = str(relation_payload.get("target_entity_id") or "")
+                    if src not in frontier:
+                        continue
+                    result_payload_list.append(dict(relation_payload))
+                    if tgt and tgt not in visited_sources:
+                        next_frontier.add(tgt)
+                visited_sources.update(next_frontier)
+                frontier = next_frontier
+            return result_payload_list
 
     def build_vector_search_pipeline(
         self,
@@ -791,6 +1051,502 @@ class KnowledgeRepository:
                 },
             },
         ]
+
+
+class AgentDbSocketRepository:
+    """Knowledge repository backed by a custom agentsdb socket endpoint."""
+
+    _OBJECT_COLLECTION_MAP = KnowledgeRepository._OBJECT_COLLECTION_MAP
+
+    def __init__(self, agents_db_uri: str, database_name: str = "alde_knowledge", timeout_seconds: float = 5.0) -> None:
+        self._agents_db_uri = str(agents_db_uri or "").strip()
+        self._database_name = str(database_name or "alde_knowledge").strip() or "alde_knowledge"
+        self._timeout_seconds = max(float(timeout_seconds), 0.5)
+        parsed_uri = urlparse(self._agents_db_uri)
+        self._host = str(parsed_uri.hostname or "127.0.0.1")
+        self._port = int(parsed_uri.port or 1998)
+
+    @classmethod
+    def create_from_uri(
+        cls,
+        agents_db_uri: str,
+        database_name: str = "alde_knowledge",
+        timeout_seconds: float = 5.0,
+    ) -> AgentDbSocketRepository:
+        return cls(
+            agents_db_uri=agents_db_uri,
+            database_name=database_name,
+            timeout_seconds=timeout_seconds,
+        )
+
+    def _request_object(self, action_name: str, action_payload: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        request_payload = {
+            "cmd": action_name,
+            "database_name": self._database_name,
+            "payload": _deepcopy_object(dict(action_payload or {})),
+        }
+        try:
+            response_bytes = self._send_request_bytes(request_payload)
+        except OSError:
+            if _ensure_local_agentsdb_socket_server(self._agents_db_uri, timeout_seconds=self._timeout_seconds):
+                response_bytes = self._send_request_bytes(request_payload)
+            else:
+                raise
+        if not response_bytes:
+            raise RuntimeError("agentsdb socket returned no response")
+        raw_line = response_bytes.split(b"\n", 1)[0].decode("utf-8", errors="replace").strip()
+        try:
+            response_payload = json.loads(raw_line)
+        except Exception as exc:
+            raise RuntimeError(f"agentsdb socket returned invalid JSON: {raw_line}") from exc
+        if not isinstance(response_payload, Mapping):
+            raise RuntimeError("agentsdb socket returned non-object response")
+        if not bool(response_payload.get("ok", True)):
+            raise RuntimeError(str(response_payload.get("error") or "agentsdb socket request failed"))
+        return dict(response_payload)
+
+    def _send_request_bytes(self, request_payload: Mapping[str, Any]) -> bytes:
+        with socket.create_connection((self._host, self._port), timeout=self._timeout_seconds) as connection:
+            connection.sendall((json.dumps(request_payload, separators=(",", ":")) + "\n").encode("utf-8"))
+            response_bytes = b""
+            while b"\n" not in response_bytes:
+                chunk = connection.recv(4096)
+                if not chunk:
+                    break
+                response_bytes += chunk
+        return response_bytes
+
+    def load_collection(self, object_name: str) -> str:
+        return str(self._OBJECT_COLLECTION_MAP[str(object_name).strip().lower()])
+
+    def ensure_index_objects(self) -> None:
+        self._request_object("ensure_index_objects")
+
+    def upsert_object(self, object_name: str, object_id: str, object_payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        payload = _deepcopy_object(dict(object_payload))
+        if "updated_at" not in payload:
+            payload["updated_at"] = _now_utc().isoformat()
+        if "created_at" not in payload:
+            payload["created_at"] = payload["updated_at"]
+        response_payload = self._request_object(
+            "upsert_object",
+            {
+                "object_name": str(object_name),
+                "object_id": str(object_id),
+                "object_payload": payload,
+            },
+        )
+        return dict(response_payload.get("object_payload") or payload)
+
+    def load_object(self, object_name: str, object_id: str) -> dict[str, Any] | None:
+        response_payload = self._request_object(
+            "load_object",
+            {
+                "object_name": str(object_name),
+                "object_id": str(object_id),
+            },
+        )
+        object_payload = response_payload.get("object_payload")
+        return dict(object_payload) if isinstance(object_payload, Mapping) else None
+
+    def load_objects(self, object_name: str, object_filter: Mapping[str, Any] | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        response_payload = self._request_object(
+            "load_objects",
+            {
+                "object_name": str(object_name),
+                "object_filter": _deepcopy_object(dict(object_filter or {})),
+                "limit": max(1, int(limit)),
+            },
+        )
+        object_payload_list = response_payload.get("object_payload_list")
+        if not isinstance(object_payload_list, list):
+            return []
+        return [dict(item) for item in object_payload_list if isinstance(item, Mapping)]
+
+    def find_objects(self, *, namespace_id: str, query_text: str, limit: int = 10) -> list[dict[str, Any]]:
+        response_payload = self._request_object(
+            "find_objects",
+            {
+                "namespace_id": str(namespace_id),
+                "query_text": str(query_text),
+                "limit": max(1, int(limit)),
+            },
+        )
+        object_payload_list = response_payload.get("object_payload_list")
+        if not isinstance(object_payload_list, list):
+            return []
+        return [dict(item) for item in object_payload_list if isinstance(item, Mapping)]
+
+    def load_relation_graph(self, *, namespace_id: str, source_entity_id: str, max_depth: int = 2) -> list[dict[str, Any]]:
+        response_payload = self._request_object(
+            "load_relation_graph",
+            {
+                "namespace_id": str(namespace_id),
+                "source_entity_id": str(source_entity_id),
+                "max_depth": max(0, int(max_depth)),
+            },
+        )
+        object_payload_list = response_payload.get("object_payload_list")
+        if not isinstance(object_payload_list, list):
+            return []
+        return [dict(item) for item in object_payload_list if isinstance(item, Mapping)]
+
+    def build_vector_search_pipeline(
+        self,
+        *,
+        query_vector: Sequence[float],
+        namespace_id: str,
+        owner_type: str = "block",
+        limit: int = 10,
+        num_candidates: int = 100,
+        index_name: str = "embedding_cosine",
+    ) -> list[dict[str, Any]]:
+        return KnowledgeRepository.build_vector_search_pipeline(
+            self,
+            query_vector=query_vector,
+            namespace_id=namespace_id,
+            owner_type=owner_type,
+            limit=limit,
+            num_candidates=num_candidates,
+            index_name=index_name,
+        )
+
+
+class AgentDbInMemoryRepository:
+    """Knowledge repository that stores all objects in-memory and flushes snapshots to disk."""
+
+    _OBJECT_COLLECTION_MAP = KnowledgeRepository._OBJECT_COLLECTION_MAP
+
+    def __init__(self, image_path: str | None = None) -> None:
+        self._lock = threading.RLock()
+        self._image_path = str(image_path or "").strip() or None
+        self._collections: dict[str, dict[str, dict[str, Any]]] = {
+            collection_name: {}
+            for collection_name in self._OBJECT_COLLECTION_MAP.values()
+        }
+        self._load_image()
+
+    def _load_image(self) -> None:
+        if not self._image_path:
+            return
+        path = os.path.abspath(os.path.expanduser(self._image_path))
+        if not os.path.isfile(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as image_file:
+                image_payload = json.load(image_file)
+        except Exception:
+            return
+        collections_payload = image_payload.get("collections") if isinstance(image_payload, Mapping) else None
+        if not isinstance(collections_payload, Mapping):
+            return
+        with self._lock:
+            for collection_name, collection_payload in collections_payload.items():
+                normalized_collection = str(collection_name or "").strip()
+                if normalized_collection not in self._collections:
+                    continue
+                if not isinstance(collection_payload, Mapping):
+                    continue
+                self._collections[normalized_collection] = {
+                    str(record_id): dict(record_payload)
+                    for record_id, record_payload in collection_payload.items()
+                    if isinstance(record_payload, Mapping)
+                }
+
+    def _flush_image(self) -> None:
+        if not self._image_path:
+            return
+        path = os.path.abspath(os.path.expanduser(self._image_path))
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        image_payload = {
+            "schema": "agentsdb_inmemory_image_v1",
+            "updated_at": _now_utc().isoformat(),
+            "collections": _json_safe_object(self._collections),
+        }
+        temp_path = f"{path}.tmp"
+        with open(temp_path, "w", encoding="utf-8") as image_file:
+            json.dump(image_payload, image_file, ensure_ascii=False, indent=2)
+        os.replace(temp_path, path)
+
+    def _load_collection_object(self, object_name: str) -> dict[str, dict[str, Any]]:
+        collection_name = self._OBJECT_COLLECTION_MAP[str(object_name).strip().lower()]
+        return self._collections[collection_name]
+
+    def ensure_index_objects(self) -> None:
+        return None
+
+    def upsert_object(self, object_name: str, object_id: str, object_payload: Mapping[str, Any]) -> Mapping[str, Any]:
+        with self._lock:
+            collection = self._load_collection_object(object_name)
+            existing_payload = collection.get(object_id) if isinstance(collection.get(object_id), Mapping) else {}
+            payload:dict = _deepcopy_object(dict(existing_payload))
+            payload.update(_deepcopy_object(dict(object_payload)))
+            payload["_id"] = object_id
+            payload["updated_at"] = payload.get("updated_at") or _now_utc().isoformat()
+            payload["created_at"] = payload.get("created_at") or existing_payload.get("created_at") or payload["updated_at"]
+            collection[object_id] = dict(payload)
+            self._flush_image()
+            return dict(payload)
+
+    def load_object(self, object_name: str, object_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            collection = self._load_collection_object(object_name)
+            payload = collection.get(object_id)
+            return dict(payload) if isinstance(payload, Mapping) else None
+
+    def load_objects(self, object_name: str, object_filter: Mapping[str, Any] | None = None, limit: int = 50) -> list[dict[str, Any]]:
+        with self._lock:
+            collection = self._load_collection_object(object_name)
+            filter_payload = dict(object_filter or {})
+            result_payload_list: list[dict[str, Any]] = []
+            for object_payload in collection.values():
+                if not isinstance(object_payload, Mapping):
+                    continue
+                if any(object_payload.get(key) != value for key, value in filter_payload.items()):
+                    continue
+                result_payload_list.append(dict(object_payload))
+                if len(result_payload_list) >= max(1, int(limit)):
+                    break
+            return result_payload_list
+
+    def find_objects(self, *, namespace_id: str, query_text: str, limit: int = 10) -> list[dict[str, Any]]:
+        normalized_query = str(query_text or "").strip().lower()
+        if not normalized_query:
+            return []
+        with self._lock:
+            collection = self._collections["documents"]
+            result_payload_list: list[dict[str, Any]] = []
+            for document_payload in collection.values():
+                if not isinstance(document_payload, Mapping):
+                    continue
+                if str(document_payload.get("namespace_id") or "").strip() != str(namespace_id):
+                    continue
+                haystack = json.dumps(_json_safe_object(document_payload), ensure_ascii=False).lower()
+                if normalized_query not in haystack:
+                    continue
+                result_payload_list.append({
+                    "document_id": str(document_payload.get("_id") or ""),
+                    "title": str(document_payload.get("title") or ""),
+                    "source_uri": str(document_payload.get("source_uri") or ""),
+                    "document_score": 1.0,
+                    "block": {},
+                })
+                if len(result_payload_list) >= max(1, int(limit)):
+                    break
+            return result_payload_list
+
+    def load_relation_graph(self, *, namespace_id: str, source_entity_id: str, max_depth: int = 2) -> list[dict[str, Any]]:
+        max_hops = max(0, int(max_depth))
+        with self._lock:
+            relation_collection = self._collections["entity_relations"]
+            visited_sources = {str(source_entity_id)}
+            frontier = {str(source_entity_id)}
+            result_payload_list: list[dict[str, Any]] = []
+            for _ in range(max_hops + 1):
+                if not frontier:
+                    break
+                next_frontier: set[str] = set()
+                for relation_payload in relation_collection.values():
+                    if not isinstance(relation_payload, Mapping):
+                        continue
+                    if str(relation_payload.get("namespace_id") or "") != str(namespace_id):
+                        continue
+                    src = str(relation_payload.get("source_entity_id") or "")
+                    tgt = str(relation_payload.get("target_entity_id") or "")
+                    if src not in frontier:
+                        continue
+                    result_payload_list.append(dict(relation_payload))
+                    if tgt and tgt not in visited_sources:
+                        next_frontier.add(tgt)
+                visited_sources.update(next_frontier)
+                frontier = next_frontier
+            return result_payload_list
+
+
+def _is_memory_backend_uri(uri: str | None) -> bool:
+    normalized_uri = str(uri or "").strip().lower()
+    return normalized_uri.startswith("agentsdb://") or normalized_uri.startswith("memodb://") or normalized_uri.startswith("inmemdb://")
+
+
+class AgentDbSocketServerService:
+    """Socket server service that exposes KnowledgeRepository commands via JSON-lines."""
+
+    def __init__(self, backend_uri: str, default_database_name: str = "alde_knowledge", memory_image_path: str | None = None) -> None:
+        normalized_backend_uri = str(backend_uri or "").strip()
+        if not normalized_backend_uri:
+            normalized_backend_uri = "agentsdb://local"
+        if _is_agentsdb_socket_uri(normalized_backend_uri):
+            raise RuntimeError("agentsdb socket server backend URI must not use agentsdb://")
+        self._backend_uri = normalized_backend_uri
+        self._default_database_name = str(default_database_name or "alde_knowledge").strip() or "alde_knowledge"
+        self._memory_image_path = str(memory_image_path or "").strip() or None
+        self._repository_cache: dict[str, Any] = {}
+
+    @classmethod
+    def load_from_env(cls) -> AgentDbSocketServerService:
+        connection_config = _load_agentsdb_connection_config()
+        backend_uri = str(
+            os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_BACKEND_URI", "")
+            or os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_URI", ""),
+        ).strip()
+        if not backend_uri:
+            backend_uri = _connection_config_value(connection_config, ("backend_uri", "agents_db_backend_uri", "storage_uri", "storage_backend_uri"))
+        if not backend_uri:
+            backend_uri = "agentsmem://local"
+        memory_image_path = str(
+            os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_MEMORY_IMAGE_PATH", "")
+            or os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_FLUSH_IMAGE_PATH", "")
+            or os.path.join("AppData", "agentsdb_memory_image.json"),
+        ).strip()
+        if not memory_image_path:
+            memory_image_path = _connection_config_value(connection_config, ("memory_image_path", "flush_image_path"))
+        database_name = str(
+            os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_NAME", "")
+            or "alde_knowledge",
+        ).strip() or "alde_knowledge"
+        if not database_name:
+            database_name = _connection_config_value(connection_config, ("database_name", "database")) or "alde_knowledge"
+        return cls(backend_uri=backend_uri, default_database_name=database_name, memory_image_path=memory_image_path)
+
+    def load_repository(self, database_name: str | None = None) -> Any:
+        resolved_database_name = str(database_name or self._default_database_name).strip() or self._default_database_name
+        repository:AgentDbInMemoryRepository|KnowledgeRepository = self._repository_cache.get(resolved_database_name)
+        if repository is not None:
+            return repository
+        if _is_memory_backend_uri(self._backend_uri):
+            repository = AgentDbInMemoryRepository(self._memory_image_path)
+        else:
+            repository = KnowledgeRepository.create_from_uri(self._backend_uri, resolved_database_name)
+        self._repository_cache[resolved_database_name] = repository
+        return repository
+
+    def dispatch_object(self, cmd: str, payload: Mapping[str, Any], database_name: str | None = None) -> dict[str, Any]:
+        normalized_cmd = str(cmd or "").strip().lower()
+        if normalized_cmd == "health":
+            return {
+                "ok": True,
+                "status": "ok",
+                "backend": "agents_db",
+                "storage_backend": "inmemory" if _is_memory_backend_uri(self._backend_uri) else "dict",
+                "database_name": str(database_name or self._default_database_name),
+            }
+        repository: AgentDbInMemoryRepository | KnowledgeRepository = self.load_repository(database_name)
+        if normalized_cmd == "ensure_index_objects":
+            repository.ensure_index_objects()
+            return {"ok": True, "ensured": True}
+        if normalized_cmd == "upsert_object":
+            object_name = str(payload.get("object_name") or "").strip()
+            object_id = str(payload.get("object_id") or "").strip()
+            object_payload = payload.get("object_payload")
+            if not object_name or not object_id or not isinstance(object_payload, Mapping):
+                raise ValueError("upsert_object requires object_name, object_id, and object_payload")
+            stored_payload = repository.upsert_object(object_name, object_id, dict(object_payload))
+            return {"ok": True, "object_payload": _json_safe_object(stored_payload)}
+        if normalized_cmd == "load_object":
+            object_name = str(payload.get("object_name") or "").strip()
+            object_id = str(payload.get("object_id") or "").strip()
+            if not object_name or not object_id:
+                raise ValueError("load_object requires object_name and object_id")
+            object_payload = repository.load_object(object_name, object_id)
+            return {"ok": True, "object_payload": _json_safe_object(object_payload) if object_payload is not None else None}
+        if normalized_cmd == "load_objects":
+            object_name = str(payload.get("object_name") or "").strip()
+            object_filter = payload.get("object_filter")
+            limit = payload.get("limit", 50)
+            if not object_name:
+                raise ValueError("load_objects requires object_name")
+            if object_filter is not None and not isinstance(object_filter, Mapping):
+                raise ValueError("load_objects object_filter must be an object")
+            object_payload_list = repository.load_objects(
+                object_name,
+                dict(object_filter or {}),
+                max(1, int(limit)),
+            )
+            return {"ok": True, "object_payload_list": _json_safe_object(object_payload_list)}
+        if normalized_cmd == "find_objects":
+            namespace_id = str(payload.get("namespace_id") or "").strip()
+            query_text = str(payload.get("query_text") or "").strip()
+            limit = payload.get("limit", 10)
+            if not namespace_id or not query_text:
+                raise ValueError("find_objects requires namespace_id and query_text")
+            object_payload_list = repository.find_objects(
+                namespace_id=namespace_id,
+                query_text=query_text,
+                limit=max(1, int(limit)),
+            )
+            return {"ok": True, "object_payload_list": _json_safe_object(object_payload_list)}
+        if normalized_cmd == "load_relation_graph":
+            namespace_id = str(payload.get("namespace_id") or "").strip()
+            source_entity_id = str(payload.get("source_entity_id") or "").strip()
+            max_depth = payload.get("max_depth", 2)
+            if not namespace_id or not source_entity_id:
+                raise ValueError("load_relation_graph requires namespace_id and source_entity_id")
+            object_payload_list = repository.load_relation_graph(
+                namespace_id=namespace_id,
+                source_entity_id=source_entity_id,
+                max_depth=max(0, int(max_depth)),
+            )
+            return {"ok": True, "object_payload_list": _json_safe_object(object_payload_list)}
+        raise ValueError(f"unknown cmd: {normalized_cmd or '<empty>'}")
+
+
+class _AgentDbSocketRequestHandler(socketserver.StreamRequestHandler):
+    def handle(self) -> None:
+        service: AgentDbSocketServerService = self.server.service
+        raw_line = self.rfile.readline()
+        if not raw_line:
+            return
+        response_payload: dict[str, Any]
+        try:
+            request_payload = json.loads(raw_line.decode("utf-8", errors="replace"))
+            if not isinstance(request_payload, Mapping):
+                raise ValueError("request payload must be a JSON object")
+            cmd = str(request_payload.get("cmd") or "").strip()
+            database_name = str(request_payload.get("database_name") or "").strip() or None
+            payload = request_payload.get("payload")
+            if payload is not None and not isinstance(payload, Mapping):
+                raise ValueError("payload must be a JSON object")
+            response_payload = service.dispatch_object(cmd=cmd, payload=dict(payload or {}), database_name=database_name)
+        except Exception as exc:
+            response_payload = {
+                "ok": False,
+                "error": "agents_db_socket_request_failed",
+                "detail": str(exc),
+            }
+        self.wfile.write((json.dumps(_json_safe_object(response_payload), separators=(",", ":")) + "\n").encode("utf-8"))
+
+
+class _AgentDbSocketTCPServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+
+    def __init__(self, server_address: tuple[str, int], request_handler_class: type[_AgentDbSocketRequestHandler], service: AgentDbSocketServerService) -> None:
+        self.service = service
+        super().__init__(server_address, request_handler_class)
+
+
+def run_agentsdb_socket_server(
+    *,
+    host: str = "127.0.0.1",
+    port: int = 2331,
+    backend_uri: str,
+    database_name: str = "alde_knowledge",
+) -> None:
+    service = AgentDbSocketServerService(backend_uri=backend_uri, default_database_name=database_name)
+    with _AgentDbSocketTCPServer((str(host).strip() or "127.0.0.1", int(port)), _AgentDbSocketRequestHandler, service) as server:
+        server.serve_forever()
+
+
+def run_agentsdb_socket_server_from_env(host: str | None = None, port: int | None = None) -> None:
+    connection_config = _load_agentsdb_connection_config()
+    agents_db_uri = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_URI", "")).strip()
+    if not agents_db_uri:
+        agents_db_uri = _load_agentsdb_uri_from_connection_config(connection_config)
+    parsed_uri = urlparse(agents_db_uri or "agentsdb://127.0.0.1:2331")
+    resolved_host = str(host or parsed_uri.hostname or "127.0.0.1").strip() or "127.0.0.1"
+    resolved_port = int(port or parsed_uri.port or 2331)
+    service = AgentDbSocketServerService.load_from_env()
+    with _AgentDbSocketTCPServer((resolved_host, resolved_port), _AgentDbSocketRequestHandler, service) as server:
+        server.serve_forever()
 
 
 class KnowledgeObjectService:
@@ -1405,6 +2161,7 @@ class ObjectMappingService:
                 source_field = _first_non_empty_string([relation_payload.get("source_field"), relation_metadata.get("source_field")])
                 if source_field:
                     relation_metadata["source_field"] = source_field
+                relation_metadata: dict = relation_metadata
                 relation_metadata.setdefault("mapped_from", "explicit_relation_model")
                 evidence_objects: list[RelationEvidenceObject] = []
                 block_id = block_id_by_key.get(str(relation_payload.get("section_key") or "").strip())
@@ -1499,7 +2256,7 @@ class ObjectMappingService:
             return {
                 "ok": True,
                 "stored": False,
-                "backend": "mongodb",
+                "backend": "agents_db",
                 "object_name": normalized_object_name,
                 "reason": "missing_object_payload",
             }
@@ -1508,7 +2265,7 @@ class ObjectMappingService:
             return {
                 "ok": True,
                 "stored": False,
-                "backend": "mongodb",
+                "backend": "agents_db",
                 "object_name": normalized_object_name,
                 "reason": "parse_marked_non_matching",
             }
@@ -1532,7 +2289,7 @@ class ObjectMappingService:
             return {
                 "ok": True,
                 "stored": False,
-                "backend": "mongodb",
+                "backend": "agents_db",
                 "object_name": normalized_object_name,
                 "reason": "document_mapping_failed",
             }
@@ -1575,7 +2332,7 @@ class ObjectMappingService:
         return {
             "ok": True,
             "stored": True,
-            "backend": "mongodb",
+            "backend": "agents_db",
             "object_name": normalized_object_name,
             "namespace_id": namespace_object.id,
             "document_id": document_object.id,
@@ -2057,39 +2814,84 @@ class ObjectMappingService:
         return {
             "ok": True,
             "stored": True,
-            "backend": "mongodb",
+            "backend": "agents_db",
             "namespace_id": namespace_object.id,
             "retrieval_run_id": retrieval_run_object.id,
         }
 
 
-_MONGO_PIPELINE_SERVICE_CACHE: dict[tuple[str, ...], PipelineService] = {}
+_AGENTS_DB_PIPELINE_SERVICE_CACHE: dict[tuple[str, ...], PipelineService] = {}
 
 
-def load_mongodb_runtime_config_from_env() -> RuntimeConfigObject | None:
-    mongo_uri = str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_URI", "")).strip()
-    if not mongo_uri:
+def load_agentsdb_runtime_config_from_env() -> RuntimeConfigObject | None:
+    connection_config = _load_agentsdb_connection_config()
+    agents_db_uri = str(
+        os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_URI", "")
+        or os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_BACKEND_URI", ""),
+    ).strip()
+    if not agents_db_uri:
+        configured_socket_uri = _load_agentsdb_uri_from_connection_config(connection_config)
+        backend_uri = _connection_config_value(connection_config, ("backend_uri", "agents_db_backend_uri", "storage_uri", "storage_backend_uri"))
+        agents_db_uri = configured_socket_uri or backend_uri
+    if not agents_db_uri:
         return None
     try:
-        default_embedding_dimension = int(os.getenv("AI_IDE_KNOWLEDGE_MONGO_EMBEDDING_DIMENSION", "3072") or 3072)
+        default_embedding_dimension = int(
+            os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_EMBEDDING_DIMENSION", "")
+            or "3072"
+            or 3072,
+        )
     except Exception:
         default_embedding_dimension = 3072
     return RuntimeConfigObject(
-        mongo_uri=mongo_uri,
-        database_name=str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_DB", "alde_knowledge")).strip() or "alde_knowledge",
-        tenant_id=str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_TENANT_ID", "tenant_default")).strip() or "tenant_default",
-        namespace_id=str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_NAMESPACE_ID", "ns_alde_default")).strip() or "ns_alde_default",
-        namespace_slug=str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_NAMESPACE_SLUG", "alde-default")).strip() or "alde-default",
-        namespace_name=str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_NAMESPACE_NAME", "ALDE Default Knowledge")).strip() or "ALDE Default Knowledge",
-        default_embedding_model=str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_EMBEDDING_MODEL", "text-embedding-3-large")).strip() or "text-embedding-3-large",
+        agents_db_uri=agents_db_uri,
+        database_name=str(
+            os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_NAME", "")
+            or "alde_knowledge",
+        ).strip()
+        or _connection_config_value(connection_config, ("database_name", "database"))
+        or "alde_knowledge",
+        tenant_id=str(
+            os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_TENANT_ID", "")
+            or "tenant_default",
+        ).strip()
+        or "tenant_default",
+        namespace_id=str(
+            os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_NAMESPACE_ID", "")
+            or "ns_alde_default",
+        ).strip()
+        or "ns_alde_default",
+        namespace_slug=str(
+            os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_NAMESPACE_SLUG", "")
+            or "alde-default",
+        ).strip()
+        or "alde-default",
+        namespace_name=str(
+            os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_NAMESPACE_NAME", "")
+            or "ALDE Default Knowledge",
+        ).strip()
+        or "ALDE Default Knowledge",
+        default_embedding_model=str(
+            os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_EMBEDDING_MODEL", "")
+            or "text-embedding-3-large",
+        ).strip()
+        or "text-embedding-3-large",
         default_embedding_dimension=max(1, default_embedding_dimension),
-        index_backend=str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_INDEX_BACKEND", "faiss")).strip() or "faiss",
+        index_backend=str(
+            os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_INDEX_BACKEND", "")
+            or "faiss",
+        ).strip()
+        or "faiss",
     )
 
 
-def load_mongodb_pipeline_service(runtime_config: RuntimeConfigObject) -> PipelineService:
+def load_mongodb_runtime_config_from_env() -> RuntimeConfigObject | None:
+    return load_agentsdb_runtime_config_from_env()
+
+
+def load_agentsdb_pipeline_service(runtime_config: RuntimeConfigObject) -> PipelineService:
     cache_key = (
-        runtime_config.mongo_uri,
+        runtime_config.agents_db_uri,
         runtime_config.database_name,
         runtime_config.tenant_id,
         runtime_config.namespace_id,
@@ -2099,14 +2901,24 @@ def load_mongodb_pipeline_service(runtime_config: RuntimeConfigObject) -> Pipeli
         str(runtime_config.default_embedding_dimension),
         runtime_config.index_backend,
     )
-    existing_service = _MONGO_PIPELINE_SERVICE_CACHE.get(cache_key)
+    existing_service = _AGENTS_DB_PIPELINE_SERVICE_CACHE.get(cache_key)
     if existing_service is not None:
         return existing_service
-    repository = KnowledgeRepository.create_from_uri(runtime_config.mongo_uri, runtime_config.database_name)
+    if _is_agentsdb_socket_uri(runtime_config.agents_db_uri):
+        repository: Any = AgentDbSocketRepository.create_from_uri(
+            runtime_config.agents_db_uri,
+            runtime_config.database_name,
+        )
+    else:
+        repository = KnowledgeRepository.create_from_uri(runtime_config.agents_db_uri, runtime_config.database_name)
     repository.ensure_index_objects()
     pipeline_service = PipelineService(KnowledgeObjectService(repository), runtime_config)
-    _MONGO_PIPELINE_SERVICE_CACHE[cache_key] = pipeline_service
+    _AGENTS_DB_PIPELINE_SERVICE_CACHE[cache_key] = pipeline_service
     return pipeline_service
+
+
+def load_mongodb_pipeline_service(runtime_config: RuntimeConfigObject) -> PipelineService:
+    return load_agentsdb_pipeline_service(runtime_config)
 
 
 def sync_retrieval_run_to_agentsdb_knowledge(
@@ -2116,11 +2928,11 @@ def sync_retrieval_run_to_agentsdb_knowledge(
     outcome_event: Mapping[str, Any],
     retrieval_result: Any,
 ) -> Mapping[str, Any] | None:
-    runtime_config = load_mongodb_runtime_config_from_env()
-    if runtime_config is None or _load_mongo_client_class() is None:
+    runtime_config = load_agentsdb_runtime_config_from_env()
+    if runtime_config is None:
         return None
     try:
-        pipeline_service = load_mongodb_pipeline_service(runtime_config)
+        pipeline_service = load_agentsdb_pipeline_service(runtime_config)
         return pipeline_service.store_retrieval_run(
             tool_name=tool_name,
             query_event=query_event,
@@ -2131,13 +2943,13 @@ def sync_retrieval_run_to_agentsdb_knowledge(
         return {
             "ok": False,
             "stored": False,
-            "backend": "mongodb",
-            "error": "mongodb_sync_failed",
+            "backend": "agents_db",
+            "error": "agents_db_sync_failed",
             "detail": str(exc),
         }
 
 
-def sync_parser_result_to_mongodb_knowledge(
+def sync_parser_result_to_agentsdb_knowledge(
     *,
     object_name: str,
     result_payload: Mapping[str, Any],
@@ -2145,11 +2957,11 @@ def sync_parser_result_to_mongodb_knowledge(
     handoff_metadata: Mapping[str, Any] | None = None,
     handoff_payload: Mapping[str, Any] | None = None,
 ) -> Mapping[str, Any] | None:
-    runtime_config = load_mongodb_runtime_config_from_env()
-    if runtime_config is None or _load_mongo_client_class() is None:
+    runtime_config = load_agentsdb_runtime_config_from_env()
+    if runtime_config is None:
         return None
     try:
-        pipeline_service = load_mongodb_pipeline_service(runtime_config)
+        pipeline_service = load_agentsdb_pipeline_service(runtime_config)
         mapping_service = ObjectMappingService(
             pipeline_service._knowledge_service,
             runtime_config,
@@ -2165,9 +2977,9 @@ def sync_parser_result_to_mongodb_knowledge(
         return {
             "ok": False,
             "stored": False,
-            "backend": "mongodb",
+            "backend": "agents_db",
             "object_name": _normalize_document_object_name(object_name),
-            "error": "mongodb_parser_sync_failed",
+            "error": "agents_db_parser_sync_failed",
             "detail": str(exc),
         }
 
@@ -2178,7 +2990,11 @@ def build_demo_agentsdb_service(database: Any) -> KnowledgeObjectService:
     return KnowledgeObjectService(repository)
 
 
+# Legacy compatibility aliases: keep until downstream imports are migrated.
 sync_retrieval_run_to_mongodb_knowledge = sync_retrieval_run_to_agentsdb_knowledge
+sync_parser_result_to_mongodb_knowledge = sync_parser_result_to_agentsdb_knowledge
+load_mongodb_runtime_config_from_env = load_agentsdb_runtime_config_from_env
+load_mongodb_pipeline_service = load_agentsdb_pipeline_service
 AgnDB = KnowledgeRepository
 AgnDBService = KnowledgeObjectService
 PsrObjMapSvc = ObjectMappingService
@@ -2187,10 +3003,16 @@ ParserEntityCandidateObject = MappingSeedEntityObject
 ParserObjectKnowledgeMappingService = ObjectMappingService
 DocumentBlockObject = BlockObject
 KnowledgeNamespaceObject = NamespaceObject
-MongoKnowledgeRepository = KnowledgeRepository
-MongoKnowledgeRuntimeConfigObject = RuntimeConfigObject
-MongoKnowledgeService = KnowledgeObjectService
-MongoKnowledgePipelineService = PipelineService
+AgentsDBKnowledgeRepository = KnowledgeRepository
+AgentsDBKnowledgeRuntimeConfigObject = RuntimeConfigObject
+AgentsDBKnowledgeService = KnowledgeObjectService
+AgentsDBKnowledgePipelineService = PipelineService
+
+# Legacy compatibility aliases for old Mongo naming.
+MongoKnowledgeRepository = AgentsDBKnowledgeRepository
+MongoKnowledgeRuntimeConfigObject = AgentsDBKnowledgeRuntimeConfigObject
+MongoKnowledgeService = AgentsDBKnowledgeService
+MongoKnowledgePipelineService = AgentsDBKnowledgePipelineService
 build_demo_mongodb_service = build_demo_agentsdb_service
 
 
@@ -2841,6 +3663,14 @@ class JobPostingKnowledgeDatasetExampleService:
             "source_pdf": self.load_source_pdf_metadata(),
             "raw_text": self.load_raw_text(),
             "db_record": db_record,
+            "agents_db_objects": {
+                "namespace": _dataclass_payload(namespace_object),
+                "document": _dataclass_payload(document_object),
+                "chunks": [_dataclass_payload(block_object) for block_object in document_object.blocks],
+                "entities": [_dataclass_payload(entity_object) for entity_object in entity_objects],
+                "relations": [_dataclass_payload(relation_object) for relation_object in relation_objects],
+                "embeddings": [_dataclass_payload(embedding_object) for embedding_object in embedding_objects],
+            },
             "mongodb_objects": {
                 "namespace": _dataclass_payload(namespace_object),
                 "document": _dataclass_payload(document_object),
@@ -2979,9 +3809,10 @@ def build_demo_seed_objects() -> dict[str, Any]:
 
 def load_demo_usage_lines() -> list[str]:
     return [
-        "from alde.knowledge_mongodb_example import MongoKnowledgeRepository, build_demo_seed_objects, build_demo_mongodb_service",
-        "repository = MongoKnowledgeRepository.create_from_uri('mongodb://localhost:27017', 'alde_knowledge')",
-        "service = build_demo_mongodb_service(repository._database)",
+        "from alde.agents_db import KnowledgeRepository, build_demo_seed_objects, build_demo_agentsdb_service",
+        "repository = KnowledgeRepository.create_from_uri('agents_db://localhost:27017', 'alde_knowledge')",
+        "# Start socket endpoint: from alde.agents_db import run_agentsdb_socket_server_from_env; run_agentsdb_socket_server_from_env()",
+        "service = build_demo_agentsdb_service(repository._database)",
         "seed = build_demo_seed_objects()",
         "service.store_namespace_object(seed['namespace'])",
         "service.store_entity_object(seed['entity'])",
@@ -2991,7 +3822,7 @@ def load_demo_usage_lines() -> list[str]:
         "service.store_retrieval_run_object(seed['retrieval_run'])",
         "blocks = service.search_block_objects(namespace_id='ns_jobs_de', query_text='Python RAG', limit=5)",
         "graph = service.load_relation_object_graph(namespace_id='ns_jobs_de', source_entity_id='ent_job_0001', max_depth=2)",
-        "# Optional pipeline mirror: export AI_IDE_KNOWLEDGE_MONGO_URI, AI_IDE_KNOWLEDGE_MONGO_DB and namespace vars.",
+        "# Optional pipeline mirror: export AI_IDE_KNOWLEDGE_AGENTS_DB_URI, AI_IDE_KNOWLEDGE_AGENTS_DB_NAME and namespace vars.",
     ]
 
 
@@ -3005,6 +3836,7 @@ __all__ = [
     "EntityObject",
     "EntityRelationObject",
     "JobPostingKnowledgeDatasetExampleService",
+    "AgentDbSocketRepository",
     "KnowledgeObjectService",
     "KnowledgeRepository",
     "KnowledgeNamespaceObject",
@@ -3012,6 +3844,10 @@ __all__ = [
     "MappingSeedEntityObject",
     "ObjectMappingService",
     "ParserObjectKnowledgeMappingService",
+    "AgentsDBKnowledgeRepository",
+    "AgentsDBKnowledgeRuntimeConfigObject",
+    "AgentsDBKnowledgeService",
+    "AgentsDBKnowledgePipelineService",
     "MongoKnowledgeRepository",
     "MongoKnowledgeRuntimeConfigObject",
     "MongoKnowledgeService",
@@ -3019,12 +3855,19 @@ __all__ = [
     "RelationEvidenceObject",
     "RetrievalResultObject",
     "RetrievalRunObject",
+    "build_demo_agentsdb_service",
     "build_demo_mongodb_service",
     "build_demo_job_posting_knowledge_dataset",
     "build_demo_seed_objects",
+    "load_agentsdb_pipeline_service",
+    "load_agentsdb_runtime_config_from_env",
     "load_mongodb_pipeline_service",
     "load_mongodb_runtime_config_from_env",
     "load_demo_usage_lines",
+    "run_agentsdb_socket_server",
+    "run_agentsdb_socket_server_from_env",
+    "sync_parser_result_to_agentsdb_knowledge",
     "sync_parser_result_to_mongodb_knowledge",
+    "sync_retrieval_run_to_agentsdb_knowledge",
     "sync_retrieval_run_to_mongodb_knowledge",
 ]

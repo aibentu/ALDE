@@ -19,6 +19,14 @@ from dotenv import load_dotenv
 from typing import List, Dict, Tuple
 from types import SimpleNamespace
 
+
+_THIS_MODULE = sys.modules.get(__name__)
+if _THIS_MODULE is not None:
+    if __name__.startswith("ALDE_Projekt.ALDE.alde"):
+        sys.modules.setdefault("alde.agents_ccomp", _THIS_MODULE)
+    elif __name__.startswith("alde."):
+        sys.modules.setdefault("ALDE_Projekt.ALDE.alde.agents_ccomp", _THIS_MODULE)
+
 # NOTE: retry utilities live in `alde.error_recovery`, but this module does
 # not currently use them. Avoid importing optional deps at import-time.
 

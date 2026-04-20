@@ -15,6 +15,14 @@ from typing import Any
 from datetime import datetime
 from pyexpat import model
 
+
+_THIS_MODULE = sys.modules.get(__name__)
+if _THIS_MODULE is not None:
+    if __name__.startswith("ALDE_Projekt.ALDE.alde"):
+        sys.modules.setdefault("alde.agents_factory", _THIS_MODULE)
+    elif __name__.startswith("alde."):
+        sys.modules.setdefault("ALDE_Projekt.ALDE.alde.agents_factory", _THIS_MODULE)
+
 try:
     from .agents_config import build_agent_handoff, get_agent_config, get_agent_workflow_config, get_default_job_name, get_handoff_route_contract, get_job_config, get_specialized_system_prompt, normalize_agent_label, normalize_tool_name, prepare_incoming_handoff, validate_handoff_for_target  # type: ignore
 except ImportError as e:

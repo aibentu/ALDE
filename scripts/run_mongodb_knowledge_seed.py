@@ -74,11 +74,11 @@ class MongoKnowledgeSeedRunner:
             stored_record={
                 "source_agent": "seed_runner",
                 "job_posting": {
-                    "job_title": "Mongo Knowledge Pipeline Engineer",
+                    "job_title": "AgentDB Knowledge Pipeline Engineer",
                     "company_name": "Example GmbH",
-                    "summary": "Builds Mongo mirrors for ALDE runtime data.",
+                    "summary": "Builds AgentDB-compatible mirrors for ALDE runtime data.",
                 },
-                "parse": {"raw_text": "Builds Mongo mirrors for ALDE runtime data."},
+                "parse": {"raw_text": "Builds AgentDB-compatible mirrors for ALDE runtime data."},
                 "db_updates": {"processing_state": "processed", "processed": True},
             },
             handoff_metadata={"source_agent": "seed_runner"},
@@ -98,7 +98,7 @@ class MongoKnowledgeSeedRunner:
             tool_name="vectordb",
             query_event={
                 "event_id": "seed-retrieval-0001",
-                "query_text": "Mongo pipeline engineer",
+                "query_text": "AgentDB pipeline engineer",
                 "k": 3,
                 "session_id": os.getenv("AI_IDE_SESSION_ID", "seed-session"),
                 "agent": "seed_runner",
@@ -134,7 +134,7 @@ class MongoKnowledgeSeedRunner:
 
 
 def _load_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Seed the optional ALDE MongoDB knowledge mirror.")
+    parser = argparse.ArgumentParser(description="Seed the optional ALDE AgentDB knowledge mirror.")
     parser.add_argument(
         "--mongo-uri",
         default=os.getenv("AI_IDE_KNOWLEDGE_MONGO_URI", "mongodb://localhost:27017"),

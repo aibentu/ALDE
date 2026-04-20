@@ -18,7 +18,9 @@ buttons will show a placeholder message.
 """
 
 from typing import Any
+from datetime import datetime, timezone
 import hashlib
+import importlib
 import importlib.util
 import json
 import os
@@ -49,6 +51,17 @@ from PySide6.QtWidgets import (
     QFrame,
 )
 
+try:
+    from .agents_db import AgentDbSocketRepository, KnowledgeRepository, load_agentsdb_runtime_config_from_env, sync_parser_result_to_agentsdb_knowledge  # type: ignore
+except Exception:
+    try:
+        from alde.agents_db import AgentDbSocketRepository, KnowledgeRepository, load_agentsdb_runtime_config_from_env, sync_parser_result_to_agentsdb_knowledge  # type: ignore
+    except Exception:
+        AgentDbSocketRepository = None  # type: ignore[assignment]
+        KnowledgeRepository = None  # type: ignore[assignment]
+        load_agentsdb_runtime_config_from_env = None  # type: ignore[assignment]
+        sync_parser_result_to_agentsdb_knowledge = None  # type: ignore[assignment]
+
 # Try to import ChatHistory if available; keep optional.
 try:
     from .chat_completion import ChatHistory  # type: ignore
@@ -57,6 +70,247 @@ except Exception:  # allow running as script from repo root
         from alde.chat_completion import ChatHistory  # type: ignore
     except Exception:  # pragma: no cover - optional dependency
         ChatHistory = None  # type: ignore
+
+
+def _load_optional_mongo_client_class() -> Any | None:
+    try:
+        pymongo_module = importlib.import_module("pymongo")
+    except Exception:
+        return None
+    return getattr(pymongo_module, "MongoClient", None)
+
+
+class TreeDataPersistenceService:
+    """Persist tree data either in MongoDB or in a local JSON fallback file."""
+
+    def __init__(self, app_data_dir: Path) -> None:
+        self._app_data_dir = app_data_dir
+        self._json_path = app_data_dir / "tree_data.json"
+        self._mongo_client: Any | None = None
+        self._mongo_collection: Any | None = None
+        self._mongo_disabled = False
+        self._storage_config_cache: dict[str, Any] | None = None
+
+    def _agentsdb_strict_mode(self) -> bool:
+        value = str(os.getenv("AI_IDE_AGENTS_DB_TREE_STRICT", "1")).strip().lower()
+        return value not in {"0", "false", "no", "off"}
+
+    def _load_agentsdb_repository(self) -> tuple[Any, Any] | tuple[None, None]:
+        if not callable(load_agentsdb_runtime_config_from_env):
+            return None, None
+        runtime_config = load_agentsdb_runtime_config_from_env()
+        if runtime_config is None:
+            return None, None
+        uri = str(getattr(runtime_config, "agents_db_uri", "") or "").strip()
+        database_name = str(getattr(runtime_config, "database_name", "alde_knowledge") or "alde_knowledge").strip() or "alde_knowledge"
+        if not uri:
+            return None, None
+        if uri.lower().startswith("agentsdb://"):
+            if AgentDbSocketRepository is None:
+                return None, None
+            return runtime_config, AgentDbSocketRepository.create_from_uri(uri, database_name)
+        if KnowledgeRepository is None:
+            return None, None
+        return runtime_config, KnowledgeRepository.create_from_uri(uri, database_name)
+
+    def _tree_object_id(self) -> str:
+        configured_id = str(os.getenv("AI_IDE_TREE_AGENTS_DB_OBJECT_ID", "")).strip()
+        return configured_id or "tree_widget:tree_data"
+
+    def _agentsdb_tree_payload(self, *, runtime_config: Any, data: dict[str, Any]) -> dict[str, Any]:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        namespace_id = str(getattr(runtime_config, "namespace_id", "") or "ns_alde_default").strip() or "ns_alde_default"
+        return {
+            "namespace_id": namespace_id,
+            "title": "AI IDE Data Tree",
+            "summary": "Persisted JsonTreeWidget data stored in agents_db.",
+            "document_type": "tree_data",
+            "source_uri": "alde://data_tree",
+            "tree_data": data,
+            "updated_at": timestamp,
+            "created_at": timestamp,
+        }
+
+    def _load_storage_config(self) -> dict[str, Any]:
+        if self._storage_config_cache is not None:
+            return self._storage_config_cache
+        if not self._json_path.exists():
+            self._storage_config_cache = {}
+            return self._storage_config_cache
+        try:
+            with open(self._json_path, "r", encoding="utf-8") as config_file:
+                payload = json.load(config_file)
+            projects_payload = payload.get("PROJECTS") if isinstance(payload, dict) else None
+            storage_payload = projects_payload.get("tree_widget_storage") if isinstance(projects_payload, dict) else None
+            self._storage_config_cache = storage_payload if isinstance(storage_payload, dict) else {}
+        except Exception:
+            self._storage_config_cache = {}
+        return self._storage_config_cache
+
+    def _storage_backend(self) -> str:
+        # JSON-first by default; backend persistence is opt-in via env or config.
+        configured_backend = str(os.getenv("ALDE_TREE_STORAGE_BACKEND", "")).strip().lower()
+        if not configured_backend:
+            configured_backend = str(self._load_storage_config().get("backend", "json")).strip().lower()
+        return configured_backend or "json"
+
+    def _mongo_uri(self) -> str:
+        uri = str(os.getenv("ALDE_TREE_MONGO_URI", "")).strip()
+        if not uri:
+            uri = str(self._load_storage_config().get("mongo_uri", "")).strip()
+        if uri:
+            return uri
+
+        # Prefer AgentsDB backend URI when it points to a Mongo-compatible endpoint.
+        agentsdb_backend_uri = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_BACKEND_URI", "")).strip()
+        if agentsdb_backend_uri:
+            parsed_backend_uri = urlparse(agentsdb_backend_uri)
+            if parsed_backend_uri.scheme in {"mongodb", "mongodb+srv"}:
+                return agentsdb_backend_uri
+
+        # Legacy fallback for previous Mongo env variable naming.
+        knowledge_uri = str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_URI", "")).strip()
+        return knowledge_uri or "mongodb://localhost:27017"
+
+    def _mongo_database_name(self) -> str:
+        configured = str(os.getenv("ALDE_TREE_MONGO_DB", "")).strip()
+        if not configured:
+            configured = str(self._load_storage_config().get("mongo_database", "")).strip()
+        if configured:
+            return configured
+
+        knowledge_db = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_NAME", "")).strip()
+        if not knowledge_db:
+            knowledge_db = str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_DB", "")).strip()
+        return knowledge_db or "alde_tree_data"
+
+    def _mongo_collection_name(self) -> str:
+        configured = str(os.getenv("ALDE_TREE_MONGO_COLLECTION", "")).strip()
+        if not configured:
+            configured = str(self._load_storage_config().get("mongo_collection", "")).strip()
+        return configured or "tree_widget"
+
+    def _mongo_document_key(self) -> str:
+        configured = str(os.getenv("ALDE_TREE_MONGO_DOCUMENT_KEY", "")).strip()
+        if not configured:
+            configured = str(self._load_storage_config().get("mongo_document_key", "")).strip()
+        return configured or "tree_data"
+
+    def _mongo_target_label(self) -> str:
+        return f"{self._mongo_database_name()}.{self._mongo_collection_name()}/{self._mongo_document_key()}"
+
+    def _get_mongo_collection(self) -> Any | None:
+        if self._mongo_disabled:
+            return None
+        if self._mongo_collection is not None:
+            return self._mongo_collection
+        if self._storage_backend() != "mongodb":
+            self._mongo_disabled = True
+            return None
+
+        mongo_client_class = _load_optional_mongo_client_class()
+        if mongo_client_class is None:
+            self._mongo_disabled = True
+            return None
+
+        try:
+            self._mongo_client = mongo_client_class(self._mongo_uri(), serverSelectionTimeoutMS=1500)
+            database = self._mongo_client[self._mongo_database_name()]
+            self._mongo_collection = database[self._mongo_collection_name()]
+            return self._mongo_collection
+        except Exception:
+            self._mongo_disabled = True
+            return None
+
+    def load_data(self) -> tuple[dict[str, Any], str, str]:
+        runtime_config, repository = self._load_agentsdb_repository()
+        if repository is not None:
+            try:
+                record = repository.load_object("document", self._tree_object_id())
+                tree_payload = record.get("tree_data") if isinstance(record, dict) else None
+                if isinstance(tree_payload, dict):
+                    return tree_payload, "agents_db", self._tree_object_id()
+            except Exception as exc:
+                if self._agentsdb_strict_mode():
+                    raise RuntimeError(f"agents_db tree load failed: {exc}") from exc
+                print(f"[WARNING] agents_db tree load failed, trying legacy backends: {exc}")
+
+        mongo_collection = self._get_mongo_collection()
+        if mongo_collection is not None:
+            try:
+                document = mongo_collection.find_one({"_id": self._mongo_document_key()})
+                payload = document.get("data") if isinstance(document, dict) else None
+                if isinstance(payload, dict):
+                    if repository is not None and runtime_config is not None:
+                        try:
+                            repository.upsert_object(
+                                "document",
+                                self._tree_object_id(),
+                                self._agentsdb_tree_payload(runtime_config=runtime_config, data=payload),
+                            )
+                        except Exception:
+                            pass
+                    return payload, "mongodb", self._mongo_target_label()
+            except Exception as exc:
+                print(f"[WARNING] MongoDB tree load failed, falling back to JSON: {exc}")
+
+        if self._json_path.exists():
+            with open(self._json_path, "r", encoding="utf-8") as data_file:
+                loaded_data = json.load(data_file)
+            if isinstance(loaded_data, dict):
+                if repository is not None and runtime_config is not None:
+                    try:
+                        repository.upsert_object(
+                            "document",
+                            self._tree_object_id(),
+                            self._agentsdb_tree_payload(runtime_config=runtime_config, data=loaded_data),
+                        )
+                    except Exception:
+                        pass
+                return loaded_data, "json", str(self._json_path)
+        if self._agentsdb_strict_mode():
+            raise RuntimeError("agents_db tree object not found and strict mode is enabled")
+        return {}, "json", str(self._json_path)
+
+    def save_data(self, data: dict[str, Any]) -> tuple[str, str]:
+        runtime_config, repository = self._load_agentsdb_repository()
+        if repository is not None and runtime_config is not None:
+            try:
+                repository.upsert_object(
+                    "document",
+                    self._tree_object_id(),
+                    self._agentsdb_tree_payload(runtime_config=runtime_config, data=data),
+                )
+                return "agents_db", self._tree_object_id()
+            except Exception as exc:
+                if self._agentsdb_strict_mode():
+                    raise RuntimeError(f"agents_db tree save failed: {exc}") from exc
+                print(f"[WARNING] agents_db tree save failed, trying legacy backends: {exc}")
+
+        mongo_collection = self._get_mongo_collection()
+        if mongo_collection is not None:
+            try:
+                mongo_collection.update_one(
+                    {"_id": self._mongo_document_key()},
+                    {
+                        "$set": {
+                            "data": data,
+                            "updated_at": datetime.now(timezone.utc).isoformat(),
+                        }
+                    },
+                    upsert=True,
+                )
+                return "mongodb", self._mongo_target_label()
+            except Exception as exc:
+                print(f"[WARNING] MongoDB tree save failed, falling back to JSON: {exc}")
+
+        if self._agentsdb_strict_mode():
+            raise RuntimeError("agents_db tree persistence required but unavailable")
+
+        self._app_data_dir.mkdir(exist_ok=True)
+        with open(self._json_path, "w", encoding="utf-8") as data_file:
+            json.dump(data, data_file, indent=2, ensure_ascii=False)
+        return "json", str(self._json_path)
 
 
 # --------------------- Helper: icon loader (minimal) ---------------------
@@ -563,6 +817,8 @@ class JsonTreeWidget(QTreeWidget):
         self._initializing = True
         self._item_last_text: dict[QTreeWidgetItem, str] = {}
         self._last_saved_hash: str | None = None
+        app_data_dir = Path(__file__).parent.parent / "AppData"
+        self._persistence_service = TreeDataPersistenceService(app_data_dir)
         
         # Store data for each section separately
         self._data: dict[str, dict[str, Any]] = {}
@@ -1382,41 +1638,29 @@ class JsonTreeWidget(QTreeWidget):
             self.add_to_section("DATABASES", name, db_data)
     
     def _save_data(self) -> None:
-        """Save the current data structure to disk."""
+        """Save the current data structure to the configured storage backend."""
         try:
-            # Use AppData directory relative to the module
-            app_data_dir = Path(__file__).parent.parent / "AppData"
-            app_data_dir.mkdir(exist_ok=True)
-            save_path = app_data_dir / "tree_data.json"
-
             payload = json.dumps(self._data, ensure_ascii=False, sort_keys=True)
             payload_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
             if self._last_saved_hash == payload_hash:
                 return
-            
-            with open(save_path, 'w', encoding='utf-8') as f:
-                json.dump(self._data, f, indent=2, ensure_ascii=False)
+
+            backend_name, target = self._persistence_service.save_data(self._data)
             self._last_saved_hash = payload_hash
-            print(f"[INFO] Tree data saved to {save_path}")
+            print(f"[INFO] Tree data saved to {backend_name}:{target}")
         except Exception as e:
             print(f"[WARNING] Could not save tree data: {e}")
     
     def _load_data(self) -> None:
-        """Load the data structure from disk."""
+        """Load the data structure from the configured storage backend."""
         try:
-            # Use AppData directory relative to the module
-            app_data_dir = Path(__file__).parent.parent / "AppData"
-            load_path = app_data_dir / "tree_data.json"
-            
-            if load_path.exists():
-                with open(load_path, 'r', encoding='utf-8') as f:
-                    loaded_data = json.load(f)
+            loaded_data, backend_name, source = self._persistence_service.load_data()
+            if isinstance(loaded_data, dict) and loaded_data:
 
                 # Restore internal data first so edits persist correctly.
-                if isinstance(loaded_data, dict):
-                    for section_name, section_data in loaded_data.items():
-                        if isinstance(section_data, dict):
-                            self._data[section_name] = section_data
+                for section_name, section_data in loaded_data.items():
+                    if isinstance(section_data, dict):
+                        self._data[section_name] = section_data
 
                 # Snapshot hash so we don't immediately re-save identical content.
                 payload = json.dumps(self._data, ensure_ascii=False, sort_keys=True)
@@ -1445,7 +1689,7 @@ class JsonTreeWidget(QTreeWidget):
                                         self._item_badge[item] = badge
                                     self._apply_item_icon(item)
                 self.blockSignals(False)
-                print(f"[INFO] Tree data loaded from {load_path}")
+                print(f"[INFO] Tree data loaded from {backend_name}:{source}")
         except Exception as e:
             print(f"[INFO] Could not load tree data (this is normal on first run): {e}")
     
@@ -1681,6 +1925,40 @@ class JsonTreeWidget(QTreeWidget):
             return
 
         self.add_to_section(section_name, key_name, imported_data)
+        if callable(sync_parser_result_to_agentsdb_knowledge):
+            try:
+                serialized_payload = json.dumps(imported_data, ensure_ascii=False, default=str)
+            except Exception:
+                serialized_payload = str(imported_data)
+            sync_parser_result_to_agentsdb_knowledge(
+                object_name="documents",
+                correlation_id=f"tree-import:{hashlib.sha256(f'{file_path}:{key_name}:{section_name}'.encode('utf-8')).hexdigest()[:24]}",
+                result_payload={
+                    "agent": "data_tree_import",
+                    "file": {
+                        "source_path": str(file_path),
+                        "name": Path(file_path).name,
+                        "import_format": str(import_format),
+                    },
+                    "parse": {
+                        "raw_text": serialized_payload,
+                    },
+                    "document": {
+                        "title": str(key_name),
+                        "summary": f"Data tree import from {Path(file_path).name}",
+                        "section": str(section_name),
+                        "import_format": str(import_format),
+                        "payload": imported_data,
+                    },
+                    "db_updates": {
+                        "processing_state": "processed",
+                        "processed": True,
+                    },
+                },
+                handoff_metadata={"source_agent": "data_tree_import"},
+                handoff_payload={"agent_label": "data_tree_import", "source": "data_tree"},
+            )
+            self._save_data()
         QMessageBox.information(
             self,
             "Import Success",

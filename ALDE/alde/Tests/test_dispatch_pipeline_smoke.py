@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -10,7 +11,7 @@ PKG_ROOT = Path(__file__).resolve().parents[2]
 if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
 
-from alde.agents_tools import DOCUMENT_REPOSITORY, dispatch_docs
+from alde.agents_tools import DOCUMENT_REPOSITORY, dispatch_docs, execute_action_request_tool
 
 
 # Tiny but valid single-page PDF fixture for end-to-end dispatch smoke tests.
@@ -80,6 +81,34 @@ class TestDispatchPipelineSmoke(unittest.TestCase):
             self.assertIsInstance(dispatcher_record, dict)
             self.assertEqual((dispatcher_record or {}).get("processing_state"), "queued")
             self.assertEqual((dispatcher_record or {}).get("processed"), False)
+
+    def test_execute_action_request_accepts_legacy_document_dispatch_action(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            scan_dir = tmp_path / "scan"
+            scan_dir.mkdir(parents=True, exist_ok=True)
+            pdf_path = scan_dir / "job_offer.pdf"
+            pdf_path.write_bytes(_MINIMAL_PDF_BYTES)
+
+            dispatcher_db_path = tmp_path / "dispatcher_doc_db.json"
+            result_raw = execute_action_request_tool(
+                action_request={
+                    "action": "document_dispatch",
+                    "scan_dir": str(scan_dir),
+                    "db_path": str(dispatcher_db_path),
+                    "thread_id": "thread-action",
+                    "dispatcher_message_id": "msg-action",
+                    "recursive": False,
+                }
+            )
+
+            self.assertIsInstance(result_raw, str)
+            result = json.loads(result_raw)
+            self.assertEqual(result.get("job_name"), "document_dispatch")
+            self.assertIsNone(result.get("error"))
+            self.assertEqual(result.get("db", {}).get("reachable"), True)
+            self.assertEqual(result.get("summary", {}).get("pdf_found"), 1)
+            self.assertEqual(result.get("summary", {}).get("errors"), 0)
 
 
 if __name__ == "__main__":

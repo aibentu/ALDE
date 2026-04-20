@@ -1849,6 +1849,95 @@ class TestWorkflowIntegration(unittest.TestCase):
         self.assertEqual(payload["document_pdf_path"], "/tmp/explicit_cover_letter.pdf")
         self.assertEqual(captured_write_calls[0]["doc_id"], "Support Engineer_Example Co")
 
+    def test_import_dispatch_pipeline_action_uses_forced_route(self) -> None:
+        pipeline_request = {
+            "action": "import_dispatch_pipeline",
+            "correlation_id": "pipeline-import-001",
+            "job_posting_result": {
+                "agent": "job_posting_parser",
+                "correlation_id": "pipeline-import-001",
+                "job_posting": {
+                    "job_title": "Pipeline Engineer",
+                    "company_name": "Tree Data Co",
+                },
+            },
+            "agents_db_tree_path": "ALDE/AppData/tree_data.json",
+        }
+
+        with patch.object(chat_mod.ChatCompletion, "_get_client") as get_client:
+            chat = chat_mod.ChatCom(
+                _model="gpt-4o-mini",
+                _input_text=json.dumps(pipeline_request, ensure_ascii=False),
+                _name="test_import_dispatch_pipeline_route",
+            )
+
+        self.assertEqual(chat._forced_route["target_agent"], "_xworker")
+        self.assertEqual(chat._forced_route["job_name"], "document_dispatch_ingest_import_pipeline")
+        self.assertIn("import_dispatch_pipeline", str(chat._forced_route.get("user_question") or ""))
+        get_client.assert_not_called()
+
+    def test_dispatch_parser_import_pipeline_persists_and_propagates_tree_data_path(self) -> None:
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+            job_postings_db_path = tmp.name
+
+        tree_data_rel_path = "ALDE/AppData/tree_data.json"
+        try:
+            self.assertTrue(Path(PKG_ROOT / "AppData" / "tree_data.json").is_file())
+
+            mongo_backend = _InMemoryMongoDocumentBackend()
+            with patch.object(tools_mod.DOCUMENT_REPOSITORY, "_load_mongo_backend", return_value=mongo_backend), patch.object(
+                tools_mod,
+                "sync_parser_result_to_mongodb_knowledge",
+                return_value={
+                    "ok": True,
+                    "stored": True,
+                    "backend": "mongodb",
+                    "tree_data_path": tree_data_rel_path,
+                    "object_name": "job_postings",
+                },
+            ) as sync_mock:
+                result = json.loads(
+                    tools_mod.store_job_posting_result_tool(
+                        job_posting_result={
+                            "agent": "document_dispatch_ingest_import_pipeline",
+                            "correlation_id": "pipeline-import-002",
+                            "parse": {"is_job_posting": True},
+                            "job_posting": {
+                                "job_title": "Dispatcher Parser Import Engineer",
+                                "company_name": "Pipeline Labs",
+                            },
+                        },
+                        correlation_id="pipeline-import-002",
+                        db_path=job_postings_db_path,
+                        source_agent="document_dispatch_ingest_import_pipeline",
+                        source_payload={
+                            "action": "import_dispatch_pipeline",
+                            "agents_db_tree_path": tree_data_rel_path,
+                            "tree_data_path": tree_data_rel_path,
+                        },
+                    )
+                )
+
+            mongo_record = mongo_backend.load_record(
+                storage_key=job_postings_db_path,
+                record_id="pipeline-import-002",
+                db_name="job_postings",
+                obj_name="job_postings",
+            )
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["knowledge_sync"]["stored"])
+            self.assertEqual(result["knowledge_sync"]["backend"], "mongodb")
+            self.assertEqual(result["knowledge_sync"]["tree_data_path"], tree_data_rel_path)
+            self.assertIsNotNone(mongo_record)
+            self.assertEqual(mongo_record["job_posting"]["job_title"], "Dispatcher Parser Import Engineer")
+            self.assertEqual(sync_mock.call_args.kwargs["object_name"], "job_postings")
+            self.assertEqual(sync_mock.call_args.kwargs["correlation_id"], "pipeline-import-002")
+            self.assertEqual(sync_mock.call_args.kwargs["handoff_payload"]["agents_db_tree_path"], tree_data_rel_path)
+            self.assertEqual(sync_mock.call_args.kwargs["handoff_payload"]["tree_data_path"], tree_data_rel_path)
+        finally:
+            os.unlink(job_postings_db_path)
+
 
 if __name__ == "__main__":
     unittest.main()

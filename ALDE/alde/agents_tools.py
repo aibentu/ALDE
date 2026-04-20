@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 import json
 import glob
 import typing
+import sys
 import subprocess
 import time
 import uuid
@@ -21,6 +22,17 @@ from typing import Callable, Any, Sequence
 from dataclasses import dataclass, field
 import multiprocessing
 from copy import deepcopy
+
+
+_THIS_MODULE = sys.modules.get(__name__)
+if _THIS_MODULE is not None:
+    if __name__.startswith("ALDE_Projekt.ALDE.alde"):
+        sys.modules.setdefault("alde.agents_tools", _THIS_MODULE)
+        sys.modules.setdefault("alde.tools", _THIS_MODULE)
+    elif __name__.startswith("alde."):
+        sys.modules.setdefault("ALDE_Projekt.ALDE.alde.agents_tools", _THIS_MODULE)
+        sys.modules.setdefault("ALDE_Projekt.ALDE.alde.tools", _THIS_MODULE)
+        sys.modules.setdefault("alde.tools", _THIS_MODULE)
 
 try:
     from .agents_config import (  # type: ignore
@@ -71,28 +83,32 @@ except ImportError as e:  # allow running directly from the repository root
         raise
 
 
-def _noop_sync_retrieval_run_to_mongodb_knowledge(**_: Any) -> None:
+def _noop_sync_retrieval_run_to_agentsdb_knowledge(**_: Any) -> None:
     return None
 
 
-def _noop_sync_parser_result_to_mongodb_knowledge(**_: Any) -> None:
+def _noop_sync_parser_result_to_agentsdb_knowledge(**_: Any) -> None:
     return None
 
 
 try:
     from .agents_db import (
-        sync_parser_result_to_mongodb_knowledge,
-        sync_retrieval_run_to_mongodb_knowledge,
+        sync_parser_result_to_agentsdb_knowledge,
+        sync_retrieval_run_to_agentsdb_knowledge,
     )
 except Exception:
     try:
         from alde.agents_db import (  # type: ignore
-            sync_parser_result_to_mongodb_knowledge,
-            sync_retrieval_run_to_mongodb_knowledge,
+            sync_parser_result_to_agentsdb_knowledge,
+            sync_retrieval_run_to_agentsdb_knowledge,
         )
     except Exception:
-        sync_retrieval_run_to_mongodb_knowledge = _noop_sync_retrieval_run_to_mongodb_knowledge
-        sync_parser_result_to_mongodb_knowledge = _noop_sync_parser_result_to_mongodb_knowledge
+        sync_retrieval_run_to_agentsdb_knowledge = _noop_sync_retrieval_run_to_agentsdb_knowledge
+        sync_parser_result_to_agentsdb_knowledge = _noop_sync_parser_result_to_agentsdb_knowledge
+
+# Backward-compatible aliases for legacy call sites.
+sync_retrieval_run_to_mongodb_knowledge = sync_retrieval_run_to_agentsdb_knowledge
+sync_parser_result_to_mongodb_knowledge = sync_parser_result_to_agentsdb_knowledge
 
 
 def _shutdown_loky_executor() -> None:
@@ -440,7 +456,7 @@ def _build_job_posting_compatibility_section(payload: dict[str, Any]) -> dict[st
             compatibility_payload["requirements"]["soft_skills"] = competency_list
         if language_list:
             compatibility_payload["requirements"]["languages"] = language_list
-
+ 
     language_code = _first_non_empty_text(
         _payload_value(legacy_payload, "metadata.language"),
         raw_text_payload.get("language"),
@@ -489,28 +505,47 @@ def _extract_document_section(result_payload: dict[str, Any], resolved_obj: str)
 
 
 @dataclass(frozen=True)
-class MongoDocumentBackendConfig:
-    mongo_uri: str
+class AgentsDbDocumentBackendConfig:
+    agents_db_uri: str
     database_name: str
 
 
-class MongoDocumentBackend:
-    def __init__(self, config: MongoDocumentBackendConfig) -> None:
-        pymongo_module = importlib.import_module("pymongo")
-        mongo_client_class = getattr(pymongo_module, "MongoClient", None)
-        if mongo_client_class is None:
-            raise RuntimeError("pymongo is required to use the MongoDB document backend")
+class AgentsDbDocumentBackend:
+    def __init__(self, config: AgentsDbDocumentBackendConfig) -> None:
         self._config = config
-        self._client = mongo_client_class(config.mongo_uri)
-        self._database = self._client[config.database_name]
+
+    def _load_storage_payload(self, storage_key: str) -> tuple[str, dict[str, Any]]:
+        resolved_storage_path = os.path.abspath(os.path.expanduser(str(storage_key)))
+        if not os.path.exists(resolved_storage_path):
+            return resolved_storage_path, {}
+        payload = _load_json_file(resolved_storage_path)
+        return resolved_storage_path, payload if isinstance(payload, dict) else {}
+
+    def _load_record_map(self, storage_key: str) -> tuple[str, dict[str, Any]]:
+        resolved_storage_path, storage_payload = self._load_storage_payload(storage_key)
+        record_map = storage_payload.get("_agentsdb_records")
+        if isinstance(record_map, dict):
+            return resolved_storage_path, record_map
+        return resolved_storage_path, {}
+
+    def _store_record_map(self, storage_path: str, record_map: dict[str, Any]) -> None:
+        payload = {
+            "schema": "agentsdb_document_backend_v1",
+            "database_name": self._config.database_name,
+            "updated_at": _now_utc_iso(),
+            "_agentsdb_records": record_map,
+        }
+        _atomic_write_json(storage_path, payload)
 
     @classmethod
-    def load_from_env(cls) -> "MongoDocumentBackend | None":
-        mongo_uri = str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_URI", "")).strip()
-        if not mongo_uri:
-            return None
-        database_name = str(os.getenv("AI_IDE_KNOWLEDGE_MONGO_DB", "alde_knowledge")).strip() or "alde_knowledge"
-        return cls(MongoDocumentBackendConfig(mongo_uri=mongo_uri, database_name=database_name))
+    def load_from_env(cls) -> "AgentsDbDocumentBackend | None":
+        agents_db_uri = str(
+            os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_BACKEND_URI", "")
+            or os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_URI", "")
+            or "agentsdb://local"
+        ).strip()
+        database_name = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_NAME", "alde_knowledge")).strip() or "alde_knowledge"
+        return cls(AgentsDbDocumentBackendConfig(agents_db_uri=agents_db_uri, database_name=database_name))
 
     def _collection_name(self, *, db_name: str | None = None, obj_name: str | None = None) -> str:
         normalized_db_name = str(db_name or "").strip().lower()
@@ -558,18 +593,16 @@ class MongoDocumentBackend:
         root_key: str,
     ) -> dict[str, Any]:
         collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
-        records = self._database[collection_name].find({"_storage_key": storage_key})
+        _, record_map = self._load_record_map(storage_key)
+        collection_payload = record_map.get(collection_name)
+        storage_payload = collection_payload.get(str(storage_key)) if isinstance(collection_payload, dict) else None
         db = deepcopy(empty_db)
         db[root_key] = {}
-        for raw_record in records:
-            if not isinstance(raw_record, dict):
-                continue
-            record_id = str(raw_record.get("_record_id") or "").strip()
-            if not record_id:
-                continue
-            deserialized = self._deserialize_record(raw_record)
-            if deserialized is not None:
-                db[root_key][record_id] = deserialized
+        if isinstance(storage_payload, dict):
+            for record_id, raw_record in storage_payload.items():
+                if not isinstance(raw_record, dict):
+                    continue
+                db[root_key][str(record_id)] = self._deserialize_record(raw_record) or {}
         return db
 
     def save_db(
@@ -582,17 +615,14 @@ class MongoDocumentBackend:
         root_key: str,
     ) -> None:
         collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
-        collection = self._database[collection_name]
+        storage_path, record_map = self._load_record_map(storage_key)
         root_payload = db.get(root_key) if isinstance(db, dict) else None
         records = root_payload if isinstance(root_payload, dict) else {}
-        incoming_ids = {str(record_id) for record_id in records.keys()}
-        existing_cursor = collection.find({"_storage_key": storage_key}, {"_record_id": 1})
-        existing_ids = {
-            str(item.get("_record_id") or "").strip()
-            for item in existing_cursor
-            if isinstance(item, dict) and str(item.get("_record_id") or "").strip()
-        }
-
+        collection_payload = record_map.get(collection_name)
+        if not isinstance(collection_payload, dict):
+            collection_payload = {}
+            record_map[collection_name] = collection_payload
+        storage_payload: dict[str, Any] = {}
         for record_id, record_value in records.items():
             if not isinstance(record_value, dict):
                 continue
@@ -602,13 +632,9 @@ class MongoDocumentBackend:
                 record_id=str(record_id),
                 record_value=record_value,
             )
-            collection.update_one({"_id": serialized["_id"]}, {"$set": serialized}, upsert=True)
-
-        stale_ids = sorted(existing_ids - incoming_ids)
-        if stale_ids:
-            collection.delete_many({"_storage_key": storage_key, "_record_id": {"$in": stale_ids}})
-        if not incoming_ids and existing_ids:
-            collection.delete_many({"_storage_key": storage_key})
+            storage_payload[str(record_id)] = serialized
+        collection_payload[str(storage_key)] = storage_payload
+        self._store_record_map(storage_path, record_map)
 
     def load_record(
         self,
@@ -619,15 +645,10 @@ class MongoDocumentBackend:
         obj_name: str | None = None,
     ) -> dict[str, Any] | None:
         collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
-        raw_record = self._database[collection_name].find_one(
-            {
-                "_id": self._build_object_id(
-                    collection_name=collection_name,
-                    storage_key=storage_key,
-                    record_id=record_id,
-                )
-            }
-        )
+        _, record_map = self._load_record_map(storage_key)
+        collection_payload = record_map.get(collection_name)
+        storage_payload = collection_payload.get(str(storage_key)) if isinstance(collection_payload, dict) else None
+        raw_record = storage_payload.get(str(record_id)) if isinstance(storage_payload, dict) else None
         return self._deserialize_record(raw_record if isinstance(raw_record, dict) else None)
 
     def upsert_record(
@@ -640,13 +661,23 @@ class MongoDocumentBackend:
         obj_name: str | None = None,
     ) -> None:
         collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        storage_path, record_map = self._load_record_map(storage_key)
+        collection_payload = record_map.get(collection_name)
+        if not isinstance(collection_payload, dict):
+            collection_payload = {}
+            record_map[collection_name] = collection_payload
+        storage_payload = collection_payload.get(str(storage_key))
+        if not isinstance(storage_payload, dict):
+            storage_payload = {}
+            collection_payload[str(storage_key)] = storage_payload
         serialized = self._serialize_record(
             collection_name=collection_name,
             storage_key=storage_key,
             record_id=record_id,
             record_value=record_value,
         )
-        self._database[collection_name].update_one({"_id": serialized["_id"]}, {"$set": serialized}, upsert=True)
+        storage_payload[str(record_id)] = serialized
+        self._store_record_map(storage_path, record_map)
 
     def delete_record(
         self,
@@ -657,15 +688,17 @@ class MongoDocumentBackend:
         obj_name: str | None = None,
     ) -> None:
         collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
-        self._database[collection_name].delete_one(
-            {
-                "_id": self._build_object_id(
-                    collection_name=collection_name,
-                    storage_key=storage_key,
-                    record_id=record_id,
-                )
-            }
-        )
+        storage_path, record_map = self._load_record_map(storage_key)
+        collection_payload = record_map.get(collection_name)
+        storage_payload = collection_payload.get(str(storage_key)) if isinstance(collection_payload, dict) else None
+        if isinstance(storage_payload, dict):
+            storage_payload.pop(str(record_id), None)
+            self._store_record_map(storage_path, record_map)
+
+
+# Backward-compatible aliases for legacy backend naming.
+MongoDocumentBackendConfig = AgentsDbDocumentBackendConfig
+MongoDocumentBackend = AgentsDbDocumentBackend
 
 
 def _payload_value(payload: dict[str, Any], key: str) -> Any:
@@ -679,12 +712,26 @@ def _payload_value(payload: dict[str, Any], key: str) -> Any:
     return current
 
 
+def _agentsdb_pipeline_strict_mode() -> bool:
+    value = str(os.getenv("AI_IDE_AGENTS_DB_PIPELINE_STRICT", "1")).strip().lower()
+    return value not in {"0", "false", "no", "off"}
+
+
 class DocumentRepository:
     _DISPATCHER_DB_NAMES = {"dispatcher", "dispatcher_db", "dispatcher_documents"}
 
     def __init__(self) -> None:
-        self._mongo_backend: MongoDocumentBackend | None = None
-        self._mongo_backend_loaded = False
+        self._agentsdb_backend: AgentsDbDocumentBackend | None = None
+        self._agentsdb_backend_loaded = False
+        self._projection_cache: dict[str, dict[str, dict[str, Any]]] = {}
+
+    def _projection_bucket(self, bucket_name: str) -> dict[str, dict[str, Any]]:
+        normalized_bucket_name = str(bucket_name or "").strip() or "documents"
+        bucket = self._projection_cache.get(normalized_bucket_name)
+        if bucket is None:
+            bucket = {}
+            self._projection_cache[normalized_bucket_name] = bucket
+        return bucket
 
     def normalize_db_name(self, db_name: str | None = None, obj_name: str | None = None) -> str:
         normalized_db_name = str(db_name or "").strip().lower()
@@ -707,18 +754,18 @@ class DocumentRepository:
         resolved_obj_name = self._resolve_obj_name(db_name=normalized_db_name, obj_name=obj_name)
         return {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}}
 
-    def _load_mongo_backend(self) -> MongoDocumentBackend | None:
-        if self._mongo_backend_loaded:
-            return self._mongo_backend
-        self._mongo_backend_loaded = True
+    def _load_agentsdb_backend(self) -> AgentsDbDocumentBackend | None:
+        if self._agentsdb_backend_loaded:
+            return self._agentsdb_backend
+        self._agentsdb_backend_loaded = True
         try:
-            self._mongo_backend = MongoDocumentBackend.load_from_env()
+            self._agentsdb_backend = AgentsDbDocumentBackend.load_from_env()
         except Exception:
-            self._mongo_backend = None
-        return self._mongo_backend
+            self._agentsdb_backend = None
+        return self._agentsdb_backend
 
-    def _use_mongo_backend(self) -> bool:
-        return self._load_mongo_backend() is not None
+    def _use_agentsdb_backend(self) -> bool:
+        return self._load_agentsdb_backend() is not None
 
     def _resolve_db_path(self, db_path: str | None = None, *, db_name: str | None = None, obj_name: str | None = None) -> str:
         if db_path:
@@ -730,10 +777,12 @@ class DocumentRepository:
         return os.path.abspath(os.path.expanduser(_default_document_db_path(resolved_obj_name)))
 
     def load_db(self, db_path: str | None = None, *, db_name: str | None = None, obj_name: str | None = None) -> dict[str, Any]:
+        if _agentsdb_pipeline_strict_mode():
+            return self._build_db(db_name=db_name, obj_name=obj_name)
         resolved_db_path = self._resolve_db_path(db_path, db_name=db_name, obj_name=obj_name)
         empty_db = self._build_db(db_name=db_name, obj_name=obj_name)
         root_key = "documents" if self.normalize_db_name(db_name=db_name, obj_name=obj_name) == "dispatcher_documents" else self._resolve_obj_name(db_name=db_name, obj_name=obj_name)
-        mongo_backend = self._load_mongo_backend()
+        mongo_backend = self._load_agentsdb_backend()
         if mongo_backend is not None:
             return mongo_backend.load_db(
                 storage_key=resolved_db_path,
@@ -751,7 +800,9 @@ class DocumentRepository:
 
     def save_db(self, db_path: str | None, db: dict[str, Any], *, db_name: str | None = None, obj_name: str | None = None) -> str:
         resolved_db_path = self._resolve_db_path(db_path, db_name=db_name, obj_name=obj_name)
-        mongo_backend = self._load_mongo_backend()
+        if _agentsdb_pipeline_strict_mode():
+            return resolved_db_path
+        mongo_backend = self._load_agentsdb_backend()
         if mongo_backend is not None:
             root_key = "documents" if self.normalize_db_name(db_name=db_name, obj_name=obj_name) == "dispatcher_documents" else self._resolve_obj_name(db_name=db_name, obj_name=obj_name)
             mongo_backend.save_db(
@@ -775,6 +826,10 @@ class DocumentRepository:
         record_value: dict[str, Any],
     ) -> dict[str, Any]:
         resolved_obj_name = self._resolve_obj_name(db_name=db_name, obj_name=obj_name)
+        if _agentsdb_pipeline_strict_mode():
+            bucket = self._projection_bucket(resolved_obj_name)
+            bucket[record_id] = deepcopy(record_value)
+            return {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: deepcopy(bucket)}
         db = self.load_db(db_path, db_name=db_name, obj_name=obj_name)
         if not isinstance(db.get(resolved_obj_name), dict):
             db[resolved_obj_name] = {}
@@ -795,7 +850,47 @@ class DocumentRepository:
         resolved_obj_name = _normalize_document_obj_name(obj_name)
         resolved_section_key = _document_section_key(resolved_obj_name)
         resolved_db_path = self._resolve_db_path(db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
-        mongo_backend = self._load_mongo_backend()
+        if _agentsdb_pipeline_strict_mode():
+            ts = _now_utc_iso()
+            parse_section = result_payload.get("parse") if isinstance(result_payload.get("parse"), dict) else {}
+            document_section = _extract_document_section(result_payload, resolved_obj_name)
+            db_updates = result_payload.get("db_updates") if isinstance(result_payload.get("db_updates"), dict) else {}
+            metadata = dict(handoff_metadata or {})
+            incoming_payload = dict(handoff_payload or {})
+            output_payload = incoming_payload.get("output") if isinstance(incoming_payload.get("output"), dict) else {}
+            fallback_source_payload = output_payload if output_payload else result_payload
+            record = {
+                "correlation_id": correlation_id,
+                "updated_at": ts,
+                "created_at": ts,
+                "source_agent": str(
+                    incoming_payload.get("agent_label")
+                    or metadata.get("source_agent")
+                    or result_payload.get("agent")
+                    or _document_default_agent(resolved_obj_name)
+                ),
+                "link": deepcopy(result_payload.get("link") if isinstance(result_payload.get("link"), dict) else output_payload.get("link") if isinstance(output_payload.get("link"), dict) else {}),
+                "file": deepcopy(result_payload.get("file") if isinstance(result_payload.get("file"), dict) else output_payload.get("file") if isinstance(output_payload.get("file"), dict) else {}),
+                "parse": deepcopy(parse_section),
+                resolved_section_key: deepcopy(document_section),
+                "db_updates": deepcopy(db_updates),
+                "handoff_metadata": deepcopy(metadata),
+                "source_payload": deepcopy(fallback_source_payload),
+            }
+            for explicit_key in ("raw_text_document", "entity_objects", "relation_objects"):
+                explicit_value = result_payload.get(explicit_key)
+                if explicit_value is not None:
+                    record[explicit_key] = deepcopy(explicit_value)
+            self._projection_bucket(resolved_obj_name)[correlation_id] = record
+            return {
+                "ok": True,
+                "backend": "agents_db",
+                "db_path": f"agentsdb://{resolved_obj_name}",
+                "obj_name": resolved_obj_name,
+                "correlation_id": correlation_id,
+                "stored": True,
+            }
+        mongo_backend = self._load_agentsdb_backend()
         existing_record = (
             mongo_backend.load_record(
                 storage_key=resolved_db_path,
@@ -875,8 +970,26 @@ class DocumentRepository:
     ) -> dict[str, Any] | None:
         resolved_obj_name = _normalize_document_obj_name(obj_name)
         resolved_section_key = _document_section_key(resolved_obj_name)
+        if _agentsdb_pipeline_strict_mode():
+            record = self._projection_bucket(resolved_obj_name).get(correlation_id)
+            if not isinstance(record, dict):
+                return None
+            result = {
+                "agent": str(record.get("source_agent") or record.get("agent") or _document_default_agent(resolved_obj_name)),
+                "correlation_id": str(record.get("correlation_id") or correlation_id),
+                "link": deepcopy(record.get("link") or {}),
+                "file": deepcopy(record.get("file") or {}),
+                "parse": deepcopy(record.get("parse") or {}),
+                resolved_section_key: deepcopy(record.get(resolved_section_key) or record.get(resolved_obj_name) or {}),
+                "db_updates": deepcopy(record.get("db_updates") or {}),
+            }
+            for explicit_key in ("raw_text_document", "entity_objects", "relation_objects"):
+                explicit_value = record.get(explicit_key)
+                if explicit_value is not None:
+                    result[explicit_key] = deepcopy(explicit_value)
+            return result
         resolved_db_path = self._resolve_db_path(db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
-        mongo_backend = self._load_mongo_backend()
+        mongo_backend = self._load_agentsdb_backend()
         if mongo_backend is not None:
             record = mongo_backend.load_record(
                 storage_key=resolved_db_path,
@@ -913,8 +1026,11 @@ class DocumentRepository:
         *,
         db_path: str | None = None,
     ) -> dict[str, Any] | None:
+        if _agentsdb_pipeline_strict_mode():
+            record = self._projection_bucket("dispatcher_documents").get(correlation_id)
+            return deepcopy(record) if isinstance(record, dict) else None
         resolved_db_path = self._resolve_db_path(db_path, db_name="dispatcher_documents")
-        mongo_backend = self._load_mongo_backend()
+        mongo_backend = self._load_agentsdb_backend()
         if mongo_backend is not None:
             record = mongo_backend.load_record(
                 storage_key=resolved_db_path,
@@ -937,12 +1053,19 @@ class DocumentRepository:
         *,
         db_path: str | None = None,
     ) -> dict[str, dict[str, Any]]:
+        if _agentsdb_pipeline_strict_mode():
+            bucket = self._projection_bucket("dispatcher_documents")
+            return {
+                correlation_id: deepcopy(bucket[correlation_id])
+                for correlation_id in [str(item).strip() for item in correlation_ids if str(item).strip()]
+                if isinstance(bucket.get(correlation_id), dict)
+            }
         resolved_db_path = self._resolve_db_path(db_path, db_name="dispatcher_documents")
         normalized_ids = [str(correlation_id).strip() for correlation_id in correlation_ids if str(correlation_id).strip()]
         if not normalized_ids:
             return {}
 
-        mongo_backend = self._load_mongo_backend()
+        mongo_backend = self._load_agentsdb_backend()
         if mongo_backend is not None:
             records: dict[str, dict[str, Any]] = {}
             for correlation_id in normalized_ids:
@@ -976,8 +1099,41 @@ class DocumentRepository:
         failed_reason: str | None = None,
         extra_updates: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        if _agentsdb_pipeline_strict_mode():
+            bucket = self._projection_bucket("dispatcher_documents")
+            record = dict(bucket.get(correlation_id) if isinstance(bucket.get(correlation_id), dict) else {})
+            normalized_state = str(processing_state or "").strip().lower() or "failed"
+            effective_processed = bool(processed) if processed is not None else normalized_state == "processed"
+            ts = _now_utc_iso()
+            record.setdefault("id", correlation_id)
+            record["content_sha256"] = correlation_id
+            record["processing_state"] = normalized_state
+            record["processed"] = effective_processed
+            record["last_seen_at"] = ts
+            if effective_processed:
+                record["processed_at"] = ts
+                record["failed_reason"] = None
+                record["last_error"] = None
+                record["last_error_at"] = None
+            else:
+                reason = str(failed_reason or "").strip() or None
+                record["failed_reason"] = reason
+                record["last_error"] = reason
+                record["last_error_at"] = ts if reason else None
+            if isinstance(extra_updates, dict):
+                for key, value in extra_updates.items():
+                    record[str(key)] = deepcopy(value)
+            bucket[correlation_id] = record
+            return {
+                "ok": True,
+                "backend": "agents_db",
+                "db_path": "agentsdb://dispatcher_documents",
+                "correlation_id": correlation_id,
+                "processing_state": normalized_state,
+                "processed": effective_processed,
+            }
         resolved_db_path = self._resolve_db_path(db_path, db_name="dispatcher_documents")
-        mongo_backend = self._load_mongo_backend()
+        mongo_backend = self._load_agentsdb_backend()
         if mongo_backend is not None:
             existing_record = mongo_backend.load_record(
                 storage_key=resolved_db_path,
@@ -1090,7 +1246,7 @@ class DocumentRepository:
         resolved_obj_name = _normalize_document_obj_name(obj_name)
         resolved_dispatcher_db_path = self._resolve_db_path(dispatcher_db_path, db_name="dispatcher_documents")
         resolved_obj_db_path = self._resolve_db_path(obj_db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
-        mongo_backend = self._load_mongo_backend()
+        mongo_backend = self._load_agentsdb_backend()
 
         resolved_section_key = _document_section_key(resolved_obj_name)
         ts = _now_utc_iso()
@@ -1211,6 +1367,15 @@ class DocumentRepository:
             "processed": effective_processed,
         }
         result[f"{resolved_obj_name}_db_path"] = resolved_obj_db_path
+        knowledge_sync_result = sync_parser_result_to_agentsdb_knowledge(
+            object_name=resolved_obj_name,
+            result_payload=result_payload,
+            correlation_id=record_id,
+            handoff_metadata=metadata,
+            handoff_payload=source_payload_dict,
+        )
+        if isinstance(knowledge_sync_result, dict):
+            result["knowledge_sync"] = deepcopy(knowledge_sync_result)
         return result
 
     def upsert_dispatcher_job_record(
@@ -1703,7 +1868,7 @@ class DocumentObjectService:
             handoff_payload=source_payload if isinstance(source_payload, dict) else None,
             obj_name=resolved_obj_name,
         )
-        knowledge_sync_result = sync_parser_result_to_mongodb_knowledge(
+        knowledge_sync_result = sync_parser_result_to_agentsdb_knowledge(
             object_name=resolved_obj_name,
             result_payload=parsed_payload,
             correlation_id=effective_correlation_id,
@@ -2550,11 +2715,39 @@ class ActionRequestService:
         )
         return json.dumps(result, ensure_ascii=False)
 
+    def execute_dispatch_documents_action(
+        self,
+        *,
+        request_payload: dict[str, Any],
+        resolution_config: dict[str, Any],
+        execution_config: dict[str, Any],
+    ) -> str | None:
+        scan_dir = str(request_payload.get("scan_dir") or request_payload.get("directory") or "").strip()
+        if not scan_dir:
+            return json.dumps({"ok": False, "error": "missing_scan_dir"}, ensure_ascii=False)
+
+        result = DOCUMENT_DISPATCH_SERVICE.dispatch_documents(
+            scan_dir=scan_dir,
+            db_path=str(request_payload.get("db_path") or request_payload.get("dispatcher_db_path") or "").strip() or None,
+            obj=str(request_payload.get("obj") or "").strip() or None,
+            obj_name=str(request_payload.get("obj_name") or "").strip() or None,
+            thread_id=str(request_payload.get("thread_id") or "").strip() or None,
+            dispatcher_message_id=str(request_payload.get("dispatcher_message_id") or "").strip() or None,
+            recursive=bool(request_payload.get("recursive", True)),
+            extensions=request_payload.get("extensions") if isinstance(request_payload.get("extensions"), list) else None,
+            max_files=int(request_payload.get("max_files")) if request_payload.get("max_files") is not None else None,
+            agent_name=str(request_payload.get("agent_name") or request_payload.get("target_agent") or "_xworker").strip() or "_xworker",
+            parser_agent_name=str(request_payload.get("parser_agent_name") or "").strip() or None,
+            dry_run=bool(request_payload.get("dry_run", False)),
+        )
+        return json.dumps(result, ensure_ascii=False)
+
     def load_action_executor(self, handler_name: str | None) -> Callable[..., str | None] | None:
         normalized_handler_name = str(handler_name or "").strip().lower()
         executors: dict[str, Callable[..., str | None]] = {
             "ingest_object": self.execute_ingest_object_action,
             "upsert_object_record": self.execute_upsert_object_record_action,
+            "dispatch_documents": self.execute_dispatch_documents_action,
         }
         return executors.get(normalized_handler_name)
 
@@ -2602,7 +2795,8 @@ class ActionRequestService:
             resolved_payload = payload
 
         execution_config = dict(schema_config.get("action_execution") or {}) if isinstance(schema_config, dict) else {}
-        action_executor = self.load_action_executor(execution_config.get("handler_name"))
+        handler_name = execution_config.get("handler_name") if execution_config else None
+        action_executor = self.load_action_executor(handler_name) or self.load_action_executor(action_name)
         if action_executor is None:
             return None
         return action_executor(
@@ -2663,6 +2857,171 @@ def execute_action_request_tool(
 ) -> str:
     return ACTION_REQUEST_SERVICE.execute_request_tool(action_request=action_request, action=action, payload=payload)
 
+
+
+AGENTS_DB_STRUCTURE_CONFIGS: dict[str, dict[str, Any]] = {
+    "document_knowledge_pipeline": {
+        "description": "Canonical structure for the agents_db document pipeline that bridges operational persistence in tools.py to the Mongo-backed knowledge projection in agents_db.py.",
+        "modules": {
+            "tools.py": {
+                "role": "operational_runtime",
+                "layers": [
+                    {
+                        "name": "backend_layer",
+                        "owner_objects": ["MongoDocumentBackend"],
+                        "functions": [
+                            "load_db",
+                            "save_db",
+                            "load_record",
+                            "upsert_record",
+                            "delete_record",
+                        ],
+                        "responsibility": "Backend boundary for file-based or Mongo-backed operational document stores.",
+                    },
+                    {
+                        "name": "repository_layer",
+                        "owner_objects": ["DocumentRepository"],
+                        "functions": [
+                            "load_db",
+                            "save_db",
+                            "upsert_db",
+                            "persist_document",
+                            "get_document",
+                            "get_dispatcher_record",
+                            "get_dispatcher_records",
+                        ],
+                        "responsibility": "Operational truth for document stores and dispatcher state.",
+                    },
+                    {
+                        "name": "resolution_layer",
+                        "owner_objects": ["RequestObjectResolutionService"],
+                        "functions": [
+                            "resolve_request_object",
+                            "resolve_request_payload",
+                        ],
+                        "responsibility": "Resolve incoming request payloads to generic object_name and object_result bindings.",
+                    },
+                    {
+                        "name": "object_service_layer",
+                        "owner_objects": ["DocumentObjectService"],
+                        "functions": [
+                            "store_object_result",
+                            "ingest_object",
+                            "upsert_object_record",
+                        ],
+                        "responsibility": "Object-centric persistence entry point for parser results and deterministic updates.",
+                    },
+                    {
+                        "name": "action_layer",
+                        "owner_objects": ["ActionRequestService"],
+                        "functions": [
+                            "execute_request",
+                            "execute_request_tool",
+                        ],
+                        "responsibility": "Schema-driven deterministic routing from action requests to operational services.",
+                    },
+                    {
+                        "name": "dispatch_layer",
+                        "owner_objects": ["DocumentDispatchService"],
+                        "functions": [
+                            "dispatch_documents",
+                        ],
+                        "responsibility": "Filesystem scan, dispatcher bucketing, and parser handoff orchestration.",
+                    },
+                ],
+            },
+            "agents_db.py": {
+                "role": "knowledge_projection",
+                "layers": [
+                    {
+                        "name": "knowledge_object_layer",
+                        "owner_objects": [
+                            "NamespaceObject",
+                            "DocumentObject",
+                            "BlockObject",
+                            "EntityObject",
+                            "EntityRelationObject",
+                            "EmbeddingObject",
+                            "RetrievalRunObject",
+                            "DispatcherRunObject",
+                        ],
+                        "helper_objects": [
+                            "EntityMentionObject",
+                            "EntityAliasObject",
+                            "RelationEvidenceObject",
+                        ],
+                        "responsibility": "Canonical object model for namespace, document, block, entity, relation, embedding, dispatcher, and retrieval truth.",
+                    },
+                    {
+                        "name": "knowledge_repository_layer",
+                        "owner_objects": ["KnowledgeRepository", "KnowledgeObjectService"],
+                        "functions": [
+                            "store_namespace_object",
+                            "store_document_object",
+                            "store_entity_object",
+                            "store_relation_object",
+                            "store_embedding_object",
+                            "store_retrieval_run_object",
+                            "store_dispatcher_run_object",
+                            "find_objects",
+                            "load_relation_object_graph",
+                            "build_vector_candidate_pipeline",
+                        ],
+                        "responsibility": "Mongo-backed persistence and query facade for the knowledge model.",
+                    },
+                    {
+                        "name": "mapping_layer",
+                        "owner_objects": ["ObjectMappingService"],
+                        "functions": [
+                            "build_document_object",
+                            "build_entity_objects",
+                            "build_relation_objects",
+                            "store_mapped_object",
+                        ],
+                        "responsibility": "Map parsed object_result payloads to canonical document, block, entity, and relation objects.",
+                    },
+                    {
+                        "name": "pipeline_layer",
+                        "owner_objects": ["PipelineService"],
+                        "functions": [
+                            "load_namespace_object",
+                            "build_retrieval_run_object",
+                            "store_retrieval_run",
+                        ],
+                        "responsibility": "Runtime namespace resolution and retrieval telemetry projection.",
+                    },
+                ],
+            },
+        },
+        "bridge_points": [
+            {
+                "name": "parser_result_sync",
+                "entry_functions": [
+                    "store_object_result_tool",
+                    "ingest_object_tool",
+                    "upsert_object_record_tool",
+                    "sync_parser_result_to_mongodb_knowledge",
+                ],
+                "from_module": "tools.py",
+                "to_module": "agents_db.py",
+                "target_objects": ["ObjectMappingService", "KnowledgeObjectService"],
+                "responsibility": "Bridge operational parser-result persistence to AgentDB knowledge projection.",
+            },
+            {
+                "name": "retrieval_run_sync",
+                "entry_functions": [
+                    "memorydb",
+                    "vectordb",
+                    "sync_retrieval_run_to_mongodb_knowledge",
+                ],
+                "from_module": "tools.py",
+                "to_module": "agents_db.py",
+                "target_objects": ["PipelineService", "KnowledgeObjectService"],
+                "responsibility": "Bridge retrieval execution telemetry to RetrievalRunObject persistence.",
+            },
+        ],
+    },
+}
 
 def build_agent_system_configs_tool(
     system_name: str | None = None,

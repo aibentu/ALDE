@@ -17,6 +17,13 @@ for _candidate_path in (_REPO_ROOT, _PACKAGE_ROOT):
     if _candidate_text not in sys.path:
         sys.path.insert(0, _candidate_text)
 
+_THIS_MODULE = sys.modules.get(__name__)
+if _THIS_MODULE is not None:
+    if __name__.startswith("ALDE_Projekt.ALDE.alde"):
+        sys.modules.setdefault("alde.control_plane_runtime", _THIS_MODULE)
+    elif __name__.startswith("alde."):
+        sys.modules.setdefault("ALDE_Projekt.ALDE.alde.control_plane_runtime", _THIS_MODULE)
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -149,7 +156,7 @@ def _module_candidates(module_name: str) -> list[str]:
     candidates: list[str] = []
     if __package__:
         candidates.append(f"{__package__}.{module_name}")
-    candidates.extend([f"alde.{module_name}", f"ALDE.alde.{module_name}", module_name])
+    candidates.extend([f"alde.{module_name}", f"ALDE_Projekt.ALDE.alde.{module_name}", f"ALDE.alde.{module_name}", module_name])
     deduped: list[str] = []
     seen: set[str] = set()
     for candidate in candidates:
@@ -209,7 +216,7 @@ class RuntimeProjectionService:
             return self._normalize_history_entries(history_entries)
 
         try:
-            ChatHistory = _load_symbol("agents_ccompletion", "ChatHistory")
+            ChatHistory = _load_symbol("agents_ccomp", "ChatHistory")
         except Exception:
             return []
 
@@ -226,7 +233,7 @@ class RuntimeProjectionService:
         session_id: str | None = None,
     ) -> list[dict[str, Any]]:
         try:
-            load_runtime_events = _load_symbol("event_store", "load_runtime_events")
+            load_runtime_events = _load_symbol("agents_event_store", "load_runtime_events")
         except Exception:
             return []
 

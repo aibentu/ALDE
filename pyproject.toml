@@ -18,3 +18,7 @@ include-package-data = true
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["ALDE*"]
+
+[tool.pytest.ini_options]
+testpaths = ["ALDE/alde"]
+addopts = "--ignore=ALDE/alde/Tests"
