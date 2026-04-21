@@ -777,13 +777,13 @@ class TestWorkflowIntegration(unittest.TestCase):
             self.assertEqual(legacy_result["agent"], "xworker")
             self.assertEqual(legacy_result["job_name"], "document_dispatch")
 
-    def test_read_document_uses_batch_pdf_extractor_for_pdf_files(self) -> None:
+    def test_read_document_uses_pypdf_extractor_for_pdf_files(self) -> None:
         with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as tmp:
             pdf_path = tmp.name
             tmp.write(b"fake-pdf-content")
 
         try:
-            with patch("alde.batch_document._extract_pdf_text", return_value="Seite 1: Python\n\nSeite 2: MongoDB") as extract_mock:
+            with patch("alde.agents_tools._read_pdf_text_with_pypdf", return_value="Seite 1: Python\n\nSeite 2: MongoDB") as extract_mock:
                 result = tools_mod.read_document(pdf_path)
 
             self.assertEqual(result, "Seite 1: Python\n\nSeite 2: MongoDB")
@@ -797,6 +797,27 @@ class TestWorkflowIntegration(unittest.TestCase):
         self.assertIsNotNone(tool_spec)
         self.assertTrue(tool_spec.final_result)
         self.assertFalse(tool_spec.tool_response_required)
+
+    def test_pypdf_read_document_tool_spec_marks_direct_final_result(self) -> None:
+        tool_spec = tools_mod.get_tool_spec("pypdf_read_document")
+
+        self.assertIsNotNone(tool_spec)
+        self.assertTrue(tool_spec.final_result)
+        self.assertFalse(tool_spec.tool_response_required)
+
+    def test_pypdf_read_document_tool_executes_pypdf_helper(self) -> None:
+        with tempfile.NamedTemporaryFile("wb", suffix=".pdf", delete=False) as tmp:
+            pdf_path = tmp.name
+            tmp.write(b"fake-pdf-content")
+
+        try:
+            with patch("alde.agents_tools._read_pdf_text_with_pypdf", return_value="pypdf text") as extract_mock:
+                result = tools_mod.pypdf_read_document(pdf_path)
+
+            self.assertEqual(result, "pypdf text")
+            extract_mock.assert_called_once_with(pdf_path)
+        finally:
+            os.unlink(pdf_path)
 
     def test_xworker_prompt_config_supports_tool_name_selection_and_tools_task_option(self) -> None:
         prompt_config = agents_configurator.get_prompt_config("_xworker")

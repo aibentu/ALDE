@@ -93,16 +93,22 @@ def _noop_sync_parser_result_to_agentsdb_knowledge(**_: Any) -> None:
 
 try:
     from .agents_db import (
+        AgentDbSocketRepository,
+        KnowledgeRepository,
         sync_parser_result_to_agentsdb_knowledge,
         sync_retrieval_run_to_agentsdb_knowledge,
     )
 except Exception:
     try:
         from alde.agents_db import (  # type: ignore
+            AgentDbSocketRepository,
+            KnowledgeRepository,
             sync_parser_result_to_agentsdb_knowledge,
             sync_retrieval_run_to_agentsdb_knowledge,
         )
     except Exception:
+        AgentDbSocketRepository = None  # type: ignore[assignment]
+        KnowledgeRepository = None  # type: ignore[assignment]
         sync_retrieval_run_to_agentsdb_knowledge = _noop_sync_retrieval_run_to_agentsdb_knowledge
         sync_parser_result_to_agentsdb_knowledge = _noop_sync_parser_result_to_agentsdb_knowledge
 
@@ -227,7 +233,7 @@ def _load_json_file(path: str) -> object:
         candidates: list[str] = []
         tmp = f"{path}.tmp"
         if os.path.exists(tmp):
-            candidates.append(tmp)
+            candidates.append(tmp) 
 
         base_no_ext = os.path.splitext(path)[0]
         backup_glob = f"{base_no_ext}.backup_*.json"
@@ -507,12 +513,204 @@ def _extract_document_section(result_payload: dict[str, Any], resolved_obj: str)
 @dataclass(frozen=True)
 class AgentsDbDocumentBackendConfig:
     agents_db_uri: str
+    backend_uri: str
     database_name: str
+    memory_image_path: str | None = None
 
 
 class AgentsDbDocumentBackend:
     def __init__(self, config: AgentsDbDocumentBackendConfig) -> None:
         self._config = config
+        self._repository: Any | None = None
+        self._repository_loaded = False
+        self._last_repository_error: str | None = None
+
+    def _is_socket_uri(self, uri: str | None) -> bool:
+        return str(uri or "").strip().lower().startswith("agentsdb://")
+
+    def _load_repository(self) -> Any | None:
+        if self._repository_loaded:
+            return self._repository
+
+        self._repository_loaded = True
+        self._last_repository_error = None
+        agents_db_uri = str(self._config.agents_db_uri or "").strip()
+        backend_uri = str(self._config.backend_uri or "").strip()
+        database_name = str(self._config.database_name or "alde_knowledge").strip() or "alde_knowledge"
+
+        if self._is_socket_uri(agents_db_uri) and AgentDbSocketRepository is not None:
+            try:
+                self._repository = AgentDbSocketRepository.create_from_uri(agents_db_uri, database_name)
+                self._last_repository_error = None
+                return self._repository
+            except Exception as exc:
+                self._last_repository_error = f"socket_repository_init_failed: {type(exc).__name__}: {exc}"
+                self._repository = None
+
+        if KnowledgeRepository is not None:
+            repository_uri = backend_uri or agents_db_uri
+            if repository_uri:
+                try:
+                    self._repository = KnowledgeRepository.create_from_uri(repository_uri, database_name)
+                    self._last_repository_error = None
+                    return self._repository
+                except Exception as exc:
+                    self._last_repository_error = f"knowledge_repository_init_failed: {type(exc).__name__}: {exc}"
+                    self._repository = None
+
+        if self._last_repository_error is None:
+            self._last_repository_error = "repository_unavailable"
+        return self._repository
+
+    def load_backend_diagnostic(self) -> dict[str, Any]:
+        repository = self._load_repository()
+        repository_type = type(repository).__name__ if repository is not None else None
+        backend_mode = "unavailable"
+        effective_uri = ""
+        if repository_type == "AgentDbSocketRepository":
+            backend_mode = "socket"
+            effective_uri = str(self._config.agents_db_uri or "").strip()
+        elif repository_type == "KnowledgeRepository":
+            backend_mode = "backend_repository"
+            effective_uri = str(self._config.backend_uri or self._config.agents_db_uri or "").strip()
+
+        return {
+            "backend": "agents_db",
+            "backend_mode": backend_mode,
+            "repository_type": repository_type,
+            "repository_available": repository is not None,
+            "fallback_file_backend": repository is None,
+            "agents_db_uri": str(self._config.agents_db_uri or "").strip(),
+            "backend_uri": str(self._config.backend_uri or "").strip(),
+            "effective_uri": effective_uri,
+            "database_name": str(self._config.database_name or "").strip(),
+            "memory_image_path": str(self._config.memory_image_path or "").strip() or None,
+            "last_error": self._last_repository_error,
+        }
+
+    def _repository_filter(self, *, collection_name: str, storage_key: str) -> dict[str, Any]:
+        return {
+            "_agentsdb_backend_kind": "document_backend_record",
+            "_collection_name": str(collection_name),
+            "_storage_key": str(storage_key),
+        }
+
+    def _storage_records_from_repository(self, *, collection_name: str, storage_key: str) -> dict[str, dict[str, Any]] | None:
+        repository = self._load_repository()
+        if repository is None:
+            return None
+        try:
+            object_payload_list = repository.load_objects(
+                "document",
+                self._repository_filter(collection_name=collection_name, storage_key=storage_key),
+                limit=100000,
+            )
+        except Exception:
+            return None
+
+        record_map: dict[str, dict[str, Any]] = {}
+        for object_payload in object_payload_list:
+            if not isinstance(object_payload, dict):
+                continue
+            if bool(object_payload.get("_deleted")):
+                continue
+            record_id = str(object_payload.get("_record_id") or "").strip()
+            if not record_id:
+                continue
+            record_map[record_id] = dict(object_payload)
+        return record_map
+
+    def _record_from_repository(self, *, collection_name: str, storage_key: str, record_id: str) -> dict[str, Any] | None:
+        repository = self._load_repository()
+        if repository is None:
+            return None
+        object_id = self._build_object_id(
+            collection_name=collection_name,
+            storage_key=storage_key,
+            record_id=record_id,
+        )
+        try:
+            object_payload = repository.load_object("document", object_id)
+        except Exception:
+            return None
+        if not isinstance(object_payload, dict):
+            return None
+        if bool(object_payload.get("_deleted")):
+            return None
+        if str(object_payload.get("_agentsdb_backend_kind") or "") != "document_backend_record":
+            return None
+        return object_payload
+
+    def _upsert_repository_record(
+        self,
+        *,
+        collection_name: str,
+        storage_key: str,
+        record_id: str,
+        record_value: dict[str, Any],
+    ) -> bool:
+        repository = self._load_repository()
+        if repository is None:
+            return False
+
+        serialized_payload = self._serialize_record(
+            collection_name=collection_name,
+            storage_key=storage_key,
+            record_id=record_id,
+            record_value=record_value,
+        )
+        serialized_payload.update(
+            {
+                "_agentsdb_backend_kind": "document_backend_record",
+                "_collection_name": str(collection_name),
+                "_storage_key": str(storage_key),
+                "_record_id": str(record_id),
+                "_deleted": False,
+                "document_type": "agentsdb_document_backend_record",
+                "title": f"{collection_name}:{record_id}",
+                "source_uri": f"alde://document_backend/{collection_name}/{hashlib.sha256(str(storage_key).encode('utf-8')).hexdigest()}/{record_id}",
+                "database_name": self._config.database_name,
+                "agents_db_uri": self._config.agents_db_uri,
+                "backend_uri": self._config.backend_uri,
+            }
+        )
+        object_id = self._build_object_id(
+            collection_name=collection_name,
+            storage_key=storage_key,
+            record_id=record_id,
+        )
+        try:
+            repository.upsert_object("document", object_id, serialized_payload)
+        except Exception:
+            return False
+        return True
+
+    def _delete_repository_record(self, *, collection_name: str, storage_key: str, record_id: str) -> bool:
+        repository = self._load_repository()
+        if repository is None:
+            return False
+        object_id = self._build_object_id(
+            collection_name=collection_name,
+            storage_key=storage_key,
+            record_id=record_id,
+        )
+        tombstone_payload = {
+            "_agentsdb_backend_kind": "document_backend_record",
+            "_collection_name": str(collection_name),
+            "_storage_key": str(storage_key),
+            "_record_id": str(record_id),
+            "_deleted": True,
+            "_deleted_at": _now_utc_iso(),
+            "document_type": "agentsdb_document_backend_record",
+            "database_name": self._config.database_name,
+            "agents_db_uri": self._config.agents_db_uri,
+            "backend_uri": self._config.backend_uri,
+        }
+        try:
+            repository.upsert_object("document", object_id, tombstone_payload)
+        except Exception:
+            return False
+        return True
 
     def _load_storage_payload(self, storage_key: str) -> tuple[str, dict[str, Any]]:
         resolved_storage_path = os.path.abspath(os.path.expanduser(str(storage_key)))
@@ -539,13 +737,24 @@ class AgentsDbDocumentBackend:
 
     @classmethod
     def load_from_env(cls) -> "AgentsDbDocumentBackend | None":
-        agents_db_uri = str(
-            os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_BACKEND_URI", "")
-            or os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_URI", "")
-            or "agentsdb://local"
-        ).strip()
+        agents_db_uri = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_URI", "") or "agentsdb://127.0.0.1:2331").strip() or "agentsdb://127.0.0.1:2331"
+        backend_uri = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_BACKEND_URI", "") or "agentsmem://local").strip() or "agentsmem://local"
         database_name = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_NAME", "alde_knowledge")).strip() or "alde_knowledge"
-        return cls(AgentsDbDocumentBackendConfig(agents_db_uri=agents_db_uri, database_name=database_name))
+        memory_image_path = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_MEMORY_IMAGE_PATH", "")).strip() or None
+
+        os.environ.setdefault("AI_IDE_KNOWLEDGE_AGENTS_DB_URI", agents_db_uri)
+        os.environ.setdefault("AI_IDE_KNOWLEDGE_AGENTS_DB_BACKEND_URI", backend_uri)
+        if memory_image_path:
+            os.environ.setdefault("AI_IDE_KNOWLEDGE_AGENTS_DB_MEMORY_IMAGE_PATH", memory_image_path)
+
+        return cls(
+            AgentsDbDocumentBackendConfig(
+                agents_db_uri=agents_db_uri,
+                backend_uri=backend_uri,
+                database_name=database_name,
+                memory_image_path=memory_image_path,
+            )
+        )
 
     def _collection_name(self, *, db_name: str | None = None, obj_name: str | None = None) -> str:
         normalized_db_name = str(db_name or "").strip().lower()
@@ -593,6 +802,19 @@ class AgentsDbDocumentBackend:
         root_key: str,
     ) -> dict[str, Any]:
         collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        repository_record_map = self._storage_records_from_repository(
+            collection_name=collection_name,
+            storage_key=storage_key,
+        )
+        if isinstance(repository_record_map, dict):
+            db = deepcopy(empty_db)
+            db[root_key] = {}
+            for record_id, raw_record in repository_record_map.items():
+                if not isinstance(raw_record, dict):
+                    continue
+                db[root_key][str(record_id)] = self._deserialize_record(raw_record) or {}
+            return db
+
         _, record_map = self._load_record_map(storage_key)
         collection_payload = record_map.get(collection_name)
         storage_payload = collection_payload.get(str(storage_key)) if isinstance(collection_payload, dict) else None
@@ -615,9 +837,35 @@ class AgentsDbDocumentBackend:
         root_key: str,
     ) -> None:
         collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
-        storage_path, record_map = self._load_record_map(storage_key)
         root_payload = db.get(root_key) if isinstance(db, dict) else None
         records = root_payload if isinstance(root_payload, dict) else {}
+
+        repository_record_map = self._storage_records_from_repository(
+            collection_name=collection_name,
+            storage_key=storage_key,
+        )
+        if repository_record_map is not None:
+            for record_id, record_value in records.items():
+                if not isinstance(record_value, dict):
+                    continue
+                self._upsert_repository_record(
+                    collection_name=collection_name,
+                    storage_key=storage_key,
+                    record_id=str(record_id),
+                    record_value=record_value,
+                )
+            next_record_id_set = {str(record_id) for record_id, record_value in records.items() if isinstance(record_value, dict)}
+            for existing_record_id in repository_record_map.keys():
+                if str(existing_record_id) in next_record_id_set:
+                    continue
+                self._delete_repository_record(
+                    collection_name=collection_name,
+                    storage_key=storage_key,
+                    record_id=str(existing_record_id),
+                )
+            return
+
+        storage_path, record_map = self._load_record_map(storage_key)
         collection_payload = record_map.get(collection_name)
         if not isinstance(collection_payload, dict):
             collection_payload = {}
@@ -645,6 +893,14 @@ class AgentsDbDocumentBackend:
         obj_name: str | None = None,
     ) -> dict[str, Any] | None:
         collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        repository_record = self._record_from_repository(
+            collection_name=collection_name,
+            storage_key=storage_key,
+            record_id=record_id,
+        )
+        if isinstance(repository_record, dict):
+            return self._deserialize_record(repository_record)
+
         _, record_map = self._load_record_map(storage_key)
         collection_payload = record_map.get(collection_name)
         storage_payload = collection_payload.get(str(storage_key)) if isinstance(collection_payload, dict) else None
@@ -661,6 +917,14 @@ class AgentsDbDocumentBackend:
         obj_name: str | None = None,
     ) -> None:
         collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        if self._upsert_repository_record(
+            collection_name=collection_name,
+            storage_key=storage_key,
+            record_id=str(record_id),
+            record_value=record_value,
+        ):
+            return
+
         storage_path, record_map = self._load_record_map(storage_key)
         collection_payload = record_map.get(collection_name)
         if not isinstance(collection_payload, dict):
@@ -688,6 +952,13 @@ class AgentsDbDocumentBackend:
         obj_name: str | None = None,
     ) -> None:
         collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        if self._delete_repository_record(
+            collection_name=collection_name,
+            storage_key=storage_key,
+            record_id=str(record_id),
+        ):
+            return
+
         storage_path, record_map = self._load_record_map(storage_key)
         collection_payload = record_map.get(collection_name)
         storage_payload = collection_payload.get(str(storage_key)) if isinstance(collection_payload, dict) else None
@@ -723,6 +994,7 @@ class DocumentRepository:
     def __init__(self) -> None:
         self._agentsdb_backend: AgentsDbDocumentBackend | None = None
         self._agentsdb_backend_loaded = False
+        self._agentsdb_backend_diagnostic_emitted = False
         self._projection_cache: dict[str, dict[str, dict[str, Any]]] = {}
 
     def _projection_bucket(self, bucket_name: str) -> dict[str, dict[str, Any]]:
@@ -766,6 +1038,60 @@ class DocumentRepository:
 
     def _use_agentsdb_backend(self) -> bool:
         return self._load_agentsdb_backend() is not None
+
+    def _backend_diagnostic_enabled(self) -> bool:
+        value = str(os.getenv("AI_IDE_AGENTS_DB_BACKEND_DIAGNOSTIC", "1")).strip().lower()
+        return value not in {"0", "false", "no", "off"}
+
+    def load_dispatch_backend_diagnostic(self, *, db_path: str | None = None) -> dict[str, Any]:
+        resolved_db_path = self._resolve_db_path(db_path, db_name="dispatcher_documents")
+        backend = self._load_agentsdb_backend()
+        if backend is None:
+            return {
+                "backend": "agents_db",
+                "backend_mode": "unavailable",
+                "repository_type": None,
+                "repository_available": False,
+                "fallback_file_backend": True,
+                "agents_db_uri": str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_URI", "")).strip(),
+                "backend_uri": str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_BACKEND_URI", "")).strip(),
+                "effective_uri": "",
+                "database_name": str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_NAME", "alde_knowledge")).strip() or "alde_knowledge",
+                "memory_image_path": str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_MEMORY_IMAGE_PATH", "")).strip() or None,
+                "last_error": "agentsdb_backend_disabled_or_unavailable",
+                "strict_mode": _agentsdb_pipeline_strict_mode(),
+                "dispatcher_db_path": resolved_db_path,
+                "diagnostic_enabled": self._backend_diagnostic_enabled(),
+                "timestamp": _now_utc_iso(),
+            }
+
+        diagnostic = dict(backend.load_backend_diagnostic())
+        diagnostic["strict_mode"] = _agentsdb_pipeline_strict_mode()
+        diagnostic["dispatcher_db_path"] = resolved_db_path
+        diagnostic["diagnostic_enabled"] = self._backend_diagnostic_enabled()
+        diagnostic["timestamp"] = _now_utc_iso()
+        return diagnostic
+
+    def emit_dispatch_backend_diagnostic_once(self, *, db_path: str | None = None) -> dict[str, Any]:
+        diagnostic = self.load_dispatch_backend_diagnostic(db_path=db_path)
+        if self._agentsdb_backend_diagnostic_emitted:
+            return diagnostic
+        if not self._backend_diagnostic_enabled():
+            return diagnostic
+
+        self._agentsdb_backend_diagnostic_emitted = True
+        print(
+            "[agents_tools] dispatcher_backend "
+            f"mode={diagnostic.get('backend_mode')} "
+            f"repository={diagnostic.get('repository_type') or 'none'} "
+            f"uri={diagnostic.get('effective_uri') or diagnostic.get('agents_db_uri') or diagnostic.get('backend_uri') or 'n/a'} "
+            f"db={diagnostic.get('database_name')} "
+            f"strict_mode={diagnostic.get('strict_mode')} "
+            f"fallback_file={diagnostic.get('fallback_file_backend')}"
+        )
+        if diagnostic.get("last_error"):
+            print(f"[agents_tools] dispatcher_backend_error detail={diagnostic.get('last_error')}")
+        return diagnostic
 
     def _resolve_db_path(self, db_path: str | None = None, *, db_name: str | None = None, obj_name: str | None = None) -> str:
         if db_path:
@@ -1410,6 +1736,12 @@ class DocumentRepository:
 
 
 DOCUMENT_REPOSITORY = DocumentRepository()
+
+
+def diagnose_dispatch_backend(*, db_path: str | None = None, emit: bool = False) -> dict[str, Any]:
+    if emit:
+        return DOCUMENT_REPOSITORY.emit_dispatch_backend_diagnostic_once(db_path=db_path)
+    return DOCUMENT_REPOSITORY.load_dispatch_backend_diagnostic(db_path=db_path)
 
 
 class AgentSystemConfigStorageService:
@@ -3511,6 +3843,8 @@ class DocumentDispatchService:
         resolved_db_path = ((db or {}).get("path") if isinstance(db, dict) else None) or db_path or _default_dispatcher_db_path()
         resolved_db_path = os.path.abspath(os.path.expanduser(str(resolved_db_path)))
 
+        DOCUMENT_REPOSITORY.emit_dispatch_backend_diagnostic_once(db_path=resolved_db_path)
+
         warnings: list[dict[str, Any]] = []
         scan_dir = self.resolve_scan_dir(scan_dir_original, resolved_db_path=resolved_db_path, warnings=warnings)
 
@@ -5005,51 +5339,112 @@ def write_document(
             "storage": stored_record,
         }
 
-def read_document(file_path: str) -> str:
-        """Liest den Inhalt eines Dokuments von der Festplatte.
-
-        Textdateien werden direkt gelesen. PDFs werden ueber den vorhandenen
-    Batch-PDF-Extractor geladen, damit Parser-Agenten dieselbe robustere
-    Extraktion wie der Batch-Generator verwenden.
-        """
-        resolved_path = os.path.abspath(os.path.expanduser(str(file_path or "").strip()))
-        if not resolved_path:
-            return "Error: Kein Dateipfad angegeben."
-        if not os.path.exists(resolved_path):
-            return f"Error: Datei '{resolved_path}' nicht gefunden."
-
+def _read_pdf_text_with_pypdf(file_path: str) -> str | None:
+    try:
         try:
-            if resolved_path.lower().endswith(".pdf"):
-                extract_pdf_text = None
-                try:
-                    from .batch_document import _extract_pdf_text as extract_pdf_text  # type: ignore
-                except Exception:
-                    try:
-                        from alde.batch_document import _extract_pdf_text as extract_pdf_text  # type: ignore
-                    except Exception:
-                        extract_pdf_text = None
+            from pypdf import PdfReader  # type: ignore
+        except Exception:
+            from PyPDF2 import PdfReader  # type: ignore
+    except Exception:
+        return None
 
-                if callable(extract_pdf_text):
-                    extracted_text = str(extract_pdf_text(resolved_path) or "").strip()
-                    if extracted_text:
-                        return extracted_text
+    try:
+        reader = PdfReader(file_path)
+    except Exception:
+        return None
 
-                docs = iter_documents(resolved_path, doc_types=["pdf"], recursive=False)
-                page_texts = [
-                    str(getattr(doc, "page_content", "") or "").strip()
-                    for doc in docs
-                    if str(getattr(doc, "page_content", "") or "").strip()
-                ]
-                if page_texts:
-                    return "\n\n".join(page_texts)
-                return f"Error beim Lesen der Datei '{resolved_path}': PDF-Extraktion ergab keinen Text."
+    page_texts: list[str] = []
+    for page in getattr(reader, "pages", []) or []:
+        try:
+            extracted = str(page.extract_text() or "").strip()
+        except Exception:
+            extracted = ""
+        if extracted:
+            page_texts.append(extracted)
 
-            with open(resolved_path, "r", encoding="utf-8") as file:
-                return file.read()
-        except FileNotFoundError:
-            return f"Error: Datei '{resolved_path}' nicht gefunden."
-        except Exception as e:
-            return f"Error beim Lesen der Datei '{resolved_path}': {e}"
+    if not page_texts:
+        return None
+    return "\n\n".join(page_texts)
+
+
+def _read_pdf_text_with_pdftotext(file_path: str) -> str | None:
+    try:
+        process = subprocess.run(
+            ["pdftotext", "-enc", "UTF-8", "-layout", file_path, "-"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except Exception:
+        return None
+
+    if process.returncode != 0:
+        return None
+
+    extracted_text = str(process.stdout or "").strip()
+    return extracted_text or None
+
+
+def pypdf_read_document(file_path: str) -> str:
+    """Read a PDF from disk using pypdf only.
+
+    This tool is intended for explicit pypdf-based PDF extraction requests.
+    For non-PDF files, use read_document.
+    """
+    resolved_path = os.path.abspath(os.path.expanduser(str(file_path or "").strip()))
+    if not resolved_path:
+        return "Error: Kein Dateipfad angegeben."
+    if not os.path.exists(resolved_path):
+        return f"Error: Datei '{resolved_path}' nicht gefunden."
+    if not resolved_path.lower().endswith(".pdf"):
+        return f"Error: Datei '{resolved_path}' ist keine PDF. Verwende read_document fuer Nicht-PDF-Dateien."
+
+    extracted_text = _read_pdf_text_with_pypdf(resolved_path)
+    if extracted_text:
+        return extracted_text
+
+    return (
+        f"Error beim Lesen der Datei '{resolved_path}': pypdf konnte keinen Text extrahieren "
+        "(moeglicherweise Scan ohne OCR/Text-Layer)."
+    )
+
+
+def read_document(file_path: str) -> str:
+    """Liest den Inhalt eines Dokuments von der Festplatte.
+
+    Textdateien werden direkt gelesen. PDFs werden primaer mit pypdf
+    extrahiert (plus pdftotext-Fallback), damit auch Dateien in
+    uebersprungenen Ordnern (z.B. AppData) robust gelesen werden koennen.
+    """
+    resolved_path = os.path.abspath(os.path.expanduser(str(file_path or "").strip()))
+    if not resolved_path:
+        return "Error: Kein Dateipfad angegeben."
+    if not os.path.exists(resolved_path):
+        return f"Error: Datei '{resolved_path}' nicht gefunden."
+
+    try:
+        if resolved_path.lower().endswith(".pdf"):
+            pypdf_text = _read_pdf_text_with_pypdf(resolved_path)
+            if pypdf_text:
+                return pypdf_text
+
+            pdftotext_text = _read_pdf_text_with_pdftotext(resolved_path)
+            if pdftotext_text:
+                return pdftotext_text
+
+            return (
+                f"Error beim Lesen der Datei '{resolved_path}': PDF-Extraktion ergab keinen Text. "
+                "Weder pypdf noch pdftotext konnten Text extrahieren "
+                "(moeglicherweise Scan ohne OCR/Text-Layer)."
+            )
+
+        with open(resolved_path, "r", encoding="utf-8") as file:
+            return file.read()
+    except FileNotFoundError:
+        return f"Error: Datei '{resolved_path}' nicht gefunden."
+    except Exception as e:
+        return f"Error beim Lesen der Datei '{resolved_path}': {e}"
         
 def update_document(data: list | dict, item:str, updatestr: str) -> str:
         """
@@ -5313,6 +5708,7 @@ _TOOL_IMPLEMENTATIONS: dict[str, Callable | None] = {
     "batch_generate_documents": batch_generate_documents_tool,
     "write_document": write_document,
     "read_document": read_document,
+    "pypdf_read_document": pypdf_read_document,
     "update_document": update_document,
     "delete_document": delete_document,
     "list_documents": list_documents,

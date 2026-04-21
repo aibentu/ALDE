@@ -1770,6 +1770,7 @@ class AgentRoutingDispatcher:
         source_agent_label: str | None = None,
     ) -> tuple[str, dict | None]:
         source_agent_label = normalize_agent_label(source_agent_label or "") if source_agent_label else None
+        allow_internal_handoff = bool(args.get("allow_internal_handoff"))
         agent_response = args.get('agent_response')
         handoff_payload = args.get('handoff_payload')
         handoff_protocol = str(args.get('handoff_protocol') or args.get('protocol') or '').strip() or None
@@ -1800,6 +1801,7 @@ class AgentRoutingDispatcher:
         denied_result = AGENT_ROUTING_REQUEST_SERVICE.load_denied_result(
             target=target,
             source_agent_label=source_agent_label,
+            allow_internal_handoff=allow_internal_handoff,
         )
         if denied_result:
             _default_on_result('route_to_agent', denied_result, tool_call_id)
@@ -1867,11 +1869,20 @@ class AgentRoutingRequestService:
         *,
         target: str,
         source_agent_label: str | None,
+        allow_internal_handoff: bool = False,
     ) -> str | None:
+        internal_self_route = bool(
+            allow_internal_handoff
+            and source_agent_label
+            and target
+            and target == source_agent_label
+        )
+
         if source_agent_label and not _agent_can_route(source_agent_label):
-            source_config = _get_runtime_agent_config(source_agent_label)
-            role_name = source_config.get("role") or "worker"
-            return f"Routing denied for {source_agent_label}: role '{role_name}' cannot delegate"
+            if not internal_self_route:
+                source_config = _get_runtime_agent_config(source_agent_label)
+                role_name = source_config.get("role") or "worker"
+                return f"Routing denied for {source_agent_label}: role '{role_name}' cannot delegate"
 
         source_config = _get_runtime_agent_config(source_agent_label)
         source_handoff_policy = dict(source_config.get("handoff_policy") or {})
@@ -2256,13 +2267,26 @@ class ToolExecutionDispatcher:
         *,
         source_agent_label: str | None = None,
     ) -> tuple[str, dict | None]:
-        if source_agent_label and not _is_tool_allowed_for_agent(source_agent_label, object_name):
-            return f"Tool '{object_name}' is not allowed for agent {normalize_agent_label(source_agent_label)}", None
-
         if object_name == 'vectordb_tool':
             return execute_vectordb(args, tool_call_id)
         if object_name == 'route_to_agent':
+            source_label = normalize_agent_label(source_agent_label or "") if source_agent_label else ""
+            route_target = normalize_agent_label(
+                str(
+                    args.get("target_agent")
+                    or ((args.get("agent_response") or {}).get("handoff_to") if isinstance(args.get("agent_response"), dict) else "")
+                    or ((args.get("handoff_payload") or {}).get("handoff_to") if isinstance(args.get("handoff_payload"), dict) else "")
+                    or ""
+                )
+            )
+            allow_internal_handoff = bool(args.get("allow_internal_handoff"))
+            internal_self_route = bool(allow_internal_handoff and source_label and route_target == source_label)
+            if source_agent_label and not _is_tool_allowed_for_agent(source_agent_label, object_name) and not internal_self_route:
+                return f"Tool '{object_name}' is not allowed for agent {normalize_agent_label(source_agent_label)}", None
             return execute_route_to_agent(args, tool_call_id, source_agent_label=source_agent_label)
+
+        if source_agent_label and not _is_tool_allowed_for_agent(source_agent_label, object_name):
+            return f"Tool '{object_name}' is not allowed for agent {normalize_agent_label(source_agent_label)}", None
 
         spec = get_tool_spec(object_name)
         if spec:
@@ -2383,6 +2407,7 @@ class RoutingResultPayloadService:
                 {
                     "target_agent": target_agent,
                     "handoff_protocol": str(item.get("handoff_protocol") or item.get("protocol") or "").strip() or None,
+                    "allow_internal_handoff": True,
                     "message_text": item.get("message_text"),
                     "handoff_payload": deepcopy(item.get("handoff_payload") or {}) if isinstance(item.get("handoff_payload"), dict) else item.get("handoff_payload"),
                     "handoff_metadata": deepcopy(item.get("handoff_metadata") or {}) if isinstance(item.get("handoff_metadata"), dict) else {},

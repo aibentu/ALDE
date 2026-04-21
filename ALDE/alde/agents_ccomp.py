@@ -1360,16 +1360,17 @@ class ChatCom(ChatCompletion,ChatHistory):
             else:
                 raise
 
-        _agent_cfg = get_agent_config("_xplaner_xrouter") or agents_registry.AGENTS_REGISTRY.get("_xplaner_xrouter") or {
+        _requested_agent_label = "_xplaner_xrouter"
+        _agent_cfg = get_agent_config(_requested_agent_label) or agents_registry.AGENTS_REGISTRY.get(_requested_agent_label) or agents_registry.AGENTS_REGISTRY.get("_xrouter_xplanner") or {
             "model": "gpt-4.1-mini-2025-04-14",
-            "system": "You are xplaner_xrouter.",
+            "system": "You are xrouter_xplanner.",
             "tools": ["route_to_agent"],
         }
-        self._agent_label = "_xplaner_xrouter"
+        self._agent_label = str(_agent_cfg.get("agent_label") or _requested_agent_label).strip() or _requested_agent_label
         self._agent_runtime = {
             "agent_label": _agent_cfg.get("agent_label") or self._agent_label,
-            "canonical_name": _agent_cfg.get("canonical_name") or "xplaner_xrouter",
-            "role": _agent_cfg.get("role") or "xplaner_xrouter",
+            "canonical_name": _agent_cfg.get("canonical_name") or "xrouter_xplanner",
+            "role": _agent_cfg.get("role") or "xrouter_xplanner",
             "skill_profile": _agent_cfg.get("skill_profile") or "",
             "instance_policy": _agent_cfg.get("instance_policy") or "ephemeral",
             "routing_policy": dict(_agent_cfg.get("routing_policy") or {}),

@@ -4,30 +4,47 @@ from copy import deepcopy
 import json
 from pprint import pformat
 from alde.agents_runtime import (
-    ACTION_REQUEST_NAME_ALIASES,
-    ACTION_REQUEST_SCHEMA_CONFIGS,
-    AGENT_MANIFEST_OVERRIDES,
-    AGENT_ROLE_CONFIGS,
-    AGENT_RUNTIME_CONFIG,
-    AGENT_SKILL_PROFILES,
+    ACTIONS,
+    ACTION_NAMES,
+    AGENT_MANIFEST,
+    AGENT_ROLE,
+    AGENT_RUNTIME,
+    AGENT_SKILLS,
     ALLOWED_INSTANCE_POLICIES,
-    BATCH_WORKFLOW_CONFIGS,
-    FORCED_ROUTE_CONFIGS,
-    HANDOFF_PROTOCOL_CONFIGS,
-    HANDOFF_SCHEMA_CONFIGS,
+    FORCED_ROUTES,
+    HANDOFF_PROTOCOL,
+    HANDOFF_SCHEMA,
     JOB_CONFIGS,
-    JOB_PROMPT_CONFIGS,
-    PROMPT_FRAGMENT_CONFIGS,
+    JOB_PROMPTS,
+    PROMPT_FRAGMENTS,
     SYSTEM_PROMPT,
     TOOL_CONFIGS,
-    TOOL_GROUP_CONFIGS,
-    TOOL_NAME_ALIASES,
-    WORKFLOW_CONFIGS,
+    TOOL_GROUPS,
+    TOOL_NAMES,
+    WORKFLOWS,
     _CANONICAL_AGENT_LABEL_MAP,
     _LEGACY_AGENT_NAME_MAP,
     _SPECIALIZED_JOB_PROMPT_MAP,
 )
 from typing import Any
+
+
+# Compatibility aliases: keep canonical *_CONFIGS names available while
+# agents_runtime currently exports legacy constant names.
+ACTION_REQUEST_SCHEMA_CONFIGS = ACTIONS
+ACTION_REQUEST_NAME_ALIASES = ACTION_NAMES
+AGENT_MANIFEST_OVERRIDES = AGENT_MANIFEST
+AGENT_ROLE_CONFIGS = AGENT_ROLE
+AGENT_SKILL_PROFILES = AGENT_SKILLS
+FORCED_ROUTE_CONFIGS = FORCED_ROUTES
+HANDOFF_PROTOCOL_CONFIGS = HANDOFF_PROTOCOL
+HANDOFF_SCHEMA_CONFIGS = HANDOFF_SCHEMA
+JOB_PROMPT_CONFIGS = JOB_PROMPTS
+PROMPT_FRAGMENT_CONFIGS = PROMPT_FRAGMENTS
+TOOL_GROUP_CONFIGS = TOOL_GROUPS
+TOOL_NAME_ALIASES = TOOL_NAMES
+WORKFLOW_CONFIGS = WORKFLOWS
+BATCH_WORKFLOW_CONFIGS: dict[str, dict[str, Any]] = {}
 
 
 PromptConfig = dict[str, Any]
@@ -117,18 +134,18 @@ def _normalize_config_object_token(value: str, *, fallback: str = "object") -> s
 
 
 def _workflow_definition_for_agent(agent_label: str) -> str:
-    runtime_config = AGENT_RUNTIME_CONFIG.get(agent_label) or {}
+    runtime_config = AGENT_RUNTIME.get(agent_label) or {}
     workflow = runtime_config.get("workflow") or {}
     workflow_name = str(runtime_config.get("workflow_name") or workflow.get("definition") or "")
     return workflow_name
 
 
 def _build_agent_manifest(agent_label: str) -> dict[str, Any]:
-    runtime_config = AGENT_RUNTIME_CONFIG.get(agent_label) or {}
-    override = AGENT_MANIFEST_OVERRIDES.get(agent_label) or {}
+    runtime_config = AGENT_RUNTIME.get(agent_label) or {}
+    override = AGENT_MANIFEST.get(agent_label) or {}
     canonical_name = str(runtime_config.get("canonical_name") or normalize_agent_name(agent_label))
     skill_profile_name = str(override.get("skill_profile") or "")
-    skill_profile = AGENT_SKILL_PROFILES.get(skill_profile_name) or {}
+    skill_profile = AGENT_SKILLS.get(skill_profile_name) or {}
     skill_profile_loading = dict(override.get("skill_profile_loading") or {})
     skill_profile_loading.setdefault("mode", "job_name")
     skill_profile_loading.setdefault("fallback_selection_mode", "")
@@ -139,12 +156,12 @@ def _build_agent_manifest(agent_label: str) -> dict[str, Any]:
         if str(job_name).strip() and str(profile_name).strip()
     }
     tool_skill_profiles = {
-        str(TOOL_NAME_ALIASES.get(str(tool_name).strip(), str(tool_name).strip()) or "").strip(): str(profile_name).strip()
+        str(TOOL_NAMES.get(str(tool_name).strip(), str(tool_name).strip()) or "").strip(): str(profile_name).strip()
         for tool_name, profile_name in dict(override.get("tool_skill_profiles") or {}).items()
         if str(tool_name).strip() and str(profile_name).strip()
     }
     role_name = str(override.get("role") or skill_profile.get("role") or "xworker")
-    role_config = AGENT_ROLE_CONFIGS.get(role_name) or AGENT_ROLE_CONFIGS["xworker"]
+    role_config = AGENT_ROLE.get(role_name) or AGENT_ROLE["xworker"]
     workflow_name = _workflow_definition_for_agent(agent_label)
     tools = list(runtime_config.get("tools") or [])
 
@@ -209,7 +226,7 @@ def _build_agent_manifest(agent_label: str) -> dict[str, Any]:
         "tools": tools,
         "tool_groups": [tool_name for tool_name in tools if isinstance(tool_name, str) and tool_name.startswith("@")],
         "direct_tools": [
-            TOOL_NAME_ALIASES.get(tool_name, tool_name)
+            TOOL_NAMES.get(tool_name, tool_name)
             for tool_name in tools
             if isinstance(tool_name, str) and not tool_name.startswith("@")
         ],
@@ -310,7 +327,7 @@ class AgentConfigService:
         return _LEGACY_AGENT_NAME_MAP.get(object_name, object_name)
 
     def normalize_object_label(self, object_name: str) -> str:
-        if object_name in AGENT_RUNTIME_CONFIG:
+        if object_name in AGENT_RUNTIME:
             return object_name
 
         canonical_name = self.normalize_object_name(object_name)
@@ -367,7 +384,7 @@ class AgentConfigService:
 
     def create_runtime_object(self, object_name: str, config_updates: dict[str, Any] | None = None) -> dict[str, Any]:
         object_label = self.normalize_object_label(object_name)
-        runtime_config = deepcopy(AGENT_RUNTIME_CONFIG.get(object_label) or self.build_missing_runtime_object(object_name))
+        runtime_config = deepcopy(AGENT_RUNTIME.get(object_label) or self.build_missing_runtime_object(object_name))
         return set_config_values(runtime_config, config_updates)
 
     def build_missing_manifest_override_object(self) -> dict[str, Any]:
@@ -381,7 +398,7 @@ class AgentConfigService:
 
     def create_manifest_override_object(self, object_name: str, config_updates: dict[str, Any] | None = None) -> dict[str, Any]:
         object_label = self.normalize_object_label(object_name)
-        manifest_override = deepcopy(AGENT_MANIFEST_OVERRIDES.get(object_label) or self.build_missing_manifest_override_object())
+        manifest_override = deepcopy(AGENT_MANIFEST.get(object_label) or self.build_missing_manifest_override_object())
         return set_config_values(manifest_override, config_updates)
 
     def create_object_config(self, object_name: str, config_updates: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -413,7 +430,7 @@ def get_system_prompt(agent_name: str) -> str:
 
 
 def get_job_prompt_config(job_name: str) -> dict[str, Any]:
-    return deepcopy(JOB_PROMPT_CONFIGS.get(str(job_name or ""), {}))
+    return deepcopy(JOB_PROMPTS.get(str(job_name or ""), {}))
 
 
 def get_job_prompt(job_name: str) -> str:
@@ -431,7 +448,7 @@ def get_job_config(job_name: str) -> dict[str, Any]:
 def _materialize_agent_manifests() -> dict[str, dict[str, Any]]:
     return {
         agent_label: _build_agent_manifest(agent_label)
-        for agent_label in AGENT_RUNTIME_CONFIG
+        for agent_label in AGENT_RUNTIME
     }
 
 
@@ -476,7 +493,7 @@ def get_available_job_names() -> list[str]:
 
 def get_default_job_name(agent_name: str) -> str:
     agent_label = normalize_agent_label(agent_name)
-    defaults = dict((AGENT_RUNTIME_CONFIG.get(agent_label) or {}).get("defaults") or {})
+    defaults = dict((AGENT_RUNTIME.get(agent_label) or {}).get("defaults") or {})
     return str(defaults.get("default_job_name") or "").strip()
 
 
@@ -652,12 +669,12 @@ def resolve_forced_route(agent_name: str, input_text: Any, available_agents: set
 class ActionRequestSchemaService:
     def normalize_object_name(self, object_name: str) -> str:
         normalized_action = str(object_name or "").strip().lower()
-        return ACTION_REQUEST_NAME_ALIASES.get(normalized_action, normalized_action)
+        return ACTION_NAMES.get(normalized_action, normalized_action)
 
     def load_candidate_object_configs(self, object_name: str) -> list[tuple[str, dict[str, Any]]]:
         normalized_action = self.normalize_object_name(object_name)
         candidates: list[tuple[str, dict[str, Any]]] = []
-        for schema_name, config in ACTION_REQUEST_SCHEMA_CONFIGS.items():
+        for schema_name, config in ACTIONS.items():
             actions = {self.normalize_object_name(str(value or "")) for value in (config.get("actions") or [])}
             if normalized_action in actions:
                 candidates.append((schema_name, config))
@@ -698,7 +715,7 @@ class ActionRequestSchemaService:
         return score
 
     def list_object_configs(self) -> dict[str, dict[str, Any]]:
-        return deepcopy(ACTION_REQUEST_SCHEMA_CONFIGS)
+        return deepcopy(ACTIONS)
 
     def load_object_config(self, object_name: str, payload: Any | None = None) -> dict[str, Any]:
         candidates = self.load_candidate_object_configs(object_name)
@@ -837,7 +854,7 @@ class ToolConfigObject:
 
 class ToolConfigService:
     def normalize_object_name(self, object_name: str) -> str:
-        return TOOL_NAME_ALIASES.get(object_name, object_name)
+        return TOOL_NAMES.get(object_name, object_name)
 
     def load_object_projection(self, object_name: str) -> ToolConfigObject:
         return ToolConfigObject(object_name, self)
@@ -855,10 +872,10 @@ class ToolConfigService:
         return self.load_object_projection(object_name).create_config_dict(config_updates)
 
     def list_object_group_configs(self) -> dict[str, list[str]]:
-        return deepcopy(TOOL_GROUP_CONFIGS)
+        return deepcopy(TOOL_GROUPS)
 
     def load_object_group_config(self, object_name: str) -> list[str]:
-        return list(TOOL_GROUP_CONFIGS.get(object_name, []))
+        return list(TOOL_GROUPS.get(object_name, []))
 
 
 TOOL_CONFIG_SERVICE = ToolConfigService()
@@ -936,7 +953,7 @@ class AgentWorkflowConfigObject:
         if workflow_name:
             return workflow_name
 
-        agent_runtime = AGENT_RUNTIME_CONFIG.get(agent_label) or {}
+        agent_runtime = AGENT_RUNTIME.get(agent_label) or {}
         workflow_name = str(agent_runtime.get("workflow_name") or "")
         if workflow_name:
             return workflow_name
@@ -951,7 +968,8 @@ class AgentWorkflowConfigObject:
 
 class WorkflowConfigService:
     def load_object_projection(self, object_name: str) -> WorkflowConfigObject:
-        return WorkflowConfigObject(object_name, WORKFLOW_CONFIGS.get(object_name, {}))
+        workflow_name = str(object_name or "").strip()
+        return WorkflowConfigObject(workflow_name, WORKFLOW_CONFIGS.get(workflow_name))
 
     def list_object_configs(self) -> dict[str, dict[str, Any]]:
         return deepcopy(WORKFLOW_CONFIGS)
@@ -963,7 +981,8 @@ class WorkflowConfigService:
         return self.load_object_projection(object_name).create_config_dict(config_updates)
 
     def load_batch_object_projection(self, object_name: str) -> WorkflowConfigObject:
-        return WorkflowConfigObject(object_name, BATCH_WORKFLOW_CONFIGS.get(object_name, {}))
+        workflow_name = str(object_name or "").strip()
+        return WorkflowConfigObject(workflow_name, BATCH_WORKFLOW_CONFIGS.get(workflow_name))
 
     def list_batch_object_configs(self) -> dict[str, dict[str, Any]]:
         return deepcopy(BATCH_WORKFLOW_CONFIGS)
@@ -1027,17 +1046,17 @@ def create_batch_workflow_config(workflow_name: str, config_updates: dict[str, A
 
 class HandoffConfigService:
     def list_protocol_objects(self) -> dict[str, dict[str, Any]]:
-        return deepcopy(HANDOFF_PROTOCOL_CONFIGS)
+        return deepcopy(HANDOFF_PROTOCOL)
 
     def load_protocol_object(self, object_name: str) -> dict[str, Any]:
-        return deepcopy(HANDOFF_PROTOCOL_CONFIGS.get(str(object_name or ""), {}))
+        return deepcopy(HANDOFF_PROTOCOL.get(str(object_name or ""), {}))
 
     def list_schema_objects(self) -> dict[str, dict[str, Any]]:
-        return deepcopy(HANDOFF_SCHEMA_CONFIGS)
+        return deepcopy(HANDOFF_SCHEMA)
 
     def load_schema_object(self, object_name: str) -> dict[str, Any]:
         schema_name = str(object_name or "").strip()
-        schema_config = deepcopy(HANDOFF_SCHEMA_CONFIGS.get(schema_name, {}))
+        schema_config = deepcopy(HANDOFF_SCHEMA.get(schema_name, {}))
         if not schema_config:
             return {}
         return self.resolve_schema_object(
@@ -1087,7 +1106,7 @@ class HandoffConfigService:
         schema_config: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         schema_name = str(object_name or "").strip()
-        base_schema = deepcopy(schema_config if schema_config is not None else HANDOFF_SCHEMA_CONFIGS.get(schema_name, {}))
+        base_schema = deepcopy(schema_config if schema_config is not None else HANDOFF_SCHEMA.get(schema_name, {}))
         if not base_schema:
             return {}
 
@@ -1308,7 +1327,7 @@ class HandoffRouteService:
                 else "message_text"
             )
         ).strip()
-        if selected_protocol not in HANDOFF_PROTOCOL_CONFIGS:
+        if selected_protocol not in HANDOFF_PROTOCOL:
             raise ValueError(f"Unknown handoff protocol: {selected_protocol}")
 
         metadata = deepcopy(handoff_metadata or {})
@@ -1607,7 +1626,7 @@ class WorkflowValidationObject:
         workflow_config: dict[str, Any] | None = None,
     ) -> None:
         self.workflow_name = workflow_name
-        self.config = deepcopy(workflow_config if workflow_config is not None else WORKFLOW_CONFIGS.get(workflow_name, {}))
+        self.config = deepcopy(workflow_config if workflow_config is not None else WORKFLOWS.get(workflow_name, {}))
         self.errors: list[str] = []
         self.warnings: list[str] = []
         self.states = self.config.get("states") or {}
@@ -1625,7 +1644,7 @@ class WorkflowValidationObject:
         }
 
     def load_known_agent_names(self) -> set[str]:
-        return set(AGENT_RUNTIME_CONFIG.keys())
+        return set(AGENT_RUNTIME.keys())
 
     def load_known_tool_names(self) -> set[str]:
         return {normalize_tool_name(name) for name in get_available_tool_names()} | {"route_to_agent", "vectordb_tool"}
@@ -1782,8 +1801,7 @@ class BatchWorkflowValidationObject:
         workflow_config: dict[str, Any] | None = None,
     ) -> None:
         self.workflow_name = workflow_name
-        self.config = deepcopy(workflow_config if workflow_config is not None else BATCH_WORKFLOW_CONFIGS.get(workflow_name, {}))
-        self.errors: list[str] = []
+        self.config = deepcopy(workflow_config if workflow_config is not None else None)
         self.warnings: list[str] = []
 
     def load_missing_report(self) -> dict[str, Any]:
@@ -1920,27 +1938,20 @@ class WorkflowValidationService:
         return self.load_batch_object_validation(workflow_name, workflow_config).build_report()
 
     def validate_all_objects(self) -> dict[str, Any]:
-        workflow_reports = [self.validate_object_workflow(name, config) for name, config in WORKFLOW_CONFIGS.items()]
+        workflow_reports = [self.validate_object_workflow(name, config) for name, config in WORKFLOWS.items()]
         invalid_reports = [report for report in workflow_reports if not report.get("valid")]
-        batch_workflow_reports = [self.validate_batch_object_workflow(name, config) for name, config in BATCH_WORKFLOW_CONFIGS.items()]
-        invalid_batch_reports = [report for report in batch_workflow_reports if not report.get("valid")]
-        map_errors: list[str] = []
+        map_errors: list[str] = []  
         for agent_label, workflow_name in AGENT_WORKFLOW_MAP.items():
             if agent_label not in AGENT_MANIFESTS:
                 map_errors.append(f"agent '{agent_label}' in AGENT_WORKFLOW_MAP is not defined in AGENT_MANIFESTS")
-            if workflow_name not in WORKFLOW_CONFIGS:
+            if workflow_name not in WORKFLOWS:
                 map_errors.append(f"agent '{agent_label}' references unknown workflow '{workflow_name}'")
         return {
-            "valid": not invalid_reports and not invalid_batch_reports and not map_errors,
             "workflow_count": len(workflow_reports),
             "valid_count": len([report for report in workflow_reports if report.get("valid")]),
             "invalid_count": len(invalid_reports),
-            "batch_workflow_count": len(batch_workflow_reports),
-            "valid_batch_workflow_count": len([report for report in batch_workflow_reports if report.get("valid")]),
-            "invalid_batch_workflow_count": len(invalid_batch_reports),
             "mapping_errors": map_errors,
             "workflows": workflow_reports,
-            "batch_workflows": batch_workflow_reports,
         }
 
 
@@ -2856,7 +2867,7 @@ def validate_agent_manifest(agent_name: str, manifest: dict[str, Any] | None = N
     if allowed_targets and not isinstance(allowed_targets, list):
         errors.append("handoff_policy.allowed_targets must be a list")
     elif isinstance(allowed_targets, list):
-        known_agents = set(AGENT_RUNTIME_CONFIG.keys())
+        known_agents = set(AGENT_RUNTIME.keys())
         for target in allowed_targets:
             normalized_target = normalize_agent_label(str(target or ""))
             if normalized_target and normalized_target not in known_agents:
@@ -2865,7 +2876,7 @@ def validate_agent_manifest(agent_name: str, manifest: dict[str, Any] | None = N
     if allowed_sources and not isinstance(allowed_sources, list):
         errors.append("handoff_policy.allowed_sources must be a list")
     elif isinstance(allowed_sources, list):
-        known_agents = set(AGENT_RUNTIME_CONFIG.keys())
+        known_agents = set(AGENT_RUNTIME.keys())
         for source in allowed_sources:
             normalized_source = normalize_agent_label(str(source or ""))
             if normalized_source and normalized_source not in known_agents:
@@ -2877,7 +2888,7 @@ def validate_agent_manifest(agent_name: str, manifest: dict[str, Any] | None = N
             continue
         for peer_agent, policy_config in (policy_map.items() if isinstance(policy_map, dict) else []):
             normalized_peer = normalize_agent_label(str(peer_agent or ""))
-            if normalized_peer not in AGENT_RUNTIME_CONFIG:
+            if normalized_peer not in AGENT_RUNTIME:
                 errors.append(f"handoff_policy.{key} references unknown agent '{peer_agent}'")
             if not isinstance(policy_config, dict):
                 errors.append(f"handoff_policy.{key}.{peer_agent} must be an object")
@@ -2963,8 +2974,8 @@ def validate_job_config(job_name: str, job_config: dict[str, Any] | None = None)
     runtime_agent = normalize_agent_label(config.get("runtime_agent") or "")
     if not runtime_agent:
         errors.append("runtime_agent is required")
-    elif runtime_agent not in AGENT_RUNTIME_CONFIG:
-        errors.append(f"runtime_agent '{runtime_agent}' is not defined in AGENT_RUNTIME_CONFIG")
+    elif runtime_agent not in AGENT_RUNTIME:
+        errors.append(f"runtime_agent '{runtime_agent}' is not defined in AGENT_RUNTIME")
 
     skill_profile_name = str(config.get("skill_profile") or "").strip()
     if not skill_profile_name:
@@ -2983,8 +2994,8 @@ def validate_job_config(job_name: str, job_config: dict[str, Any] | None = None)
     if not default_object_name:
         errors.append("default_object_name is required")
 
-    if runtime_agent in AGENT_RUNTIME_CONFIG:
-        runtime_config = AGENT_RUNTIME_CONFIG.get(runtime_agent) or {}
+    if runtime_agent in AGENT_RUNTIME:
+        runtime_config = AGENT_RUNTIME.get(runtime_agent) or {}
         runtime_skill_profiles = runtime_config.get("job_skill_profiles") or {}
         runtime_skill_profile_name = str(runtime_skill_profiles.get(normalized_job_name) or "").strip()
         if runtime_skill_profile_name and skill_profile_name and runtime_skill_profile_name != skill_profile_name:
@@ -3024,8 +3035,8 @@ def validate_job_config(job_name: str, job_config: dict[str, Any] | None = None)
                 )
 
             protocol_name = str(handoff_contract.get("protocol") or "").strip()
-            if protocol_name and protocol_name not in HANDOFF_PROTOCOL_CONFIGS:
-                errors.append(f"handoff contract protocol '{protocol_name}' is not defined in HANDOFF_PROTOCOL_CONFIGS")
+            if protocol_name and protocol_name not in HANDOFF_PROTOCOL:
+                errors.append(f"handoff contract protocol '{protocol_name}' is not defined in HANDOFF_PROTOCOL")
 
             variant_config = handoff_contract.get("schema") if isinstance(handoff_contract.get("schema"), dict) else {}
             variant_job_name = str(variant_config.get("job_name") or "").strip()

@@ -6,8 +6,10 @@ from typing import Any
 import importlib
 import json
 import os
+import socket
 import sys
 import uuid
+from urllib.parse import urlparse
 
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[1]
@@ -1349,6 +1351,88 @@ class OperatorStatusService:
             "dispatcher_error": dispatcher_error,
         }
 
+    def load_agentsdb_status(self) -> dict[str, Any]:
+        try:
+            load_runtime_config = _load_symbol("agents_db", "load_agentsdb_runtime_config_from_env")
+            socket_repository_class = _load_symbol("agents_db", "AgentDbSocketRepository")
+        except Exception as exc:
+            return {
+                "agentsdb_uri": "",
+                "agentsdb_database_name": "",
+                "agentsdb_endpoint": "",
+                "agentsdb_healthy": False,
+                "agentsdb_error": f"{type(exc).__name__}: {exc}",
+                "agentsdb_detail": "agents_db module unavailable",
+            }
+
+        runtime_config = load_runtime_config()
+        if runtime_config is None:
+            return {
+                "agentsdb_uri": "",
+                "agentsdb_database_name": "",
+                "agentsdb_endpoint": "",
+                "agentsdb_healthy": None,
+                "agentsdb_error": "",
+                "agentsdb_detail": "not configured",
+            }
+
+        agentsdb_uri = _safe_str(getattr(runtime_config, "agents_db_uri", ""))
+        database_name = _safe_str(getattr(runtime_config, "database_name", "alde_knowledge")) or "alde_knowledge"
+        if not agentsdb_uri:
+            return {
+                "agentsdb_uri": "",
+                "agentsdb_database_name": database_name,
+                "agentsdb_endpoint": "",
+                "agentsdb_healthy": None,
+                "agentsdb_error": "",
+                "agentsdb_detail": "not configured",
+            }
+
+        normalized_uri = agentsdb_uri.lower()
+        if not normalized_uri.startswith("agentsdb://"):
+            backend_name = normalized_uri.split("://", 1)[0] if "://" in normalized_uri else "backend"
+            return {
+                "agentsdb_uri": agentsdb_uri,
+                "agentsdb_database_name": database_name,
+                "agentsdb_endpoint": "",
+                "agentsdb_healthy": None,
+                "agentsdb_error": "",
+                "agentsdb_detail": f"{backend_name} backend configured",
+            }
+
+        parsed_uri = urlparse(agentsdb_uri)
+        host = _safe_str(parsed_uri.hostname) or "127.0.0.1"
+        port = int(parsed_uri.port or 2331)
+        endpoint = f"{host}:{port}"
+
+        try:
+            repository = socket_repository_class.create_from_uri(
+                agentsdb_uri,
+                database_name,
+                timeout_seconds=2.0,
+            )
+            health_payload = repository._request_object("health")
+            healthy = bool(health_payload.get("ok"))
+            response_backend = _safe_str(health_payload.get("storage_backend") or health_payload.get("backend") or "socket")
+            resolved_database_name = _safe_str(health_payload.get("database_name") or database_name) or database_name
+            return {
+                "agentsdb_uri": agentsdb_uri,
+                "agentsdb_database_name": resolved_database_name,
+                "agentsdb_endpoint": endpoint,
+                "agentsdb_healthy": healthy,
+                "agentsdb_error": "" if healthy else _safe_str(health_payload.get("error") or "health response not ok"),
+                "agentsdb_detail": f"{response_backend} @ {endpoint}",
+            }
+        except (socket.timeout, OSError, Exception) as exc:
+            return {
+                "agentsdb_uri": agentsdb_uri,
+                "agentsdb_database_name": database_name,
+                "agentsdb_endpoint": endpoint,
+                "agentsdb_healthy": False,
+                "agentsdb_error": f"{type(exc).__name__}: {exc}",
+                "agentsdb_detail": f"socket @ {endpoint}",
+            }
+
     def load_mcp_config_path(self) -> Path:
         return Path(__file__).with_name("mcp_servers.json")
 
@@ -1411,6 +1495,8 @@ class OperatorStatusService:
         combined_text = " ".join(
             [title, summary, source, _safe_str((metadata or {}).get("raw"))]
         ).lower()
+        if "agentsdb" in combined_text:
+            return "agentsdb"
         if any(token in combined_text for token in ("queue", "rq", "redis")):
             return "queue"
         if "dispatcher" in combined_text:
@@ -1505,6 +1591,7 @@ class OperatorStatusService:
         recent_action_entries: list[Any] | None = None,
     ) -> dict[str, Any]:
         queue_backend, queue_healthy = self._queue_health_service.load_queue_health()
+        agentsdb_status = self.load_agentsdb_status()
         validation_report = self._validation_service.load_report()
         dispatcher_status = self.load_dispatcher_status()
         mcp_config_path = self.load_mcp_config_path()
@@ -1525,6 +1612,16 @@ class OperatorStatusService:
         ]
         dispatcher_error = str(dispatcher_status.get("dispatcher_error") or "").strip()
         dispatcher_note = dispatcher_error or "Dispatcher projection ready"
+        agentsdb_healthy = agentsdb_status.get("agentsdb_healthy")
+        if agentsdb_healthy is None:
+            agentsdb_state = "not-run"
+        elif bool(agentsdb_healthy):
+            agentsdb_state = "pass"
+        else:
+            agentsdb_state = "fail"
+        agentsdb_error = _safe_str(agentsdb_status.get("agentsdb_error"))
+        agentsdb_note = agentsdb_error or "AgentsDB endpoint reachable"
+        agentsdb_detail = _safe_str(agentsdb_status.get("agentsdb_detail")) or _safe_str(agentsdb_status.get("agentsdb_uri")) or "not configured"
         mcp_stdout = _safe_str(normalized_probe.get("stdout"))
         mcp_stderr = _safe_str(normalized_probe.get("stderr"))
         mcp_probe_message = (mcp_stderr or mcp_stdout or "No MCP probe output available.")[:220]
@@ -1544,6 +1641,12 @@ class OperatorStatusService:
                 title="Queue",
                 state="pass" if queue_healthy else "fail",
                 detail=f"backend={queue_backend or 'n/a'}",
+            ),
+            self._build_service_row(
+                title="AgentsDB",
+                state=agentsdb_state,
+                detail=agentsdb_detail,
+                note=agentsdb_note,
             ),
             self._build_service_row(
                 title="Dispatcher",
@@ -1568,6 +1671,8 @@ class OperatorStatusService:
         alerts: list[str] = []
         if not queue_healthy:
             alerts.append("Queue backend is unreachable.")
+        if agentsdb_healthy is False:
+            alerts.append(agentsdb_error or "AgentsDB endpoint is unreachable.")
         if not bool(dispatcher_status.get("dispatcher_healthy")):
             alerts.append(dispatcher_note)
         if not mcp_config_path.is_file():
@@ -1586,6 +1691,8 @@ class OperatorStatusService:
             "healthy_service_count": healthy_service_count,
             "attention_count": len(alerts),
             "validation_issue_count": len(validation_errors),
+            "agentsdb_pass": 1 if agentsdb_healthy is True else 0,
+            "agentsdb_monitored": 1 if agentsdb_healthy is not None else 0,
             "recent_fail_count": int(recent_action_summary["status_counts"].get("fail") or 0),
             "recent_pass_count": int(recent_action_summary["status_counts"].get("pass") or 0),
         }
@@ -1594,6 +1701,7 @@ class OperatorStatusService:
             snapshot_kind="operator",
             healthy=bool(
                 queue_healthy
+                and agentsdb_healthy is not False
                 and dispatcher_status.get("dispatcher_healthy")
                 and validation_report.get("valid")
                 and normalized_probe.get("ok") is not False
@@ -1604,6 +1712,12 @@ class OperatorStatusService:
             detail_rows=service_rows,
             queue_backend=queue_backend,
             queue_healthy=bool(queue_healthy),
+            agentsdb_uri=agentsdb_status.get("agentsdb_uri"),
+            agentsdb_database_name=agentsdb_status.get("agentsdb_database_name"),
+            agentsdb_endpoint=agentsdb_status.get("agentsdb_endpoint"),
+            agentsdb_healthy=agentsdb_healthy,
+            agentsdb_error=agentsdb_error,
+            agentsdb_detail=agentsdb_detail,
             dispatcher_db_path=dispatcher_status.get("dispatcher_db_path"),
             dispatcher_healthy=dispatcher_status.get("dispatcher_healthy"),
             dispatcher_error=dispatcher_status.get("dispatcher_error"),

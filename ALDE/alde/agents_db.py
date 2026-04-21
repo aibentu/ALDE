@@ -366,7 +366,7 @@ def _build_namespace_object_from_runtime_config(
 
 
 def _demo_dataset_timestamp() -> datetime:
-    return datetime(2026, 3, 30, tzinfo=UTC)
+    return datetime.now( tzinfo=UTC)
 
 
 def _demo_embedding_vector(seed: str, dimension: int = 8) -> list[float]:
@@ -1490,6 +1490,39 @@ class AgentDbSocketServerService:
         raise ValueError(f"unknown cmd: {normalized_cmd or '<empty>'}")
 
 
+def _parse_agentsdb_socket_request_line(raw_line: bytes) -> tuple[str, str | None, dict[str, Any]]:
+    decoded_line = raw_line.decode("utf-8", errors="replace")
+    normalized_line = decoded_line.strip()
+    if not normalized_line:
+        return "health", None, {}
+
+    normalized_command = normalized_line.lower()
+    if normalized_command in {"health", "ping", "status"}:
+        return "health", None, {}
+    if normalized_command.startswith("cmd="):
+        legacy_cmd = normalized_command.partition("=")[2].strip()
+        if legacy_cmd in {"ping", "status"}:
+            legacy_cmd = "health"
+        return legacy_cmd, None, {}
+    if normalized_command.startswith(("get ", "head ", "options ")):
+        return "health", None, {}
+
+    try:
+        request_payload = json.loads(normalized_line)
+    except Exception as exc:
+        raise ValueError("request payload must be a JSON object") from exc
+
+    if not isinstance(request_payload, Mapping):
+        raise ValueError("request payload must be a JSON object")
+
+    cmd = str(request_payload.get("cmd") or "").strip()
+    database_name = str(request_payload.get("database_name") or "").strip() or None
+    payload = request_payload.get("payload")
+    if payload is not None and not isinstance(payload, Mapping):
+        raise ValueError("payload must be a JSON object")
+    return cmd, database_name, dict(payload or {})
+
+
 class _AgentDbSocketRequestHandler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
         service: AgentDbSocketServerService = self.server.service
@@ -1498,15 +1531,8 @@ class _AgentDbSocketRequestHandler(socketserver.StreamRequestHandler):
             return
         response_payload: dict[str, Any]
         try:
-            request_payload = json.loads(raw_line.decode("utf-8", errors="replace"))
-            if not isinstance(request_payload, Mapping):
-                raise ValueError("request payload must be a JSON object")
-            cmd = str(request_payload.get("cmd") or "").strip()
-            database_name = str(request_payload.get("database_name") or "").strip() or None
-            payload = request_payload.get("payload")
-            if payload is not None and not isinstance(payload, Mapping):
-                raise ValueError("payload must be a JSON object")
-            response_payload = service.dispatch_object(cmd=cmd, payload=dict(payload or {}), database_name=database_name)
+            cmd, database_name, payload = _parse_agentsdb_socket_request_line(raw_line)
+            response_payload = service.dispatch_object(cmd=cmd, payload=payload, database_name=database_name)
         except Exception as exc:
             response_payload = {
                 "ok": False,
@@ -1608,7 +1634,7 @@ class KnowledgeObjectService:
             max_depth=max_depth,
         )
 
-    def build_vector_candidate_pipeline(
+    def build_vector_candidate_pipeline( 
         self,
         *,
         query_vector: Sequence[float],

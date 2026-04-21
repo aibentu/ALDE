@@ -536,7 +536,7 @@ QDockWidget {{
     }}
 
 QDockWidget::separator {{ 
-    background: transparent; width: {px1} 
+    background: #1f1f1f; width: {px1} 
     }}
 
 QDockWidget::separator:hover {{ 
@@ -594,8 +594,8 @@ QListView::item:selected {{
 
 _SEP_QSS = """
 /*  MainWindow-Splitter: unsichtbar, aber weiter greifbar  */
-QMainWindow::separator              {{ background: transparent;   width: 3px; }}
-QMainWindow::separator:horizontal   {{ background: transparent;   height: 6px;}}
+QMainWindow::separator              {{ background: #1f1f1f;      width: 3px; }}
+QMainWindow::separator:horizontal   {{ background: #1f1f1f;      height: 6px;}}
 QMainWindow::separator:hover        {{ background: {col1}; }}
 """
 
@@ -2014,13 +2014,12 @@ class ChatDock(QDockWidget):
         self.setStyleSheet(f"""
             /* feste 1-px-Linie links */
             QDockWidget#ChatDock {{
-              
-                border : 1px solid grey;
+                border : 1px solid #1f1f1f;
             }}
 
             /* Split-Handle: unsichtbar aber greifbar */
             QDockWidget::separator {{
-                background : grey;
+                background : #1f1f1f;
                 width      : 6px;
             }}
             QDockWidget::separator:hover {{
@@ -4355,7 +4354,7 @@ class ControlPlaneWidget(QWidget):
         self.btn_refresh = ToolButton(
             "reload_.svg",
             "Control Plane aktualisieren",
-            slot=self.refresh_view,
+            slot=self._refresh_from_panel,
             parent=hero,
         )
         header_row.addWidget(self.btn_refresh, 0, Qt.AlignTop)
@@ -4594,6 +4593,7 @@ class ControlPlaneWidget(QWidget):
         action_specs = [
             ("reload_.svg", "", "Alle Operator-Checks aktualisieren", self._run_operator_health_checks, "btn_refresh_health"),
             ("swap_horiz_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg", "", "Queue-Backend pruefen", self._probe_queue_health, "btn_probe_queue"),
+            ("check_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg", "", "AgentsDB-Socket pruefen", self._probe_agentsdb_health, "btn_probe_agentsdb"),
             ("check_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg", "", "Dispatcher-Store pruefen", self._probe_dispatcher_health, "btn_probe_dispatcher"),
             ("settings_24dp_666666_FILL0_wght400_GRAD0_opsz24.svg", "", "Dispatcher-Store reparieren", self._repair_dispatcher_store, "btn_repair_dispatcher"),
             ("deployed_code.svg", "", "MCP-Konfiguration pruefen", self._probe_mcp_health, "btn_probe_mcp"),
@@ -6453,6 +6453,19 @@ class ControlPlaneWidget(QWidget):
             self._sync_control_plane_migration_views()
             self.snapshotChanged.emit(dict(self._last_snapshot))
 
+    @Slot()
+    def _refresh_from_panel(self) -> None:
+        self.refresh_view()
+        try:
+            window = self.window()
+            status_getter = getattr(window, "statusBar", None)
+            if callable(status_getter):
+                status_bar = status_getter()
+                if status_bar is not None:
+                    status_bar.showMessage("Control Plane refreshed", 2500)
+        except Exception:
+            pass
+
     def _load_configuration_snapshot(self) -> dict[str, Any]:
         try:
             if __package__:
@@ -6741,6 +6754,14 @@ class ControlPlaneWidget(QWidget):
         audit_type_counts = dict(audit_summary.get("audit_type_counts") or {})
         action_group_counts = dict(audit_summary.get("action_group_counts") or {})
         source_counts = dict(audit_summary.get("source_counts") or {})
+        agentsdb_healthy = snapshot.get("agentsdb_healthy")
+        if agentsdb_healthy is True:
+            agentsdb_state = "ok"
+        elif agentsdb_healthy is False:
+            agentsdb_state = "degraded"
+        else:
+            agentsdb_state = "not-run"
+        agentsdb_detail = str(snapshot.get("agentsdb_detail") or snapshot.get("agentsdb_uri") or "n/a")
         validation_error_items = [str(item) for item in (snapshot.get("validation_errors") or []) if str(item)]
         validation_errors = "".join(
             f"<li>{html.escape(str(item))}</li>"
@@ -6778,8 +6799,8 @@ class ControlPlaneWidget(QWidget):
             "".join(
                 [
                     "<h3>Operator Status</h3>",
-                    "<p>Focused view of queue health, dispatcher readiness, MCP availability, and workflow validation.</p>",
-                    f"<p><b>Control-plane health:</b> {html.escape('ready' if bool(snapshot.get('healthy')) else 'attention required')} | <b>Healthy checks:</b> {int(snapshot.get('healthy_service_count') or 0)}/{int(snapshot.get('service_count') or 0)} | <b>Queue:</b> {html.escape(str(snapshot.get('queue_backend') or 'n/a'))} ({'ok' if bool(snapshot.get('queue_healthy')) else 'degraded'}) | <b>Validation issues:</b> {int(snapshot.get('validation_issue_count') or 0)} | <b>Alerts:</b> {int(snapshot.get('attention_count') or 0)}</p>",
+                    "<p>Focused view of queue health, AgentsDB readiness, dispatcher readiness, MCP availability, and workflow validation.</p>",
+                    f"<p><b>Control-plane health:</b> {html.escape('ready' if bool(snapshot.get('healthy')) else 'attention required')} | <b>Healthy checks:</b> {int(snapshot.get('healthy_service_count') or 0)}/{int(snapshot.get('service_count') or 0)} | <b>Queue:</b> {html.escape(str(snapshot.get('queue_backend') or 'n/a'))} ({'ok' if bool(snapshot.get('queue_healthy')) else 'degraded'}) | <b>AgentsDB:</b> {html.escape(agentsdb_detail)} ({html.escape(agentsdb_state)}) | <b>Validation issues:</b> {int(snapshot.get('validation_issue_count') or 0)} | <b>Alerts:</b> {int(snapshot.get('attention_count') or 0)}</p>",
                     f"<p><b>Recent actions:</b> {int(snapshot.get('recent_item_count') or 0)} | <b>Pass:</b> {int(status_counts.get('pass') or 0)} | <b>Fail:</b> {int(status_counts.get('fail') or 0)} | <b>Latest:</b> {html.escape(str(latest_action.get('summary') or 'n/a'))}</p>",
                     f"<p><b>Audit types:</b> {html.escape(audit_types_text or 'n/a')} | <b>Groups:</b> {html.escape(action_groups_text or 'n/a')} | <b>Sources:</b> {html.escape(sources_text or 'n/a')}</p>",
                     "<h4>Service Status</h4>",
@@ -7220,6 +7241,27 @@ class ControlPlaneWidget(QWidget):
         except Exception as exc:
             self._append_operator_log(f"Queue probe failed: {type(exc).__name__}: {exc}")
 
+    def _probe_agentsdb_health(self) -> None:
+        try:
+            operations = self._load_operator_snapshot()
+            self._last_snapshot["operations"] = operations
+            self._render_operator_snapshot(operations)
+            agentsdb_healthy = operations.get("agentsdb_healthy")
+            if agentsdb_healthy is True:
+                self._append_operator_log(
+                    f"AgentsDB probe passed: {str(operations.get('agentsdb_detail') or operations.get('agentsdb_uri') or 'agentsdb')[:220]}"
+                )
+            elif agentsdb_healthy is False:
+                self._append_operator_log(
+                    f"AgentsDB probe failed: {str(operations.get('agentsdb_error') or 'unknown error')[:220]}"
+                )
+            else:
+                self._append_operator_log(
+                    f"AgentsDB probe not-run: {str(operations.get('agentsdb_detail') or 'no agentsdb backend configured')[:220]}"
+                )
+        except Exception as exc:
+            self._append_operator_log(f"AgentsDB probe failed: {type(exc).__name__}: {exc}")
+
     def _probe_dispatcher_health(self) -> None:
         try:
             try:
@@ -7542,7 +7584,7 @@ class MainAIEditor(QMainWindow):
         dock.setTitleBarWidget(QWidget())                       # hide bar
         dock.setFeatures(QDockWidget.NoDockWidgetFeatures)      # no btns
         dock.setStyleSheet(f"""
-            background:{_build_scheme(self._accent, self._base)['col5']};
+            background:#1f1f1f;
                                 /* ← remove remaining frame   */
         """)
 
@@ -7790,6 +7832,9 @@ class MainAIEditor(QMainWindow):
         handle_pressed = str(scheme.get("col2") or scheme.get("col1") or "#6280ff")
         splitter.setStyleSheet(
             f"""
+            QSplitter#mainHorizontalSplitter {{
+                background: #1f1f1f;
+            }}
             QSplitter#mainHorizontalSplitter::handle:vertical {{
                 background: {handle_idle};
                 margin: 0px;
@@ -7879,7 +7924,7 @@ class MainAIEditor(QMainWindow):
         self.act_toggle_chat.setToolTip("AI-Chat anzeigen/ausblenden")
 
         self.act_toggle_control_plane = QAction(
-            _draw_fallback("[/]"),
+            _icon("automation_25dp_B7B7B7_FILL0_wght500_GRAD0_opsz24.svg"),
             "Control Plane",
             self,
             checkable=True,
@@ -7911,6 +7956,18 @@ class MainAIEditor(QMainWindow):
         self.act_toggle_right_dock.setToolTip("Monitor anzeigen/ausblenden")
         self.act_toggle_right_dock.toggled.connect(self.control_plane_dock.setVisible)
 
+        polymer_icon_path = Path(__file__).with_name("polymer_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg")
+        polymer_icon = QIcon(str(polymer_icon_path)) if polymer_icon_path.is_file() else _icon("polymer_24dp_E3E3E3_FILL0_wght400_GRAD0_opsz24.svg")
+        self.act_toggle_control_plane_left = QAction(
+            polymer_icon,
+            "Chat",
+            self,
+            checkable=True,
+            checked=True,
+        )
+        self.act_toggle_control_plane_left.setToolTip("AI-Chat anzeigen/ausblenden")
+        self.act_toggle_control_plane_left.toggled.connect(self.chat_dock.setVisible)
+
         # Greyscale toggle ----------------------------------------------------
         self.act_grey = QAction(
             "Greyscale", self, 
@@ -7924,12 +7981,19 @@ class MainAIEditor(QMainWindow):
         
         # ---- project-overview / explorer ---------------------------------
         self.act_toggle_explorer = QAction(
-            _icon("explorer.svg"),
+            _icon("stack_hexagon_25dp_B7B7B7_FILL0_wght500_GRAD0_opsz24.svg"),
             "Explorer", self,
             checkable=True, checked=True
         )
 
         self.act_toggle_explorer.setToolTip("Project-Explorer anzeigen")
+
+        self.act_graph_placeholder = QAction(
+            _icon("graph_7_25dp_B7B7B7_FILL0_wght500_GRAD0_opsz24.svg"),
+            "Graph",
+            self,
+        )
+        self.act_graph_placeholder.setToolTip("Graph (noch unverdrahtet)")
 
 
         # ---- tabable dock ------------------------------------------------
@@ -8054,14 +8118,19 @@ class MainAIEditor(QMainWindow):
 
         self.addToolBar(Qt.TopToolBarArea, self.tb_top)
         self.tb_top.addActions([
-            self.act_toggle_chat,
             self.act_toggle_explorer,
+            self.act_graph_placeholder,
         ])
+        self._tb_top_spacer = QWidget(self.tb_top)
+        self._tb_top_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        self._tb_top_spacer.setStyleSheet("background: #1f1f1f; border: none;")
+        self.tb_top.addWidget(self._tb_top_spacer)
 
         # ---------------- seitliche Toolbars ------------------------------- 
 
         self.tb_right = QToolBar(self, orientation=Qt.Vertical)
         self.tb_right.setObjectName("ToolbarRight")
+        side_toolbar_width = 56
 
         # auch hier die größere Icongröße übernehmen
 
@@ -8071,7 +8140,7 @@ class MainAIEditor(QMainWindow):
             bar.setMovable(False)
             bar.setFloatable(False)
             bar.setContextMenuPolicy(Qt.PreventContextMenu)
-            bar.setFixedWidth(56)
+            bar.setFixedWidth(side_toolbar_width)
             bar.setLayoutDirection(Qt.RightToLeft)
             bar.setContentsMargins(8, 8, 8, 8)
             bar.setStyleSheet(
@@ -8113,11 +8182,90 @@ class MainAIEditor(QMainWindow):
             )
             self.addToolBar(Qt.RightToolBarArea, bar)
 
-        # Right toolbar: Agentic Control Plane toggle + refresh
         if hasattr(self, "act_toggle_control_plane"):
             self.tb_right.addAction(self.act_toggle_control_plane)
-        if hasattr(self, "act_refresh_control_plane"):
-            self.tb_right.addAction(self.act_refresh_control_plane)
+        self._tb_right_spacer = QWidget(self.tb_right)
+        self._tb_right_spacer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        self._tb_right_spacer.setStyleSheet("background: #1f1f1f; border: none;")
+        self.tb_right.addWidget(self._tb_right_spacer)
+
+        self.tb_left = QToolBar(self, orientation=Qt.Vertical)
+        self.tb_left.setObjectName("ToolbarLeft")
+        self.tb_left.setIconSize(self.tb_top.iconSize())
+        self.tb_left.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.tb_left.setMovable(False)
+        self.tb_left.setFloatable(False)
+        self.tb_left.setContextMenuPolicy(Qt.PreventContextMenu)
+        self.tb_left.setFixedWidth(side_toolbar_width)
+        self.tb_left.setLayoutDirection(Qt.LeftToRight)
+        self.tb_left.setContentsMargins(8, 8, 8, 8)
+        self.tb_left.setStyleSheet(
+            "QToolBar {"
+            " background: #1f1f1f;"
+            " border: none;"
+            " border-radius: 0px;"
+            " padding: 6px 6px 6px 0px;"
+            " spacing: 8px;"
+            " }"
+            "QToolBar::handle {"
+            " width: 0px;"
+            " height: 0px;"
+            " margin: 0px;"
+            " padding: 0px;"
+            " image: none;"
+            " }"
+            "QToolBarExtension {"
+            " width: 0px;"
+            " height: 0px;"
+            " image: none;"
+            " border: none;"
+            " margin: 0px;"
+            " padding: 0px;"
+            " }"
+            "QToolButton {"
+            " background: #1f1f1f;"
+            " min-width: 42px;"
+            " min-height: 42px;"
+            " padding: 4px;"
+            " margin: 1px 0px 1px 0px;"
+            " border: none;"
+            " border-radius: 0px;"
+            " }"
+            "QToolButton:hover, QToolButton:pressed, QToolButton:checked {"
+            " background: #1f1f1f;"
+            " border: none;"
+            " }"
+        )
+        self.addToolBar(Qt.LeftToolBarArea, self.tb_left)
+
+        if hasattr(self, "act_toggle_control_plane_left"):
+            self.tb_left.addAction(self.act_toggle_control_plane_left)
+        if hasattr(self, "act_toggle_explorer"):
+            self.tb_left.addAction(self.act_toggle_explorer)
+        if hasattr(self, "act_toggle_control_plane_left"):
+            self._tb_left_spacer = QWidget(self.tb_left)
+            self._tb_left_spacer.setStyleSheet("background: #1f1f1f; border: none;")
+            self._tb_left_spacer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+            self.tb_left.addWidget(self._tb_left_spacer)
+
+    def _normalize_toolbar_layout(self) -> None:
+        """Keep the fixed toolbars pinned to their intended window areas."""
+        toolbar_specs: tuple[tuple[str, Qt.ToolBarArea, Qt.Orientation], ...] = (
+            ("tb_top", Qt.TopToolBarArea, Qt.Horizontal),
+            ("tb_left", Qt.LeftToolBarArea, Qt.Vertical),
+            ("tb_right", Qt.RightToolBarArea, Qt.Vertical),
+        )
+        for toolbar_name, expected_area, expected_orientation in toolbar_specs:
+            toolbar = getattr(self, toolbar_name, None)
+            if not isinstance(toolbar, QToolBar):
+                continue
+            needs_area_fix = self.toolBarArea(toolbar) != expected_area
+            needs_orientation_fix = toolbar.orientation() != expected_orientation
+            if not (needs_area_fix or needs_orientation_fix):
+                continue
+            self.removeToolBar(toolbar)
+            toolbar.setOrientation(expected_orientation)
+            self.addToolBar(expected_area, toolbar)
 
     # ─────────────────────────  menu bar  ────────────────────────────────────
     
@@ -8323,6 +8471,8 @@ class MainAIEditor(QMainWindow):
         self.control_plane_dock.visibilityChanged.connect(
             self.act_toggle_control_plane.setChecked
         )
+        if hasattr(self, "act_toggle_control_plane_left"):
+            self.chat_dock.visibilityChanged.connect(self.act_toggle_control_plane_left.setChecked)
         self.files_dock.visibilityChanged.connect(lambda _v: self._rebalance_workspace_columns())
         self.chat_dock.visibilityChanged.connect(lambda _v: self._rebalance_workspace_columns())
         self.control_plane_dock.visibilityChanged.connect(lambda _v: self._rebalance_workspace_columns())
@@ -9193,6 +9343,39 @@ class MainAIEditor(QMainWindow):
         if hasattr(self, '_st_enc'):
             self._st_enc.setText(enc_text or "UTF-8")
 
+    def _resolve_env_settings_path(self) -> Path | None:
+        candidates = [
+            Path(__file__).resolve().parents[1] / ".env",
+            Path(__file__).resolve().parents[2] / ".env",
+            Path(__file__).with_suffix(".env"),
+        ]
+        for candidate in candidates:
+            if candidate.exists() and candidate.is_file():
+                return candidate
+        return None
+
+    @Slot()
+    def _open_env_settings(self) -> None:
+        env_path = self._resolve_env_settings_path()
+        if env_path is None:
+            QMessageBox.information(self, "ENV", "Keine .env-Datei gefunden.")
+            return
+
+        tabs = self._get_focused_tab_dock()
+        if tabs is None and hasattr(self, "_clone_tab_dock"):
+            try:
+                self._clone_tab_dock(set_current=True)
+            except Exception:
+                pass
+            tabs = self._get_focused_tab_dock()
+
+        if tabs is None:
+            QMessageBox.information(self, "ENV", f"Kein Tab-Dock verfügbar, um {env_path} zu öffnen.")
+            return
+
+        self._open_path_in_focused_tab(env_path, title=env_path.name)
+        self.statusBar().showMessage(f".env geöffnet: {env_path}", 3200)
+
     def _open_path_in_focused_tab(self, path: Path, *, title: str | None = None) -> None:
         """Open an existing file path in the currently focused tab dock."""
         if not isinstance(path, Path):
@@ -9392,6 +9575,7 @@ class MainAIEditor(QMainWindow):
     def _load_ui_state(self):          # >>>
         s = self._settings()
         if s.value("schema", 0, int) != self._SCHEMA:
+            self._normalize_toolbar_layout()
             return                     # erste Ausführung oder inkompatibel
 
         g  = s.value("geometry", type=QByteArray)
@@ -9400,6 +9584,7 @@ class MainAIEditor(QMainWindow):
         if (not disable_qt_state) and g and st:
             self.restoreGeometry(g)
             self.restoreState(st)
+        self._normalize_toolbar_layout()
 
         # eigene Felder ---------------------------------------------------
 

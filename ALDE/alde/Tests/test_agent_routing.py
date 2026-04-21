@@ -366,6 +366,63 @@ class TestAgentRouting(unittest.TestCase):
         self.assertIn("Routing denied", result)
         self.assertIsNone(route)
 
+    def test_worker_internal_auto_handoff_self_route_is_allowed(self) -> None:
+        result, route = agents_factory.execute_tool(
+            "route_to_agent",
+            {
+                "target_agent": "_xworker",
+                "job_name": "job_posting_parser",
+                "handoff_protocol": "agent_handoff_v1",
+                "allow_internal_handoff": True,
+                "handoff_payload": {
+                    "agent_label": "_xworker",
+                    "handoff_to": "_xworker",
+                    "output": {
+                        "type": "file",
+                        "correlation_id": "sha-123",
+                        "link": {"thread_id": "thread-1", "message_id": "msg-1"},
+                        "file": {
+                            "path": "/tmp/job_offer.pdf",
+                            "content_sha256": "sha-123",
+                        },
+                        "db": {"processing_state": "queued"},
+                        "requested_actions": [
+                            "parse",
+                            "extract_text",
+                            "store_object_result",
+                            "mark_processed_on_success",
+                        ],
+                    },
+                },
+                "handoff_metadata": {
+                    "correlation_id": "sha-123",
+                    "dispatcher_message_id": "dispatcher-msg-1",
+                    "dispatcher_db_path": "/tmp/dispatcher_doc_db.json",
+                    "obj_name": "job_postings",
+                    "obj_db_path": "/tmp/job_postings_db.json",
+                },
+            },
+            source_agent_label="_xworker",
+        )
+
+        self.assertEqual(result, "Routing to _xworker")
+        self.assertIsInstance(route, dict)
+        self.assertEqual(route.get("agent_label"), "_xworker")
+
+    def test_worker_internal_handoff_flag_does_not_allow_cross_agent_route(self) -> None:
+        result, route = agents_factory.execute_tool(
+            "route_to_agent",
+            {
+                "target_agent": "_xplaner_xrouter",
+                "allow_internal_handoff": True,
+                "user_question": "continue this thread",
+            },
+            source_agent_label="_xworker",
+        )
+
+        self.assertIn("Tool 'route_to_agent' is not allowed for agent _xworker", result)
+        self.assertIsNone(route)
+
     def test_route_contract_prefers_two_agent_schema(self) -> None:
         contract = agents_configurator.get_handoff_route_contract(
             "_xplaner_xrouter",

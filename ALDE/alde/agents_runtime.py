@@ -253,7 +253,6 @@ JOB_PROMPTS: dict[str, dict[str, Any]] = {
                     "entity_type": "job_posting",
                     "canonical_name": None,
                     "mention_text": None,
-                    "section_key": "header",
                     "summary": None,
                     "confidence": 0.99,
                     "aliases": [],
@@ -509,12 +508,15 @@ SPECIALIZED_JOB_PROMPT_MAP: dict[tuple[str, str], str] = {
 
 
 LEGACY_AGENT_NAME_MAP: dict[str, str] = {
-    "_xplaner_xrouter": "xplaner_xrouter",
+    # Legacy typo alias kept for backward compatibility.
+    "_xplaner_xrouter": "xrouter_xplanner",
+    "_xrouter_xplanner": "xrouter_xplanner",
     "_xworker": "xworker",
 }
 
 CANONICAL_AGENT_LABEL_MAP: dict[str, str] = {
-    "xplaner_xrouter": "_xplaner_xrouter",
+    "xrouter_xplanner": "_xrouter_xplanner",
+    "xplaner_xrouter": "_xrouter_xplanner",
     "xworker": "_xworker",
 }
 
@@ -524,22 +526,22 @@ _LEGACY_AGENT_NAME_MAP = LEGACY_AGENT_NAME_MAP
 _CANONICAL_AGENT_LABEL_MAP = CANONICAL_AGENT_LABEL_MAP
 
 
-AGENT_RUNTIME_CONFIG: dict[str, dict[str, Any]] = {
-    "_xplaner_xrouter": {
-        "canonical_name": "xplaner_xrouter",
+AGENT_RUNTIME: dict[str, dict[str, Any]] = {
+    "_xrouter_xplanner": {
+        "canonical_name": "xrouter_xplanner",
         "model": "gpt-4o",
-        "tools": ["memorydb", "vectordb", "route_to_agent", "execute_action_request", "upsert_object_record", "@dispatcher", "@doc_rw"],
+        "tools": [ "route_to_agent", "execute_action_request", "upsert_object_record", "@dispatcher", "@doc_rw"],
         "defaults": {
-            "default_job_name": _default_job_name_for_agent("_xplaner_xrouter"),
-            "default_skill_profile": "xplaner_xrouter_core",
+            "job_name": _default_job_name_for_agent("_xrouter_xplanner"),
+            "skill": "",
+            "profile": "xrouter_xplanner_core",
         },
-        "workflow": {"definition": "xplaner_xrouter_router"},
+        "workflow": {"definition": "xrouter_xplanner_router"},
     },
     "_xworker": {
         "canonical_name": "xworker",
         "model": "gpt-4o-mini",
         "tools": [
-          
             "execute_action_request",
             "upsert_object_record",
             "ingest_object",
@@ -551,8 +553,9 @@ AGENT_RUNTIME_CONFIG: dict[str, dict[str, Any]] = {
             "@doc_rw",
         ],
         "defaults": {
-            "default_job_name": _default_job_name_for_agent("_xworker"),
-            "default_skill_profile": "xworker_core",
+            "job_name": _default_job_name_for_agent("_xworker"),
+            "skill": "",
+            "profile": "xworker_core",
         },
         "workflow": {"definition": "xworker_leaf"},
     },
@@ -560,11 +563,11 @@ AGENT_RUNTIME_CONFIG: dict[str, dict[str, Any]] = {
 
 
 AGENT_ROLE: dict[str, dict[str, Any]] = {
-    "xplaner_xrouter": {
+    "xrouter_xplanner": {
         "description": "Primary agent role for planning, clarification, and routing.",
         "can_route": True,
         "default_instance_policy": "session_scoped",
-        "default_tool_policy": "xplaner_xrouter",
+        "default_tool_policy": "xrouter_xplanner",
         "default_handoff_policy": {
             "default_protocol": "agent_handoff_v1",
             "accepted_protocols": ["message_text", "agent_handoff_v1"],
@@ -628,10 +631,10 @@ HANDOFF_PROTOCOL: dict[str, dict[str, Any]] = {
 
 
 HANDOFF_SCHEMA: dict[str, dict[str, Any]] = {
-    "xplaner_to_xworker": {
+    "xrouter_to_xworker": {
         "handoff_id": "structured",
         "protocol": "agent_handoff_v1",
-        "description": "Generic xplaner_xrouter to xworker structured handoff.",
+        "description": "Generic xrouter_xplanner to xworker structured handoff.",
         "required_payload_any": ["output", "generated", "msg"],
         "preferred_payload_paths": ["output", "generated", "msg"],
         "workflow_name": "xworker_leaf",
@@ -644,7 +647,7 @@ HANDOFF_SCHEMA: dict[str, dict[str, Any]] = {
                 "handoff_id": "dispatch_request",
                 "job_name": "document_dispatch",
                 "protocol": "message_text",
-                "description": "xplaner_xrouter request for the deterministic dispatch workflow.",
+                "description": "xrouter_xplanner request for the deterministic dispatch workflow.",
                 "required_message_text": True,
                 "workflow_name": "xworker_dispatch_chain",
                 "instructions": [
@@ -655,7 +658,7 @@ HANDOFF_SCHEMA: dict[str, dict[str, Any]] = {
         
             "generic_parser": {
                 "handoff_id": "parser_brief",
-                "description": "xplaner_xrouter brief for a parser-style xworker job.",
+                "description": "xrouter_xplanner brief for a parser-style xworker job.",
                 "job_names": [
                     "generic_parser",
                     "applicant_profile_parser",
@@ -674,7 +677,7 @@ HANDOFF_SCHEMA: dict[str, dict[str, Any]] = {
             },
             "generic_writer": {
                 "handoff_id": "writer_brief",
-                "description": "xplaner_xrouter brief for a writer-style xworker job.",
+                "description": "xrouter_xplanner brief for a writer-style xworker job.",
                 "job_names": [
                     "generic_writer",
                     "cover_letter_writer",
@@ -689,7 +692,7 @@ HANDOFF_SCHEMA: dict[str, dict[str, Any]] = {
             "cover_letter_writer": {
                 "handoff_id": "cover_letter_writer",
                 "job_name": "cover_letter_writer",
-                "description": "xplaner_xrouter brief for the cover-letter writer job with deterministic artifact persistence.",
+                "description": "xrouter_xplanner brief for the cover-letter writer job with deterministic artifact persistence.",
                 "workflow_name": "xworker_cover_letter_writer_leaf",
                 "result_postprocess": {
                     "tool": "persist_cover_letter_artifacts",
@@ -962,23 +965,44 @@ AGENT_SKILLS: dict[str, dict[str, Any]] = {
 
 
 AGENT_MANIFEST: dict[str, dict[str, Any]] = {
-    "_xplaner_xrouter": {
-        "role": "xplaner_xrouter",
+    "_xrouter_xplanner": {
+        "role": "xrouter_xplanner",
         "skill_profile": "xplaner_xrouter_core",
         "instance_policy": "session_scoped",
-        "routing_policy": {"mode": "xplaner_xrouter", "can_route": True},
+        "routing_policy": {"mode": "xrouter_xplanner", "can_route": True},
         "skill_profile_loading": {
             "mode": "job_name",
             "fallback_skill_profile": "xplaner_xrouter_core",
         },
-        "job_skill_profiles": _job_skill_profiles_for_agent("_xplaner_xrouter"),
+        "job_skill_profiles": _job_skill_profiles_for_agent("_xrouter_xplanner"),
         "handoff_policy": {
             "allowed_targets": ["_xworker"],
             "target_policies": {
                 "_xworker": {
                     "default_protocol": "agent_handoff_v1",
                     "accepted_protocols": ["message_text", "agent_handoff_v1"],
-                    "handoff_schema": "xplaner_to_xworker",
+                    "handoff_schema": "xrouter_to_xworker",
+                },
+            },
+        },
+    },
+    "_xplaner_xrouter": {
+        "role": "xrouter_xplanner",
+        "skill_profile": "xplaner_xrouter_core",
+        "instance_policy": "session_scoped",
+        "routing_policy": {"mode": "xrouter_xplanner", "can_route": True},
+        "skill_profile_loading": {
+            "mode": "job_name",
+            "fallback_skill_profile": "xplaner_xrouter_core",
+        },
+        "job_skill_profiles": _job_skill_profiles_for_agent("_xrouter_xplanner"),
+        "handoff_policy": {
+            "allowed_targets": ["_xworker"],
+            "target_policies": {
+                "_xworker": {
+                    "default_protocol": "agent_handoff_v1",
+                    "accepted_protocols": ["message_text", "agent_handoff_v1"],
+                    "handoff_schema": "xrouter_to_xworker",
                 },
             },
         },
@@ -994,12 +1018,16 @@ AGENT_MANIFEST: dict[str, dict[str, Any]] = {
         "job_skill_profiles": _job_skill_profiles_for_agent("_xworker"),
         "tool_skill_profiles": _tool_skill_profiles_for_agent("_xworker"),
         "handoff_policy": {
-            "allowed_sources": ["_xplaner_xrouter", "_xworker"],
+            "allowed_sources": ["_xrouter_xplanner", "_xplaner_xrouter", "_xworker"],
             "allowed_targets": ["_xworker"],
             "source_policies": {
+                "_xrouter_xplanner": {
+                    "accepted_protocols": ["message_text", "agent_handoff_v1"],
+                    "handoff_schema": "xrouter_to_xworker",
+                },
                 "_xplaner_xrouter": {
                     "accepted_protocols": ["message_text", "agent_handoff_v1"],
-                    "handoff_schema": "xplaner_to_xworker",
+                    "handoff_schema": "xrouter_to_xworker",
                 },
                 "_xworker": {
                     "accepted_protocols": ["agent_handoff_v1"],
@@ -1044,6 +1072,15 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
         "tool_response_required": False,
         "parameters": [
             {"name": "file_path", "type": "string", "description": "The absolute path to the file to read.", "required": True},
+        ],
+    },
+    {
+        "name": "pypdf_read_document",
+        "description": "Read a concrete PDF file from disk using pypdf extraction only.",
+        "final_result": True,
+        "tool_response_required": False,
+        "parameters": [
+            {"name": "file_path", "type": "string", "description": "The absolute path to the PDF file to read.", "required": True},
         ],
     },
     {
@@ -1326,6 +1363,8 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
 TOOL_NAMES: dict[str, str] = {
     "dispatch_docs": "dispatch_documents",
     "dispatch_documents": "dispatch_documents",
+    "data_dispatcher/dispatch_documents": "dispatch_documents",
+    "data_dispatcher.dispatch_documents": "dispatch_documents",
     "dispatch_job_posting_pdfs": "dispatch_documents",
     "ingest_object": "ingest_object",
     "ingest_profile": "ingest_profile",
@@ -1340,6 +1379,9 @@ TOOL_NAMES: dict[str, str] = {
     "batch_document_generator": "batch_generate_documents",
     "batch_generate_documents": "batch_generate_documents",
     "batch_generate_cover_letters": "batch_generate_documents",
+    "pypdf_read_document": "pypdf_read_document",
+    "pypdf_read": "pypdf_read_document",
+    "read_pdf_with_pypdf": "pypdf_read_document",
     "store_profile": "store_profile_result",
     "persist_profile": "store_profile_result",
 }
@@ -1348,6 +1390,8 @@ TOOL_NAMES: dict[str, str] = {
 ACTION_NAMES: dict[str, str] = {
     "document_dispatch": "dispatch_documents",
     "dispatch_documents": "dispatch_documents",
+    "data_dispatcher/dispatch_documents": "dispatch_documents",
+    "data_dispatcher.dispatch_documents": "dispatch_documents",
     "ingest_object": "ingest_object",
     "store_object_result": "store_object_result",
     "upsert_object_record": "upsert_object_record",
@@ -1367,10 +1411,12 @@ TOOL_GROUPS: dict[str, list[str]] = {
     "rag": ["memorydb", "vectordb"],
     "doc_ro": [
         "read_document",
+        "pypdf_read_document",
         "list_documents",
     ],
     "docs_rw": [
         "read_document",
+        "pypdf_read_document",
         "write_document",
         "update_document",
         "delete_document",
@@ -1379,6 +1425,7 @@ TOOL_GROUPS: dict[str, list[str]] = {
     ],
     "doc_rw": [
         "read_document",
+        "pypdf_read_document",
         "write_document",
         "update_document",
         "delete_document",
