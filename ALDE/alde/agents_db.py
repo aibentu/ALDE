@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+
+
 import hashlib
 import json
 import logging
@@ -81,7 +83,7 @@ def _load_agentsdb_uri_from_connection_config(config_payload: Mapping[str, Any])
     configured_uri = _connection_config_value(config_payload, ("agents_db_uri", "agentsdb_uri", "uri", "socket_uri"))
     if configured_uri:
         return configured_uri
-    host_value = _connection_config_value(config_payload, ("host", "hostname")) or "127.0.0.1"
+    host_value = _connection_config_value(config_payload, ("host", "hostname")) or "localhost"
     port_value = _connection_config_value(config_payload, ("port",)) or "2331"
     try:
         resolved_port = int(port_value)
@@ -120,7 +122,7 @@ def _ensure_local_agentsdb_socket_server(agents_db_uri: str, timeout_seconds: fl
     parsed_uri = urlparse(str(agents_db_uri or "").strip())
     if str(parsed_uri.scheme or "").strip().lower() != "agentsdb":
         return False
-    resolved_host = str(parsed_uri.hostname or "127.0.0.1").strip() or "127.0.0.1"
+    resolved_host = str(parsed_uri.hostname or "localhost").strip() or "localhost"
     resolved_port = int(parsed_uri.port or 2331)
     if not _is_local_socket_host(resolved_host):
         return False
@@ -941,6 +943,16 @@ class KnowledgeRepository():
             self._flush_image()
             return payload
 
+    def delete_object(self, object_name: str, object_id: str) -> bool:
+        with self._lock:
+            collection = self.load_collection(object_name)
+            normalized_object_id = str(object_id)
+            deleted = normalized_object_id in collection
+            if deleted:
+                collection.pop(normalized_object_id, None)
+                self._flush_image()
+            return deleted
+
     def load_object(self, object_name: str, object_id: str) -> dict[str, Any] | None:
         with self._lock:
             collection = self.load_collection(object_name)
@@ -1063,8 +1075,8 @@ class AgentDbSocketRepository:
         self._database_name = str(database_name or "alde_knowledge").strip() or "alde_knowledge"
         self._timeout_seconds = max(float(timeout_seconds), 0.5)
         parsed_uri = urlparse(self._agents_db_uri)
-        self._host = str(parsed_uri.hostname or "127.0.0.1")
-        self._port = int(parsed_uri.port or 1998)
+        self._host = str(parsed_uri.hostname or "localhost")
+        self._port = int(parsed_uri.port or 2331)
 
     @classmethod
     def create_from_uri(
@@ -1106,8 +1118,9 @@ class AgentDbSocketRepository:
         return dict(response_payload)
 
     def _send_request_bytes(self, request_payload: Mapping[str, Any]) -> bytes:
+        serialized_request_payload = _json_safe_object(dict(request_payload))
         with socket.create_connection((self._host, self._port), timeout=self._timeout_seconds) as connection:
-            connection.sendall((json.dumps(request_payload, separators=(",", ":")) + "\n").encode("utf-8"))
+            connection.sendall((json.dumps(serialized_request_payload, separators=(",", ":")) + "\n").encode("utf-8"))
             response_bytes = b""
             while b"\n" not in response_bytes:
                 chunk = connection.recv(4096)
@@ -1137,6 +1150,16 @@ class AgentDbSocketRepository:
             },
         )
         return dict(response_payload.get("object_payload") or payload)
+
+    def delete_object(self, object_name: str, object_id: str) -> bool:
+        response_payload = self._request_object(
+            "delete_object",
+            {
+                "object_name": str(object_name),
+                "object_id": str(object_id),
+            },
+        )
+        return bool(response_payload.get("deleted"))
 
     def load_object(self, object_name: str, object_id: str) -> dict[str, Any] | None:
         response_payload = self._request_object(
@@ -1287,6 +1310,16 @@ class AgentDbInMemoryRepository:
             collection[object_id] = dict(payload)
             self._flush_image()
             return dict(payload)
+
+    def delete_object(self, object_name: str, object_id: str) -> bool:
+        with self._lock:
+            collection = self._load_collection_object(object_name)
+            normalized_object_id = str(object_id)
+            deleted = normalized_object_id in collection
+            if deleted:
+                collection.pop(normalized_object_id, None)
+                self._flush_image()
+            return deleted
 
     def load_object(self, object_name: str, object_id: str) -> dict[str, Any] | None:
         with self._lock:
@@ -1442,6 +1475,13 @@ class AgentDbSocketServerService:
                 raise ValueError("upsert_object requires object_name, object_id, and object_payload")
             stored_payload = repository.upsert_object(object_name, object_id, dict(object_payload))
             return {"ok": True, "object_payload": _json_safe_object(stored_payload)}
+        if normalized_cmd == "delete_object":
+            object_name = str(payload.get("object_name") or "").strip()
+            object_id = str(payload.get("object_id") or "").strip()
+            if not object_name or not object_id:
+                raise ValueError("delete_object requires object_name and object_id")
+            deleted = repository.delete_object(object_name, object_id)
+            return {"ok": True, "deleted": bool(deleted)}
         if normalized_cmd == "load_object":
             object_name = str(payload.get("object_name") or "").strip()
             object_id = str(payload.get("object_id") or "").strip()
@@ -1552,13 +1592,13 @@ class _AgentDbSocketTCPServer(socketserver.ThreadingTCPServer):
 
 def run_agentsdb_socket_server(
     *,
-    host: str = "127.0.0.1",
+    host: str = "localhost",
     port: int = 2331,
     backend_uri: str,
     database_name: str = "alde_knowledge",
 ) -> None:
     service = AgentDbSocketServerService(backend_uri=backend_uri, default_database_name=database_name)
-    with _AgentDbSocketTCPServer((str(host).strip() or "127.0.0.1", int(port)), _AgentDbSocketRequestHandler, service) as server:
+    with _AgentDbSocketTCPServer((str(host).strip() or "localhost", int(port)), _AgentDbSocketRequestHandler, service) as server:
         server.serve_forever()
 
 
@@ -1567,8 +1607,8 @@ def run_agentsdb_socket_server_from_env(host: str | None = None, port: int | Non
     agents_db_uri = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_URI", "")).strip()
     if not agents_db_uri:
         agents_db_uri = _load_agentsdb_uri_from_connection_config(connection_config)
-    parsed_uri = urlparse(agents_db_uri or "agentsdb://127.0.0.1:2331")
-    resolved_host = str(host or parsed_uri.hostname or "127.0.0.1").strip() or "127.0.0.1"
+    parsed_uri = urlparse(agents_db_uri or "agentsdb://localhost:2331")
+    resolved_host = str(host or parsed_uri.hostname or "localhost").strip() or "localhost"
     resolved_port = int(port or parsed_uri.port or 2331)
     service = AgentDbSocketServerService.load_from_env()
     with _AgentDbSocketTCPServer((resolved_host, resolved_port), _AgentDbSocketRequestHandler, service) as server:
@@ -1628,7 +1668,7 @@ class KnowledgeObjectService:
         source_entity_id: str,
         max_depth: int = 2,
     ) -> list[dict[str, Any]]:
-        return self._repository.load_relation_graph(
+        return self._repository.load_relation_object_graph(
             namespace_id=namespace_id,
             source_entity_id=source_entity_id,
             max_depth=max_depth,
@@ -3016,884 +3056,867 @@ def build_demo_agentsdb_service(database: Any) -> KnowledgeObjectService:
     return KnowledgeObjectService(repository)
 
 
-# Legacy compatibility aliases: keep until downstream imports are migrated.
-sync_retrieval_run_to_mongodb_knowledge = sync_retrieval_run_to_agentsdb_knowledge
-sync_parser_result_to_mongodb_knowledge = sync_parser_result_to_agentsdb_knowledge
-load_mongodb_runtime_config_from_env = load_agentsdb_runtime_config_from_env
-load_mongodb_pipeline_service = load_agentsdb_pipeline_service
-AgnDB = KnowledgeRepository
-AgnDBService = KnowledgeObjectService
-PsrObjMapSvc = ObjectMappingService
-ParserBlockSeedObject = MappingBlockSeedObject
-ParserEntityCandidateObject = MappingSeedEntityObject
-ParserObjectKnowledgeMappingService = ObjectMappingService
-DocumentBlockObject = BlockObject
-KnowledgeNamespaceObject = NamespaceObject
-AgentsDBKnowledgeRepository = KnowledgeRepository
-AgentsDBKnowledgeRuntimeConfigObject = RuntimeConfigObject
-AgentsDBKnowledgeService = KnowledgeObjectService
-AgentsDBKnowledgePipelineService = PipelineService
+# ---------------------------------------------------------------------------
+# AgentMemoryService
+# Migrated from agents_factory – belongs here because it extends the index
+# definitions that constitute the AgentsDB core contract.
+# ---------------------------------------------------------------------------
 
-# Legacy compatibility aliases for old Mongo naming.
-MongoKnowledgeRepository = AgentsDBKnowledgeRepository
-MongoKnowledgeRuntimeConfigObject = AgentsDBKnowledgeRuntimeConfigObject
-MongoKnowledgeService = AgentsDBKnowledgeService
-MongoKnowledgePipelineService = AgentsDBKnowledgePipelineService
-build_demo_mongodb_service = build_demo_agentsdb_service
+def _normalize_agent_label_for_memory(agent_name: str) -> str:
+    try:
+        try:
+            from .agents_config import normalize_agent_label  # type: ignore
+        except ImportError:
+            from alde.agents_config import normalize_agent_label  # type: ignore
+        return normalize_agent_label(agent_name)
+    except Exception:
+        return str(agent_name or "").strip().lower().replace(" ", "_").replace("-", "_")
 
 
-class JobPostingKnowledgeDatasetExampleService:
-    """Build a complete example dataset from a single extracted job-offer PDF."""
+def _normalize_tool_name_for_memory(tool_name: str) -> str:
+    try:
+        try:
+            from .agents_config import normalize_tool_name  # type: ignore
+        except ImportError:
+            from alde.agents_config import normalize_tool_name  # type: ignore
+        return normalize_tool_name(tool_name)
+    except Exception:
+        return str(tool_name or "").strip().lower().replace(" ", "_").replace("-", "_")
 
-    def __init__(self) -> None:
-        self._timestamp = _demo_dataset_timestamp()
-        self._tenant_id = "tenant_demo"
-        self._namespace_id = "ns_jobs_de"
-        self._namespace_slug = "jobs-de"
-        self._namespace_name = "Jobs Deutschland"
-        self._correlation_id = "job-offer:examplecorp:it-service-desk-coordinator"
-        self._document_type = "job_posting"
-        self._document_id = f"doc:{self._document_type}:{self._correlation_id}"
-        self._source_uri = "file://AppData/job_offer_examplecorp_it_service_desk_coordinator.pdf"
-        self._embedding_model = "demo-text-embedding-8d"
-        self._embedding_dimension = 8
 
-    def load_namespace_object(self) -> NamespaceObject:
-        return NamespaceObject(
-            id=self._namespace_id,
-            tenant_id=self._tenant_id,
-            slug=self._namespace_slug,
-            name=self._namespace_name,
-            description="Beispielhafter Wissensraum fuer Job-Posting-Extraktion aus PDFs.",
-            default_embedding_model=self._embedding_model,
-            default_embedding_dimension=self._embedding_dimension,
-            metadata={"locale": "de-DE", "example": True},
-            created_at=self._timestamp,
-            updated_at=self._timestamp,
-        )
+def _get_specialized_system_prompt_for_memory(agent_label: str, memory_slot: str) -> str:
+    try:
+        try:
+            from .agents_config import get_specialized_system_prompt  # type: ignore
+        except ImportError:
+            from alde.agents_config import get_specialized_system_prompt  # type: ignore
+        return str(get_specialized_system_prompt(agent_label, memory_slot) or "")
+    except Exception:
+        return ""
 
-    def load_job_posting_object(self) -> dict[str, Any]:
+
+def _get_document_repository_for_memory() -> Any:
+    try:
+        try:
+            from .agents_tools import DOCUMENT_REPOSITORY  # type: ignore
+        except ImportError:
+            from alde.agents_tools import DOCUMENT_REPOSITORY  # type: ignore
+        return DOCUMENT_REPOSITORY
+    except Exception:
+        return None
+
+
+def _get_workflow_context_thread_id_for_memory() -> int | None:
+    try:
+        try:
+            from .agents_factory import WORKFLOW_CONTEXT_SERVICE  # type: ignore
+        except ImportError:
+            from alde.agents_factory import WORKFLOW_CONTEXT_SERVICE  # type: ignore
+        return WORKFLOW_CONTEXT_SERVICE.load_current_thread_id()
+    except Exception:
+        return None
+
+
+class AgentMemoryService:
+    """Domain service for managing per-agent session memory inside AgentsDB.
+
+    Extends the AgentsDB index definitions by introducing the ``agent_memory``
+    object collection – therefore this class belongs to the ``agents_db``
+    module, which is the authoritative home of all DB-level index and schema
+    definitions.
+    """
+
+    AGENT_MEMORY_OBJECT_NAME = "agent_memory"
+    MAX_SESSION_CONTEXT_ENTRIES = 12
+    MAX_MESSAGE_CONTEXT_ENTRIES = 3
+    MAX_MESSAGE_PAYLOAD_CHARS = 2500
+
+    def load_memory_slot(
+        self,
+        *,
+        job_name: str | None = None,
+        tool_name: str | None = None,
+    ) -> str:
+        if isinstance(job_name, str) and job_name.strip():
+            return job_name.strip()
+        if isinstance(tool_name, str) and tool_name.strip():
+            return _normalize_tool_name_for_memory(tool_name.strip())
+        return "default"
+
+    def load_session_scope_key(
+        self,
+        *,
+        scope_key: str | None = None,
+        thread_id: int | None = None,
+    ) -> str:
+        if isinstance(scope_key, str) and scope_key.strip():
+            return scope_key.strip()
+        resolved_thread_id = thread_id if thread_id is not None else _get_workflow_context_thread_id_for_memory()
+        if resolved_thread_id is None:
+            return "thread:global"
+        return f"thread:{resolved_thread_id}"
+
+    def build_object_correlation_id(
+        self,
+        *,
+        agent_label: str,
+        memory_slot: str,
+        scope_key: str,
+    ) -> str:
+        normalized_agent_label = _normalize_agent_label_for_memory(agent_label)
+        normalized_memory_slot = str(memory_slot or "default").strip() or "default"
+        normalized_scope_key = str(scope_key or "thread:global").strip() or "thread:global"
+        raw_identifier = f"{normalized_agent_label}|{normalized_memory_slot}|{normalized_scope_key}"
+        identifier_hash = hashlib.sha1(raw_identifier.encode("utf-8")).hexdigest()[:16]
+        return f"agent_memory:{normalized_agent_label}:{normalized_memory_slot}:{identifier_hash}"
+
+    def _stable_payload(self, payload: Any) -> str:
+        try:
+            return json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+        except Exception:
+            return str(payload)
+
+    def _clip_payload_for_message(self, payload: Any) -> Any:
+        serialized_payload = self._stable_payload(payload)
+        if len(serialized_payload) <= self.MAX_MESSAGE_PAYLOAD_CHARS:
+            return payload
         return {
-            "$schema_version": "1.0",
-            "jobtitel": "IT Service Desk Coordinator (m/w/d)",
-            "arbeitgeber": "ExampleCorp",
-            "arbeitsort": "Remote (EU)",
-            "anstellungsart": "Vollzeit",
-            "befristung": "unbefristet",
-            "beginn": "ab sofort",
-            "berufsbezeichnung": "IT-Produktkoordinator/in",
-            "mission": "Example job posting used to demonstrate the job posting schema and downstream parsing workflows.",
-            "aufgaben": [
-                "Koordination des Servicedesk-Teams zur Sicherstellung der effizienten, zuverlaessigen Bearbeitung der Anfragen interner IT-Anwender",
-                "Mitarbeit bei und Ueberpruefung von schwierigen bzw. besonderen Tickets",
-                "Ueberwachung und Betreuung von Eskalationen zur Unterstuetzung schneller, prozesstreuer Loesungen",
-                "Analyse von Ursachen fuer Loesungsverzoegerungen oder Incidents und Ableitung geeigneter Massnahmen",
-                "Customizing und Optimierung des Ticket-Systems",
-                "Etablierung von KPIs zur Steuerung eines erfolgreichen Servicedesks",
-                "Zustaendigkeit fuer die Endpoint-Verwaltung (Beschaffung, Asset Management)",
-            ],
-            "profil": [
-                "Abgeschlossene Ausbildung zum Fachinformatiker (m/w/d) oder vergleichbar",
-                "Erfahrung im IT-Support",
-                "Erfahrung in der Koordination eines IT-Service-Teams",
-                "Erfahrung in Administration und Konfiguration von Ticket-Systemen (z. B. TOPdesk), Servicedesk-Prozessen, gaengigen IT-Standards und ITIL-Framework",
-                "Strukturierte, organisierte, prozessorientierte und eigenstaendige Arbeitsweise",
-                "Zuverlaessigkeit, Verantwortungs- und Qualitaetsbewusstsein",
-                "Service- und loesungsorientiertes Arbeiten, analytische und konzeptionelle Staerke, Faehigkeit, Probleme schnell zu erfassen",
-                "Sichere Kommunikation mit verschiedenen Ansprechpartnern im Unternehmen",
-                "Sehr gute Deutschkenntnisse in Wort und Schrift; gute Englischkenntnisse von Vorteil",
-            ],
-            "angebot": [
-                "Krisen- und zukunftssicherer Arbeitsplatz in der wachsenden Pharmabranche",
-                "Teil eines innovativen und modernen Familienunternehmens",
-                "Vielseitige Taetigkeiten und Aufgaben in einem spannenden Arbeitsumfeld",
-                "Ausfuehrliche und fundierte fachliche Einarbeitung",
-                "Langfristige Perspektiven und interne Weiterentwicklungsmoeglichkeiten",
-                "Attraktive Verguetung gemaess Chemie-Tarifvertrag",
-                "Zusammenarbeit mit motivierten und professionellen KollegInnen",
-            ],
-            "gehalt": "",
-            "bewerbungsart": "E-Mail",
-            "anschrift_arbeitgeber": "",
-            "email": "jobs@example.com",
-            "telefon": "",
+            "truncated": True,
+            "preview": serialized_payload[: self.MAX_MESSAGE_PAYLOAD_CHARS],
         }
 
-    def load_raw_text(self) -> str:
-        job_posting_object = self.load_job_posting_object()
-        tasks_text = "\n".join(f"- {item}" for item in job_posting_object["aufgaben"])
-        profile_text = "\n".join(f"- {item}" for item in job_posting_object["profil"])
-        offer_text = "\n".join(f"- {item}" for item in job_posting_object["angebot"])
-        return "\n\n".join(
-            [
-                f"Jobtitel: {job_posting_object['jobtitel']}\nArbeitgeber: {job_posting_object['arbeitgeber']}\nArbeitsort: {job_posting_object['arbeitsort']}\nAnstellungsart: {job_posting_object['anstellungsart']}\nBeginn: {job_posting_object['beginn']}\nMission: {job_posting_object['mission']}",
-                f"Aufgaben\n{tasks_text}",
-                f"Profil\n{profile_text}",
-                f"Angebot\n{offer_text}\n\nBewerbungsart: {job_posting_object['bewerbungsart']}\nE-Mail: {job_posting_object['email']}",
-            ],
+    def load_object_record(
+        self,
+        *,
+        agent_label: str,
+        memory_slot: str,
+        scope_key: str,
+    ) -> dict[str, Any]:
+        correlation_id = self.build_object_correlation_id(
+            agent_label=agent_label,
+            memory_slot=memory_slot,
+            scope_key=scope_key,
         )
-
-    def load_source_pdf_metadata(self) -> dict[str, Any]:
-        raw_text = self.load_raw_text()
-        return {
-            "file_name": "job_offer_examplecorp_it_service_desk_coordinator.pdf",
-            "source_path": "AppData/job_offer_examplecorp_it_service_desk_coordinator.pdf",
-            "source_uri": self._source_uri,
-            "mime_type": "application/pdf",
-            "page_count": 2,
-            "language": "de",
-            "content_sha256": _stable_sha256(raw_text),
-            "extractor_backend": "demo_pdf_text_extractor",
-            "ocr_used": False,
-            "layout_retained": True,
-            "extracted_at": self._timestamp.isoformat(),
-            "metadata": {
-                "producer": "example-demo",
-                "example": True,
-                "document_family": "job_offer_pdf",
-            },
-        }
-
-    def build_block_seed_objects(self) -> list[dict[str, Any]]:
-        job_posting_object = self.load_job_posting_object()
-        return [
-            {
-                "block_id": f"blk:{self._correlation_id}:1",
-                "block_no": 1,
-                "block_kind": "section",
-                "heading": "Stammdaten",
-                "content": (
-                    f"Jobtitel: {job_posting_object['jobtitel']}\n"
-                    f"Arbeitgeber: {job_posting_object['arbeitgeber']}\n"
-                    f"Arbeitsort: {job_posting_object['arbeitsort']}\n"
-                    f"Anstellungsart: {job_posting_object['anstellungsart']}\n"
-                    f"Beginn: {job_posting_object['beginn']}\n"
-                    f"Mission: {job_posting_object['mission']}"
-                ),
-                "metadata": {"section_type": "header", "page_no": 1},
-            },
-            {
-                "block_id": f"blk:{self._correlation_id}:2",
-                "block_no": 2,
-                "block_kind": "chunk",
-                "heading": "Aufgaben",
-                "content": "Aufgaben\n" + "\n".join(f"- {item}" for item in job_posting_object["aufgaben"]),
-                "metadata": {"section_type": "responsibilities", "page_no": 1},
-            },
-            {
-                "block_id": f"blk:{self._correlation_id}:3",
-                "block_no": 3,
-                "block_kind": "chunk",
-                "heading": "Profil",
-                "content": "Profil\n" + "\n".join(f"- {item}" for item in job_posting_object["profil"]),
-                "metadata": {"section_type": "requirements", "page_no": 2},
-            },
-            {
-                "block_id": f"blk:{self._correlation_id}:4",
-                "block_no": 4,
-                "block_kind": "chunk",
-                "heading": "Angebot und Bewerbung",
-                "content": (
-                    "Angebot\n" +
-                    "\n".join(f"- {item}" for item in job_posting_object["angebot"]) +
-                    f"\n\nBewerbungsart: {job_posting_object['bewerbungsart']}\nE-Mail: {job_posting_object['email']}"
-                ),
-                "metadata": {"section_type": "benefits", "page_no": 2},
-            },
-        ]
-
-    def load_entity_objects(self) -> list[EntityObject]:
-        return [
-            EntityObject(
-                id="ent_job_it_service_desk_coordinator",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                entity_type="job_posting",
-                canonical_name="IT Service Desk Coordinator (m/w/d)",
-                external_key="job:examplecorp:it-service-desk-coordinator",
-                correlation_id=self._correlation_id,
-                summary="Stellenprofil fuer die Koordination eines IT-Service-Desk-Teams.",
-                attributes={"employment_type": "Vollzeit", "work_mode": "Remote (EU)", "start_date": "ab sofort"},
-                aliases=[EntityAliasObject(alias="IT-Produktkoordinator/in", locale="de", confidence=0.96, source_document_id=self._document_id, created_at=self._timestamp)],
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityObject(
-                id="ent_company_examplecorp",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                entity_type="organization",
-                canonical_name="ExampleCorp",
-                external_key="org:examplecorp",
-                correlation_id=self._correlation_id,
-                summary="Arbeitgeber der Beispiel-Stellenanzeige.",
-                attributes={"industry": "pharma", "organization_kind": "familienunternehmen"},
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityObject(
-                id="ent_location_remote_eu",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                entity_type="location",
-                canonical_name="Remote (EU)",
-                external_key="location:remote-eu",
-                correlation_id=self._correlation_id,
-                summary="Arbeitsort der Stelle innerhalb der EU im Remote-Modell.",
-                attributes={"mode": "remote", "region": "EU"},
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityObject(
-                id="ent_employment_vollzeit",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                entity_type="employment_type",
-                canonical_name="Vollzeit",
-                external_key="employment:full-time",
-                correlation_id=self._correlation_id,
-                summary="Anstellungsart der Stelle.",
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityObject(
-                id="ent_skill_it_support",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                entity_type="skill",
-                canonical_name="IT-Support",
-                external_key="skill:it-support",
-                correlation_id=self._correlation_id,
-                summary="Praxis in der Unterstuetzung interner IT-Anwender.",
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityObject(
-                id="ent_tool_topdesk",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                entity_type="tool",
-                canonical_name="TOPdesk",
-                external_key="tool:topdesk",
-                correlation_id=self._correlation_id,
-                summary="Beispiel fuer ein Ticket-System im Stellenprofil.",
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityObject(
-                id="ent_framework_itil",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                entity_type="framework",
-                canonical_name="ITIL",
-                external_key="framework:itil",
-                correlation_id=self._correlation_id,
-                summary="IT-Service-Management-Framework im Anforderungsprofil.",
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityObject(
-                id="ent_language_deutsch",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                entity_type="language",
-                canonical_name="Deutsch",
-                external_key="language:de",
-                correlation_id=self._correlation_id,
-                summary="Erforderliche Sprachkompetenz fuer die Stelle.",
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityObject(
-                id="ent_language_englisch",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                entity_type="language",
-                canonical_name="Englisch",
-                external_key="language:en",
-                correlation_id=self._correlation_id,
-                summary="Wuenschenswerte Sprachkompetenz fuer die Stelle.",
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-        ]
-
-    def load_entity_object_map(self) -> dict[str, EntityObject]:
-        entity_objects = self.load_entity_objects()
-        return {entity_object.id: entity_object for entity_object in entity_objects}
-
-    def _load_mention(self, block_content: str, *, entity_id: str, mention_text: str, extractor: str, confidence: float) -> EntityMentionObject:
-        char_start = block_content.find(mention_text)
-        char_end = char_start + len(mention_text) if char_start >= 0 else None
-        return EntityMentionObject(
-            entity_id=entity_id,
-            mention_text=mention_text,
-            extractor=extractor,
-            confidence=confidence,
-            char_start=char_start if char_start >= 0 else None,
-            char_end=char_end,
-            metadata={"example": True, "extractor_version": "demo-v1"},
-            created_at=self._timestamp,
-        )
-
-    def build_document_block_objects(self) -> list[BlockObject]:
-        raw_text = self.load_raw_text()
-        block_seed_objects = self.build_block_seed_objects()
-        current_offset = 0
-        block_objects: list[BlockObject] = []
-        for index, block_seed_object in enumerate(block_seed_objects):
-            block_content = str(block_seed_object["content"])
-            char_start = raw_text.find(block_content, current_offset)
-            char_end = char_start + len(block_content) if char_start >= 0 else None
-            current_offset = max(current_offset, char_end or current_offset)
-            mentions: list[EntityMentionObject] = []
-            if index == 0:
-                mentions.extend(
-                    [
-                        self._load_mention(block_content, entity_id="ent_job_it_service_desk_coordinator", mention_text="IT Service Desk Coordinator", extractor="layout_rule", confidence=0.99),
-                        self._load_mention(block_content, entity_id="ent_company_examplecorp", mention_text="ExampleCorp", extractor="layout_rule", confidence=0.99),
-                        self._load_mention(block_content, entity_id="ent_location_remote_eu", mention_text="Remote (EU)", extractor="layout_rule", confidence=0.98),
-                        self._load_mention(block_content, entity_id="ent_employment_vollzeit", mention_text="Vollzeit", extractor="layout_rule", confidence=0.98),
-                    ],
-                )
-            elif index == 2:
-                mentions.extend(
-                    [
-                        self._load_mention(block_content, entity_id="ent_skill_it_support", mention_text="IT-Support", extractor="ner", confidence=0.95),
-                        self._load_mention(block_content, entity_id="ent_tool_topdesk", mention_text="TOPdesk", extractor="ner", confidence=0.97),
-                        self._load_mention(block_content, entity_id="ent_framework_itil", mention_text="ITIL", extractor="ner", confidence=0.97),
-                        self._load_mention(block_content, entity_id="ent_language_deutsch", mention_text="Deutschkenntnisse", extractor="ner", confidence=0.93),
-                        self._load_mention(block_content, entity_id="ent_language_englisch", mention_text="Englischkenntnisse", extractor="ner", confidence=0.9),
-                    ],
-                )
-            block_objects.append(
-               BlockObject(
-                    block_id=str(block_seed_object["block_id"]),
-                    block_no=int(block_seed_object["block_no"]),
-                    content=block_content,
-                    block_kind=str(block_seed_object["block_kind"]),
-                    heading=str(block_seed_object["heading"]),
-                    token_count=len(block_content.split()),
-                    char_start=char_start if char_start >= 0 else None,
-                    char_end=char_end,
-                    metadata=_deepcopy_object(dict(block_seed_object["metadata"])),
-                    mentions=mentions,
-                    created_at=self._timestamp,
-                ),
+        document_repository = _get_document_repository_for_memory()
+        if document_repository is None:
+            return {}
+        try:
+            stored_record = document_repository.get_document(
+                correlation_id,
+                obj_name=self.AGENT_MEMORY_OBJECT_NAME,
             )
-        return block_objects
+        except Exception:
+            return {}
 
-    def build_document_object(self) -> DocumentObject:
-        job_posting_object = self.load_job_posting_object()
-        raw_text = self.load_raw_text()
-        source_pdf_metadata = self.load_source_pdf_metadata()
-        return DocumentObject(
-            id=self._document_id,
-            tenant_id=self._tenant_id,
-            namespace_id=self._namespace_id,
-            document_type=self._document_type,
-            title=str(job_posting_object["jobtitel"]),
-            source_uri=self._source_uri,
-            content_sha256=str(source_pdf_metadata["content_sha256"]),
-            source_system="pdf_upload",
-            mime_type="application/pdf",
-            language_code="de",
-            correlation_id=self._correlation_id,
-            summary=str(job_posting_object["mission"]),
-            metadata={
-                "company_name": job_posting_object["arbeitgeber"],
-                "location": job_posting_object["arbeitsort"],
-                "employment_type": job_posting_object["anstellungsart"],
-                "source_pdf": source_pdf_metadata,
-                "raw_text_sha256": _stable_sha256(raw_text),
-                "example": True,
+        if not isinstance(stored_record, Mapping):
+            return {}
+        section = stored_record.get(self.AGENT_MEMORY_OBJECT_NAME)
+        if isinstance(section, Mapping):
+            return dict(section)
+        return {}
+
+    def store_object_record(
+        self,
+        *,
+        agent_label: str,
+        memory_slot: str,
+        scope_key: str,
+        object_memory: dict[str, Any],
+        source_agent_label: str | None = None,
+    ) -> bool:
+        correlation_id = self.build_object_correlation_id(
+            agent_label=agent_label,
+            memory_slot=memory_slot,
+            scope_key=scope_key,
+        )
+        normalized_agent_label = _normalize_agent_label_for_memory(agent_label)
+        normalized_source_agent = _normalize_agent_label_for_memory(source_agent_label or normalized_agent_label)
+
+        payload: dict[str, Any] = {
+            "agent": normalized_source_agent,
+            "job_name": memory_slot,
+            "parse": {"language": "json", "errors": [], "warnings": []},
+            self.AGENT_MEMORY_OBJECT_NAME: _deepcopy_object(object_memory),
+            "db_updates": {"processing_state": "stored", "processed": True},
+        }
+
+        document_repository = _get_document_repository_for_memory()
+        if document_repository is None:
+            return False
+        try:
+            document_repository.persist_document(
+                correlation_id=correlation_id,
+                result_payload=payload,
+                obj_name=self.AGENT_MEMORY_OBJECT_NAME,
+                handoff_metadata={
+                    "agent_label": normalized_agent_label,
+                    "job_name": memory_slot,
+                    "scope_key": scope_key,
+                    "object_name": self.AGENT_MEMORY_OBJECT_NAME,
+                },
+                handoff_payload={"output": _deepcopy_object(object_memory)},
+            )
+        except Exception:
+            return False
+        return True
+
+    def build_object_profile(
+        self,
+        *,
+        agent_label: str,
+        memory_slot: str,
+        runtime_metadata: dict[str, Any] | None,
+        system_prompt: str,
+    ) -> dict[str, Any]:
+        runtime = dict(runtime_metadata or {})
+        job_skill_profiles = runtime.get("job_skill_profiles")
+        if not isinstance(job_skill_profiles, dict):
+            job_skill_profiles = {}
+        tool_skill_profiles = runtime.get("tool_skill_profiles")
+        if not isinstance(tool_skill_profiles, dict):
+            tool_skill_profiles = {}
+
+        selected_job_prompt = ""
+        if memory_slot and memory_slot != "default":
+            selected_job_prompt = _get_specialized_system_prompt_for_memory(agent_label, memory_slot)
+
+        resolved_jobs = {str(job_name) for job_name in job_skill_profiles.keys() if str(job_name).strip()}
+        if memory_slot and memory_slot != "default":
+            resolved_jobs.add(str(memory_slot))
+
+        return {
+            "agent_label": _normalize_agent_label_for_memory(agent_label),
+            "memory_slot": memory_slot,
+            "jobs": sorted(resolved_jobs),
+            "skills": {
+                "agent_skill_profile": runtime.get("skill_profile") or "",
+                "job_skill_profiles": _deepcopy_object(job_skill_profiles),
+                "tool_skill_profiles": _deepcopy_object(tool_skill_profiles),
             },
-            blocks=self.build_document_block_objects(),
-            created_at=self._timestamp,
-            updated_at=self._timestamp,
+            "prompts": {
+                "system": str(system_prompt or ""),
+                "job": selected_job_prompt,
+            },
+            "runtime": {
+                "role": runtime.get("role") or "",
+                "instance_policy": runtime.get("instance_policy") or "",
+                "selection_mode": runtime.get("selection_mode") or "",
+                "workflow_name": runtime.get("workflow_name") or "",
+            },
+            "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
+
+    def ensure_object_memory(
+        self,
+        *,
+        agent_label: str,
+        memory_slot: str,
+        scope_key: str,
+        runtime_metadata: dict[str, Any] | None,
+        system_prompt: str,
+        source_agent_label: str | None = None,
+    ) -> dict[str, Any]:
+        normalized_slot = self.load_memory_slot(job_name=memory_slot, tool_name="")
+        normalized_scope_key = self.load_session_scope_key(scope_key=scope_key)
+        existing_memory = self.load_object_record(
+            agent_label=agent_label,
+            memory_slot=normalized_slot,
+            scope_key=normalized_scope_key,
+        )
+        baseline_memory = _deepcopy_object(existing_memory) if isinstance(existing_memory, dict) else {}
+
+        baseline_memory["agent_profile"] = self.build_object_profile(
+            agent_label=agent_label,
+            memory_slot=normalized_slot,
+            runtime_metadata=runtime_metadata,
+            system_prompt=system_prompt,
+        )
+        session_context = baseline_memory.get("session_context")
+        if not isinstance(session_context, dict):
+            session_context = {}
+        entries = session_context.get("entries")
+        if not isinstance(entries, list):
+            entries = []
+        session_context["entries"] = entries
+        session_context["scope_key"] = normalized_scope_key
+        baseline_memory["session_context"] = session_context
+        baseline_memory["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+
+        if self._stable_payload(existing_memory) != self._stable_payload(baseline_memory):
+            self.store_object_record(
+                agent_label=agent_label,
+                memory_slot=normalized_slot,
+                scope_key=normalized_scope_key,
+                object_memory=baseline_memory,
+                source_agent_label=source_agent_label,
+            )
+        return baseline_memory
+
+    def append_session_context(
+        self,
+        *,
+        agent_label: str,
+        memory_slot: str,
+        scope_key: str,
+        context_type: str,
+        payload: dict[str, Any],
+        runtime_metadata: dict[str, Any] | None,
+        system_prompt: str,
+        source_agent_label: str | None = None,
+    ) -> bool:
+        object_memory = self.ensure_object_memory(
+            agent_label=agent_label,
+            memory_slot=memory_slot,
+            scope_key=scope_key,
+            runtime_metadata=runtime_metadata,
+            system_prompt=system_prompt,
+            source_agent_label=source_agent_label,
         )
 
-    def build_relation_objects(self) -> list[EntityRelationObject]:
-        return [
-            EntityRelationObject(
-                id="rel_job_company_examplecorp",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                source_entity_id="ent_job_it_service_desk_coordinator",
-                target_entity_id="ent_company_examplecorp",
-                relation_type="offered_by",
-                direction="directed",
-                weight=1.0,
-                confidence=0.99,
-                correlation_id=self._correlation_id,
-                metadata={"source": "header_section", "example": True},
-                evidence=[RelationEvidenceObject(block_id=f"blk:{self._correlation_id}:1", created_at=self._timestamp)],
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityRelationObject(
-                id="rel_job_location_remote_eu",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                source_entity_id="ent_job_it_service_desk_coordinator",
-                target_entity_id="ent_location_remote_eu",
-                relation_type="located_in",
-                direction="directed",
-                weight=0.92,
-                confidence=0.98,
-                correlation_id=self._correlation_id,
-                metadata={"source": "header_section", "example": True},
-                evidence=[RelationEvidenceObject(block_id=f"blk:{self._correlation_id}:1", created_at=self._timestamp)],
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityRelationObject(
-                id="rel_job_employment_vollzeit",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                source_entity_id="ent_job_it_service_desk_coordinator",
-                target_entity_id="ent_employment_vollzeit",
-                relation_type="employment_type",
-                direction="directed",
-                weight=0.88,
-                confidence=0.98,
-                correlation_id=self._correlation_id,
-                metadata={"source": "header_section", "example": True},
-                evidence=[RelationEvidenceObject(block_id=f"blk:{self._correlation_id}:1", created_at=self._timestamp)],
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityRelationObject(
-                id="rel_job_skill_it_support",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                source_entity_id="ent_job_it_service_desk_coordinator",
-                target_entity_id="ent_skill_it_support",
-                relation_type="requires_skill",
-                direction="directed",
-                weight=0.95,
-                confidence=0.95,
-                correlation_id=self._correlation_id,
-                metadata={"source": "requirements_section", "example": True},
-                evidence=[RelationEvidenceObject(block_id=f"blk:{self._correlation_id}:3", created_at=self._timestamp)],
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityRelationObject(
-                id="rel_job_tool_topdesk",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                source_entity_id="ent_job_it_service_desk_coordinator",
-                target_entity_id="ent_tool_topdesk",
-                relation_type="uses_tool",
-                direction="directed",
-                weight=0.81,
-                confidence=0.97,
-                correlation_id=self._correlation_id,
-                metadata={"source": "requirements_section", "example": True},
-                evidence=[RelationEvidenceObject(block_id=f"blk:{self._correlation_id}:3", created_at=self._timestamp)],
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityRelationObject(
-                id="rel_job_framework_itil",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                source_entity_id="ent_job_it_service_desk_coordinator",
-                target_entity_id="ent_framework_itil",
-                relation_type="requires_framework_knowledge",
-                direction="directed",
-                weight=0.84,
-                confidence=0.97,
-                correlation_id=self._correlation_id,
-                metadata={"source": "requirements_section", "example": True},
-                evidence=[RelationEvidenceObject(block_id=f"blk:{self._correlation_id}:3", created_at=self._timestamp)],
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityRelationObject(
-                id="rel_job_language_deutsch",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                source_entity_id="ent_job_it_service_desk_coordinator",
-                target_entity_id="ent_language_deutsch",
-                relation_type="requires_language",
-                direction="directed",
-                weight=0.9,
-                confidence=0.93,
-                correlation_id=self._correlation_id,
-                metadata={"source": "requirements_section", "example": True},
-                evidence=[RelationEvidenceObject(block_id=f"blk:{self._correlation_id}:3", created_at=self._timestamp)],
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-            EntityRelationObject(
-                id="rel_job_language_englisch",
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                source_entity_id="ent_job_it_service_desk_coordinator",
-                target_entity_id="ent_language_englisch",
-                relation_type="prefers_language",
-                direction="directed",
-                weight=0.45,
-                confidence=0.9,
-                correlation_id=self._correlation_id,
-                metadata={"source": "requirements_section", "example": True},
-                evidence=[RelationEvidenceObject(block_id=f"blk:{self._correlation_id}:3", created_at=self._timestamp)],
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-        ]
+        session_context = object_memory.get("session_context")
+        if not isinstance(session_context, dict):
+            session_context = {}
+        entries = session_context.get("entries")
+        if not isinstance(entries, list):
+            entries = []
 
-    def build_embedding_objects(self) -> list[EmbeddingObject]:
-        document_object = self.build_document_object()
-        embedding_objects = [
-            EmbeddingObject(
-                tenant_id=self._tenant_id,
-                namespace_id=self._namespace_id,
-                model_id=self._embedding_model,
-                owner_type="document",
-                owner_id=document_object.id,
-                content_sha256=document_object.content_sha256,
-                dimension=self._embedding_dimension,
-                index_namespace=self._namespace_id,
-                index_item_key=document_object.id,
-                embedding=_demo_embedding_vector(document_object.id, self._embedding_dimension),
-                index_backend="faiss",
-                metadata={"source_stage": "document_embedding", "example": True},
-                created_at=self._timestamp,
-                updated_at=self._timestamp,
-            ),
-        ]
-        for block_object in document_object.blocks:
-            embedding_objects.append(
-                EmbeddingObject(
-                    tenant_id=self._tenant_id,
-                    namespace_id=self._namespace_id,
-                    model_id=self._embedding_model,
-                    owner_type="block",
-                    owner_id=block_object.block_id,
-                    content_sha256=_stable_sha256(block_object.content),
-                    dimension=self._embedding_dimension,
-                    index_namespace=self._namespace_id,
-                    index_item_key=block_object.block_id,
-                    chunk_hash=_stable_sha256(f"{block_object.block_id}:{block_object.content}"),
-                    embedding=_demo_embedding_vector(block_object.block_id, self._embedding_dimension),
-                    index_backend="faiss",
-                    metadata={
-                        "source_stage": "chunk_embedding",
-                        "heading": block_object.heading,
-                        "block_no": block_object.block_no,
-                        "example": True,
-                    },
-                    created_at=self._timestamp,
-                    updated_at=self._timestamp,
-                ),
+        payload_fingerprint = hashlib.sha1(self._stable_payload(payload).encode("utf-8")).hexdigest()
+        if entries:
+            last_entry = entries[-1] if isinstance(entries[-1], dict) else {}
+            if (
+                str(last_entry.get("context_type") or "") == str(context_type or "")
+                and str(last_entry.get("payload_fingerprint") or "") == payload_fingerprint
+            ):
+                return True
+
+        entry = {
+            "context_type": str(context_type or "session_context"),
+            "payload": _deepcopy_object(payload),
+            "payload_fingerprint": payload_fingerprint,
+            "source_agent": _normalize_agent_label_for_memory(source_agent_label or agent_label),
+            "timestamp": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
+        entries.append(entry)
+        if len(entries) > self.MAX_SESSION_CONTEXT_ENTRIES:
+            entries = entries[-self.MAX_SESSION_CONTEXT_ENTRIES :]
+
+        session_context["entries"] = entries
+        session_context["scope_key"] = self.load_session_scope_key(scope_key=scope_key)
+        object_memory["session_context"] = session_context
+        object_memory["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
+
+        return self.store_object_record(
+            agent_label=agent_label,
+            memory_slot=memory_slot,
+            scope_key=scope_key,
+            object_memory=object_memory,
+            source_agent_label=source_agent_label,
+        )
+
+    def load_session_cache_message(
+        self,
+        *,
+        agent_label: str,
+        memory_slot: str,
+        scope_key: str,
+    ) -> dict[str, str] | None:
+        object_memory = self.load_object_record(
+            agent_label=agent_label,
+            memory_slot=memory_slot,
+            scope_key=scope_key,
+        )
+        if not object_memory:
+            return None
+        session_context = object_memory.get("session_context")
+        if not isinstance(session_context, dict):
+            return None
+        entries = session_context.get("entries")
+        if not isinstance(entries, list) or not entries:
+            return None
+
+        selected_entries = entries[-self.MAX_MESSAGE_CONTEXT_ENTRIES :]
+        serialized_entries: list[dict[str, Any]] = []
+        for entry in selected_entries:
+            if not isinstance(entry, dict):
+                continue
+            serialized_entries.append(
+                {
+                    "context_type": str(entry.get("context_type") or "session_context"),
+                    "source_agent": str(entry.get("source_agent") or ""),
+                    "timestamp": str(entry.get("timestamp") or ""),
+                    "payload": self._clip_payload_for_message(entry.get("payload")),
+                }
             )
-        return embedding_objects
 
-    def build_db_record(self) -> dict[str, Any]:
-        job_posting_object = self.load_object()
-        source_pdf_metadata = self.load_source_pdf_metadata()
-        raw_text = self.load_raw_text()
-        return {
-            "correlation_id": self._correlation_id,
-            "created_at": self._timestamp.isoformat(),
-            "updated_at": self._timestamp.isoformat(),
-            "source_agent": "job_posting_pdf_parser",
-            "link": {
-                "source_uri": self._source_uri,
-                "url": "https://example.org/jobs/it-service-desk-coordinator",
-                "label": "Originale Stellenanzeige",
-            },
-            "file": source_pdf_metadata,
-            "parse": {
-                "raw_text": raw_text,
-                "language": "de",
-                "page_count": 2,
-                "extractor_backend": "demo_pdf_text_extractor",
-                "extractor_method": "layout_aware_pdf_parse",
-                "chunk_strategy": "section_aware",
-                "chunk_count": len(self.build_block_seed_objects()),
-                "is_job_posting": True,
-                "warnings": [],
-                "errors": [],
-            },
-            "job_posting": job_posting_object,
-            "db_updates": {
-                "processing_state": "processed",
-                "processed": True,
-                "document_id": self._document_id,
-                "entity_count": len(self.load_entity_objects()),
-                "relation_count": len(self.build_relation_objects()),
-                "embedding_count": len(self.build_embedding_objects()),
-            },
-            "handoff_metadata": {
-                "source_agent": "job_posting_pdf_parser",
-                "tenant_id": self._tenant_id,
-                "knowledge_namespace_id": self._namespace_id,
-                "knowledge_namespace_slug": self._namespace_slug,
-                "knowledge_namespace_name": self._namespace_name,
-            },
-            "source_payload": {
-                "input_kind": "pdf_upload",
-                "file_name": source_pdf_metadata["file_name"],
-                "source_path": source_pdf_metadata["source_path"],
-                "uploaded_by": "demo-user",
-                "example": True,
-            },
+        if not serialized_entries:
+            return None
+
+        snapshot_payload = {
+            "agent_label": _normalize_agent_label_for_memory(agent_label),
+            "memory_slot": memory_slot,
+            "scope_key": self.load_session_scope_key(scope_key=scope_key),
+            "entries": serialized_entries,
         }
+        content = (
+            "Session cache context (agentsdb agent_memory) for "
+            f"{memory_slot}:\n"
+            f"{json.dumps(snapshot_payload, ensure_ascii=False)}"
+        )
+        return {"role": "user", "content": content}
 
-    def build_entity_relation_graph(self) -> dict[str, Any]:
-        entity_objects = self.load_entity_objects()
-        relation_objects = self.build_relation_objects()
-        return {
-            "nodes": [
-                {
-                    "entity_id": entity_object.id,
-                    "entity_type": entity_object.entity_type,
-                    "canonical_name": entity_object.canonical_name,
-                }
-                for entity_object in entity_objects
-            ],
-            "edges": [
-                {
-                    "relation_id": relation_object.id,
-                    "source_entity_id": relation_object.source_entity_id,
-                    "target_entity_id": relation_object.target_entity_id,
-                    "relation_type": relation_object.relation_type,
-                    "direction": relation_object.direction,
-                    "weight": relation_object.weight,
-                    "confidence": relation_object.confidence,
-                }
-                for relation_object in relation_objects
-            ],
+    def load_handoff_target_memory_slot(
+        self,
+        *,
+        fallback_memory_slot: str,
+        handoff_metadata: dict[str, Any],
+        output_payload: dict[str, Any],
+    ) -> str:
+        sequence_payload = output_payload.get("sequence") if isinstance(output_payload.get("sequence"), dict) else {}
+        for candidate in (
+            handoff_metadata.get("session_cache_memory_slot"),
+            handoff_metadata.get("writer_job_name"),
+            output_payload.get("memory_slot"),
+            output_payload.get("job_name"),
+            output_payload.get("writer_job_name"),
+            sequence_payload.get("writer_job_name"),
+            sequence_payload.get("job_name"),
+            fallback_memory_slot,
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+
+        resolved_action = str(output_payload.get("action") or "").strip().lower()
+        if resolved_action == "generate_cover_letter":
+            return "cover_letter_writer"
+        return str(fallback_memory_slot or "").strip()
+
+    def load_handoff_session_context_entries(
+        self,
+        *,
+        output_payload: dict[str, Any],
+    ) -> list[tuple[str, dict[str, Any]]]:
+        context_entries: list[tuple[str, dict[str, Any]]] = []
+        options_payload = _deepcopy_object(output_payload.get("options")) if isinstance(output_payload.get("options"), dict) else None
+
+        def _append_dict_context(
+            context_type: str,
+            field_name: str,
+            *,
+            include_options: bool = False,
+        ) -> None:
+            value = output_payload.get(field_name)
+            if not isinstance(value, dict):
+                return
+            payload: dict[str, Any] = {field_name: _deepcopy_object(value)}
+            if include_options and isinstance(options_payload, dict):
+                payload["options"] = _deepcopy_object(options_payload)
+            context_entries.append((context_type, payload))
+
+        _append_dict_context("applicant_profile", "applicant_profile")
+        _append_dict_context("profile_result", "profile_result", include_options=True)
+        _append_dict_context("job_posting_result", "job_posting_result", include_options=True)
+        _append_dict_context("object_result", "object_result")
+        _append_dict_context("dispatcher_updates", "dispatcher_updates")
+
+        if isinstance(options_payload, dict):
+            context_entries.append(("options", {"options": _deepcopy_object(options_payload)}))
+
+        return context_entries
+
+    def cache_handoff_session_context(
+        self,
+        *,
+        target_agent_label: str,
+        target_memory_slot: str,
+        source_agent_label: str | None,
+        handoff_payload: dict[str, Any] | None,
+        handoff_metadata: dict[str, Any] | None,
+        thread_id: int | None,
+        runtime_metadata: dict[str, Any] | None,
+        system_prompt: str,
+    ) -> bool:
+        payload = dict(handoff_payload or {})
+        metadata = dict(handoff_metadata or {})
+        output_payload = payload.get("output") if isinstance(payload.get("output"), dict) else {}
+        if not isinstance(output_payload, dict):
+            return False
+
+        context_entries = self.load_handoff_session_context_entries(output_payload=output_payload)
+        if not context_entries:
+            return False
+
+        resolved_memory_slot = self.load_handoff_target_memory_slot(
+            fallback_memory_slot=target_memory_slot,
+            handoff_metadata=metadata,
+            output_payload=output_payload,
+        )
+        if not resolved_memory_slot:
+            return False
+
+        session_scope_key = self.load_session_scope_key(
+            scope_key=str(metadata.get("session_cache_scope_key") or "").strip() or None,
+            thread_id=thread_id,
+        )
+        target_runtime_metadata = dict(runtime_metadata or {})
+        target_runtime_metadata["job_name"] = resolved_memory_slot
+
+        stored_any = False
+        for context_type, cache_payload in context_entries:
+            stored_any = self.append_session_context(
+                agent_label=target_agent_label,
+                memory_slot=resolved_memory_slot,
+                scope_key=session_scope_key,
+                context_type=context_type,
+                payload=cache_payload,
+                runtime_metadata=target_runtime_metadata,
+                system_prompt=system_prompt,
+                source_agent_label=source_agent_label,
+            ) or stored_any
+        stored_attachments = AGENT_MEMORY_ATTACHMENT_SERVICE.cache_handoff_attachment_context(
+            target_agent_label=target_agent_label,
+            target_memory_slot=resolved_memory_slot,
+            source_agent_label=source_agent_label,
+            handoff_payload=payload,
+            handoff_metadata=metadata,
+            scope_key=session_scope_key,
+            runtime_metadata=target_runtime_metadata,
+            system_prompt=system_prompt,
+        )
+        return stored_any or stored_attachments
+
+    def cache_dispatch_profile_context(
+        self,
+        *,
+        target_agent_label: str,
+        target_memory_slot: str,
+        source_agent_label: str | None,
+        handoff_payload: dict[str, Any] | None,
+        handoff_metadata: dict[str, Any] | None,
+        thread_id: int | None,
+        runtime_metadata: dict[str, Any] | None,
+        system_prompt: str,
+    ) -> bool:
+        return self.cache_handoff_session_context(
+            target_agent_label=target_agent_label,
+            target_memory_slot=target_memory_slot,
+            source_agent_label=source_agent_label,
+            handoff_payload=handoff_payload,
+            handoff_metadata=handoff_metadata,
+            thread_id=thread_id,
+            runtime_metadata=runtime_metadata,
+            system_prompt=system_prompt,
+        )
+
+
+class AgentMemoryAttachmentService:
+    ATTACHMENT_CONTEXT_TYPE = "ATTACHMENT"
+    MAX_ATTACHMENT_DOCUMENTS = 4
+
+    def __init__(self, agent_memory_service: AgentMemoryService) -> None:
+        self.agent_memory_service = agent_memory_service
+
+    def _first_non_empty(self, candidates: Sequence[Any]) -> str:
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if text:
+                return text
+        return ""
+
+    def _normalize_attachment_obj_name(self, value: str | None) -> str:
+        normalized_value = str(value or "").strip().lower()
+        alias_map = {
+            "profile": "profiles",
+            "profile_result": "profiles",
+            "applicant_profile": "profiles",
+            "job_posting": "job_postings",
+            "job_posting_result": "job_postings",
+            "parsed_job_posting": "job_postings",
         }
+        return alias_map.get(normalized_value, normalized_value)
 
-    def build_dataset(self) -> dict[str, Any]:
-        namespace_object = self.load_namespace_object()
-        document_object = self.build_document_object()
-        entity_objects = self.load_entity_objects()
-        relation_objects = self.build_relation_objects()
-        embedding_objects = self.build_embedding_objects()
-        db_record = self.build_db_record()
-        return {
-            "dataset_metadata": {
-                "dataset_kind":self._namespace_id ,
-                "example": True,
-                "tenant_id": self._tenant_id,
-                "namespace_id": self._namespace_id,
-                "correlation_id": self._correlation_id,
-                "generated_at": self._timestamp.isoformat(),
-            },
-            "source_pdf": self.load_source_pdf_metadata(),
-            "raw_text": self.load_raw_text(),
-            "db_record": db_record,
-            "agents_db_objects": {
-                "namespace": _dataclass_payload(namespace_object),
-                "document": _dataclass_payload(document_object),
-                "chunks": [_dataclass_payload(block_object) for block_object in document_object.blocks],
-                "entities": [_dataclass_payload(entity_object) for entity_object in entity_objects],
-                "relations": [_dataclass_payload(relation_object) for relation_object in relation_objects],
-                "embeddings": [_dataclass_payload(embedding_object) for embedding_object in embedding_objects],
-            },
-            "mongodb_objects": {
-                "namespace": _dataclass_payload(namespace_object),
-                "document": _dataclass_payload(document_object),
-                "chunks": [_dataclass_payload(block_object) for block_object in document_object.blocks],
-                "entities": [_dataclass_payload(entity_object) for entity_object in entity_objects],
-                "relations": [_dataclass_payload(relation_object) for relation_object in relation_objects],
-                "embeddings": [_dataclass_payload(embedding_object) for embedding_object in embedding_objects],
-            },
-            "entity_relation_graph": self.build_entity_relation_graph(),
+    def _append_attachment_object(
+        self,
+        attachment_objects: list[dict[str, Any]],
+        *,
+        attachment_type: str,
+        obj_name: str,
+        correlation_candidates: Sequence[Any],
+        source_field: str,
+    ) -> None:
+        resolved_correlation_id = self._first_non_empty(correlation_candidates)
+        if not resolved_correlation_id:
+            return
+        resolved_obj_name = self._normalize_attachment_obj_name(obj_name)
+        if not resolved_obj_name:
+            return
+
+        existing_keys = {
+            (
+                str(item.get("obj_name") or "").strip(),
+                str(item.get("correlation_id") or "").strip(),
+            )
+            for item in attachment_objects
+            if isinstance(item, Mapping)
         }
+        object_key = (resolved_obj_name, resolved_correlation_id)
+        if object_key in existing_keys:
+            return
 
+        attachment_objects.append(
+            {
+                "attachment_type": str(attachment_type or "generic_attachment").strip() or "generic_attachment",
+                "obj_name": resolved_obj_name,
+                "correlation_id": resolved_correlation_id,
+                "source_field": str(source_field or "").strip(),
+            }
+        )
 
-def build_demo_job_posting_knowledge_dataset() -> dict[str, Any]:
-    return JobPostingKnowledgeDatasetExampleService().build_dataset()
+    def load_handoff_attachment_payload(
+        self,
+        *,
+        handoff_payload: dict[str, Any] | None,
+        handoff_metadata: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        payload = dict(handoff_payload or {})
+        metadata = dict(handoff_metadata or {})
+        output_payload = payload.get("output") if isinstance(payload.get("output"), dict) else {}
+        if not isinstance(output_payload, dict):
+            return {}
 
-
-def build_demo_seed_objects() -> dict[str, Any]:
-    namespace_object = NamespaceObject(
-        id="ns_jobs_de",
-        tenant_id="tenant_demo",
-        slug="jobs-de",
-        name="Jobs Deutschland",
-        description="Wissensraum fuer Stellen, Profile und Skills.",
-        default_embedding_model="text-embedding-3-large",
-        default_embedding_dimension=3072,
-        metadata={"locale": "de-DE"},
-    )
-    entity_object = EntityObject(
-        id="ent_skill_python",
-        tenant_id="tenant_demo",
-        namespace_id="ns_jobs_de",
-        entity_type="skill",
-        canonical_name="Python",
-        external_key="skill:python",
-        correlation_id="corr-skill-python",
-        summary="Programmiersprache fuer Backend, Datenverarbeitung und KI.",
-        attributes={"category": "language"},
-        aliases=[EntityAliasObject(alias="Python 3", locale="de")],
-    )
-    document_object = DocumentObject(
-        id="doc_job_0001",
-        tenant_id="tenant_demo",
-        namespace_id="ns_jobs_de",
-        document_type="job_posting",
-        title="Senior Python Engineer",
-        source_uri="https://example.org/jobs/0001",
-        source_system="crawler",
-        mime_type="text/html",
-        language_code="de",
-        content_sha256="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        correlation_id="corr-job-0001",
-        summary="Backend-Rolle mit Fokus auf Python, APIs und Retrieval.",
-        metadata={"company_name": "Example GmbH", "location": "Berlin"},
-        blocks=[
-           BlockObject(
-                block_id="blk_job_0001_001",
-                block_no=1,
-                block_kind="section",
-                heading="Anforderungen",
-                content="Sehr gute Python-Kenntnisse, API-Design, Vektorsuche und RAG.",
-                token_count=20,
-                char_start=0,
-                char_end=66,
-                mentions=[
-                    EntityMentionObject(
-                        entity_id="ent_skill_python",
-                        mention_text="Python",
-                        extractor="ner",
-                        confidence=0.99,
-                        char_start=10,
-                        char_end=16,
-                        metadata={"model": "alde-ner-v1"},
-                    ),
-                ],
+        attachment_objects: list[dict[str, Any]] = []
+        profile_result = output_payload.get("profile_result") if isinstance(output_payload.get("profile_result"), dict) else {}
+        applicant_profile = output_payload.get("applicant_profile") if isinstance(output_payload.get("applicant_profile"), dict) else {}
+        applicant_profile_value = applicant_profile.get("value") if isinstance(applicant_profile.get("value"), dict) else {}
+        profile_payload = profile_result.get("profile") if isinstance(profile_result.get("profile"), dict) else {}
+        self._append_attachment_object(
+            attachment_objects,
+            attachment_type="applicant_profile",
+            obj_name="profiles",
+            correlation_candidates=(
+                profile_result.get("correlation_id"),
+                profile_result.get("profile_id"),
+                profile_payload.get("profile_id"),
+                applicant_profile.get("profile_id"),
+                applicant_profile_value.get("profile_id"),
+                output_payload.get("profile_id"),
+                metadata.get("profile_id"),
             ),
-        ],
-    )
-    relation_object = EntityRelationObject(
-        id="rel_job_skill_0001",
-        tenant_id="tenant_demo",
-        namespace_id="ns_jobs_de",
-        source_entity_id="ent_job_0001",
-        target_entity_id="ent_skill_python",
-        relation_type="requires_skill",
-        confidence=0.98,
-        correlation_id="corr-job-0001",
-        metadata={"source_system": "extraction_pipeline"},
-        evidence=[RelationEvidenceObject(block_id="blk_job_0001_001")],
-    )
-    retrieval_run_object = RetrievalRunObject(
-        id="retr_0001",
-        tenant_id="tenant_demo",
-        namespace_id="ns_jobs_de",
-        query_text="Senior Python Retrieval Engineer Berlin",
-        requested_k=5,
-        lexical_k=20,
-        graph_hops=2,
-        vector_k=40,
-        rerank_strategy="cross_encoder_v1",
-        correlation_id="corr-retr-0001",
-        filters={"location": "Berlin", "entity_type": ["job_posting", "skill"]},
-        results=[
-            RetrievalResultObject(
-                rank_no=1,
-                result_type="document",
-                result_id="doc_job_0001",
-                source_stage="rerank",
-                lexical_score=18.2,
-                vector_score=0.93,
-                graph_score=0.71,
-                rerank_score=0.97,
-                metadata={"explanation": "lexical + vector + graph overlap"},
+            source_field="profile_result.correlation_id",
+        )
+
+        job_posting_result = output_payload.get("job_posting_result") if isinstance(output_payload.get("job_posting_result"), dict) else {}
+        sequence_payload = output_payload.get("sequence") if isinstance(output_payload.get("sequence"), dict) else {}
+        self._append_attachment_object(
+            attachment_objects,
+            attachment_type="parsed_job_posting",
+            obj_name="job_postings",
+            correlation_candidates=(
+                job_posting_result.get("correlation_id"),
+                job_posting_result.get("content_sha256"),
+                output_payload.get("job_posting_id"),
+                output_payload.get("job_posting_correlation_id"),
+                metadata.get("job_posting_id"),
+                metadata.get("job_posting_correlation_id"),
+                sequence_payload.get("job_posting_correlation_id"),
             ),
-        ],
-    )
-    dispatcher_run_object = DispatcherRunObject(
-        id="dispatcher:corr-job-0001",
-        tenant_id="tenant_demo",
-        namespace_id="ns_jobs_de",
-        correlation_id="corr-job-0001",
-        processing_state="processed",
-        processed=True,
-        source_system="job_dispatcher",
-        dispatcher_db_path="AppData/dispatcher_db.json",
-        metadata={"source_agent": "job_dispatcher", "last_seen_at": "2025-01-01T00:00:00Z"},
-    )
-    return {
-        "namespace": namespace_object,
-        "entity": entity_object,
-        "document": document_object,
-        "relation": relation_object,
-        "retrieval_run": retrieval_run_object,
-        "dispatcher_run": dispatcher_run_object,
-    }
+            source_field="job_posting_result.correlation_id",
+        )
+
+        if not attachment_objects:
+            return {}
+
+        return {
+            "attachments": attachment_objects,
+            "writer_job_name": self._first_non_empty(
+                (
+                    metadata.get("writer_job_name"),
+                    output_payload.get("writer_job_name"),
+                    sequence_payload.get("writer_job_name"),
+                )
+            ),
+            "cached_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        }
+
+    def cache_handoff_attachment_context(
+        self,
+        *,
+        target_agent_label: str,
+        target_memory_slot: str,
+        source_agent_label: str | None,
+        handoff_payload: dict[str, Any] | None,
+        handoff_metadata: dict[str, Any] | None,
+        scope_key: str,
+        runtime_metadata: dict[str, Any] | None,
+        system_prompt: str,
+    ) -> bool:
+        attachment_payload = self.load_handoff_attachment_payload(
+            handoff_payload=handoff_payload,
+            handoff_metadata=handoff_metadata,
+        )
+        if not attachment_payload:
+            return False
+
+        return self.agent_memory_service.append_session_context(
+            agent_label=target_agent_label,
+            memory_slot=target_memory_slot,
+            scope_key=scope_key,
+            context_type=self.ATTACHMENT_CONTEXT_TYPE,
+            payload=attachment_payload,
+            runtime_metadata=runtime_metadata,
+            system_prompt=system_prompt,
+            source_agent_label=source_agent_label,
+        )
+
+    def load_object_attachment_entries(
+        self,
+        *,
+        agent_label: str,
+        memory_slot: str,
+        scope_key: str,
+    ) -> list[dict[str, Any]]:
+        object_memory = self.agent_memory_service.load_object_record(
+            agent_label=agent_label,
+            memory_slot=memory_slot,
+            scope_key=scope_key,
+        )
+        if not object_memory:
+            return []
+        session_context = object_memory.get("session_context")
+        if not isinstance(session_context, Mapping):
+            return []
+        entries = session_context.get("entries")
+        if not isinstance(entries, list):
+            return []
+
+        attachment_entries: list[dict[str, Any]] = []
+        seen_keys: set[tuple[str, str]] = set()
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                continue
+            context_type = str(entry.get("context_type") or "").strip()
+            if context_type.upper() != self.ATTACHMENT_CONTEXT_TYPE:
+                continue
+            payload = entry.get("payload") if isinstance(entry.get("payload"), Mapping) else {}
+            attachment_objects = payload.get("attachments") if isinstance(payload.get("attachments"), list) else []
+            for attachment in attachment_objects:
+                if not isinstance(attachment, Mapping):
+                    continue
+                resolved_obj_name = self._normalize_attachment_obj_name(str(attachment.get("obj_name") or ""))
+                resolved_correlation_id = str(attachment.get("correlation_id") or "").strip()
+                if not resolved_obj_name or not resolved_correlation_id:
+                    continue
+                object_key = (resolved_obj_name, resolved_correlation_id)
+                if object_key in seen_keys:
+                    continue
+                seen_keys.add(object_key)
+                attachment_entries.append(
+                    {
+                        "attachment_type": str(attachment.get("attachment_type") or "attachment").strip() or "attachment",
+                        "obj_name": resolved_obj_name,
+                        "correlation_id": resolved_correlation_id,
+                        "source_field": str(attachment.get("source_field") or "").strip(),
+                        "source_agent": str(entry.get("source_agent") or "").strip(),
+                        "timestamp": str(entry.get("timestamp") or "").strip(),
+                    }
+                )
+        return attachment_entries
+
+    def load_object_attachment_documents(
+        self,
+        *,
+        agent_label: str,
+        memory_slot: str,
+        scope_key: str,
+        max_documents: int | None = None,
+    ) -> list[dict[str, Any]]:
+        attachment_entries = self.load_object_attachment_entries(
+            agent_label=agent_label,
+            memory_slot=memory_slot,
+            scope_key=scope_key,
+        )
+        if not attachment_entries:
+            return []
+
+        document_repository = _get_document_repository_for_memory()
+        if document_repository is None:
+            return []
+
+        resolved_limit = max(1, int(max_documents or self.MAX_ATTACHMENT_DOCUMENTS))
+        attachment_documents: list[dict[str, Any]] = []
+        for attachment in attachment_entries:
+            if len(attachment_documents) >= resolved_limit:
+                break
+            obj_name = str(attachment.get("obj_name") or "").strip()
+            correlation_id = str(attachment.get("correlation_id") or "").strip()
+            if not obj_name or not correlation_id:
+                continue
+            try:
+                document_payload = document_repository.get_document(correlation_id, obj_name=obj_name)
+            except Exception:
+                document_payload = None
+            if not isinstance(document_payload, Mapping):
+                continue
+            attachment_documents.append(
+                {
+                    **dict(attachment),
+                    "document": _deepcopy_object(dict(document_payload)),
+                }
+            )
+        return attachment_documents
+
+    def load_attachment_context_message(
+        self,
+        *,
+        agent_label: str,
+        memory_slot: str,
+        scope_key: str,
+    ) -> dict[str, str] | None:
+        attachment_documents = self.load_object_attachment_documents(
+            agent_label=agent_label,
+            memory_slot=memory_slot,
+            scope_key=scope_key,
+        )
+        if not attachment_documents:
+            return None
+
+        max_payload_chars = max(800, int(getattr(self.agent_memory_service, "MAX_MESSAGE_PAYLOAD_CHARS", 2500) or 2500))
+        serialized_documents: list[dict[str, Any]] = []
+        for attachment in attachment_documents:
+            document_payload = attachment.get("document") if isinstance(attachment.get("document"), Mapping) else {}
+            document_text = json.dumps(document_payload, ensure_ascii=False, sort_keys=True, default=str)
+            if len(document_text) > max_payload_chars:
+                clipped_document_payload: dict[str, Any] = {
+                    "truncated": True,
+                    "preview": document_text[:max_payload_chars],
+                }
+            else:
+                clipped_document_payload = _deepcopy_object(dict(document_payload))
+
+            serialized_documents.append(
+                {
+                    "attachment_type": str(attachment.get("attachment_type") or "attachment"),
+                    "obj_name": str(attachment.get("obj_name") or ""),
+                    "correlation_id": str(attachment.get("correlation_id") or ""),
+                    "source_agent": str(attachment.get("source_agent") or ""),
+                    "timestamp": str(attachment.get("timestamp") or ""),
+                    "document": clipped_document_payload,
+                }
+            )
+
+        message_payload = {
+            "agent_label": _normalize_agent_label_for_memory(agent_label),
+            "memory_slot": memory_slot,
+            "scope_key": self.agent_memory_service.load_session_scope_key(scope_key=scope_key),
+            "attachments": serialized_documents,
+        }
+        content = (
+            "Session attachment documents (agentsdb agent_memory) for "
+            f"{memory_slot}:\n"
+            f"{json.dumps(message_payload, ensure_ascii=False)}"
+        )
+        return {"role": "user", "content": content}
 
 
-def load_demo_usage_lines() -> list[str]:
-    return [
-        "from alde.agents_db import KnowledgeRepository, build_demo_seed_objects, build_demo_agentsdb_service",
-        "repository = KnowledgeRepository.create_from_uri('agents_db://localhost:27017', 'alde_knowledge')",
-        "# Start socket endpoint: from alde.agents_db import run_agentsdb_socket_server_from_env; run_agentsdb_socket_server_from_env()",
-        "service = build_demo_agentsdb_service(repository._database)",
-        "seed = build_demo_seed_objects()",
-        "service.store_namespace_object(seed['namespace'])",
-        "service.store_entity_object(seed['entity'])",
-        "service.store_document_object(seed['document'])",
-        "service.store_relation_object(seed['relation'])",
-        "service.store_dispatcher_run_object(seed['dispatcher_run'])",
-        "service.store_retrieval_run_object(seed['retrieval_run'])",
-        "blocks = service.search_block_objects(namespace_id='ns_jobs_de', query_text='Python RAG', limit=5)",
-        "graph = service.load_relation_object_graph(namespace_id='ns_jobs_de', source_entity_id='ent_job_0001', max_depth=2)",
-        "# Optional pipeline mirror: export AI_IDE_KNOWLEDGE_AGENTS_DB_URI, AI_IDE_KNOWLEDGE_AGENTS_DB_NAME and namespace vars.",
-    ]
+AGENT_MEMORY_SERVICE = AgentMemoryService()
+AGENT_MEMORY_ATTACHMENT_SERVICE = AgentMemoryAttachmentService(AGENT_MEMORY_SERVICE)
 
-
-__all__ = [
-    "DocumentBlockObject",
-    "DocumentObject",
-    "DispatcherRunObject",
-    "EmbeddingObject",
-    "EntityAliasObject",
-    "EntityMentionObject",
-    "EntityObject",
-    "EntityRelationObject",
-    "JobPostingKnowledgeDatasetExampleService",
-    "AgentDbSocketRepository",
-    "KnowledgeObjectService",
-    "KnowledgeRepository",
-    "KnowledgeNamespaceObject",
-    "MappingBlockSeedObject",
-    "MappingSeedEntityObject",
-    "ObjectMappingService",
-    "ParserObjectKnowledgeMappingService",
-    "AgentsDBKnowledgeRepository",
-    "AgentsDBKnowledgeRuntimeConfigObject",
-    "AgentsDBKnowledgeService",
-    "AgentsDBKnowledgePipelineService",
-    "MongoKnowledgeRepository",
-    "MongoKnowledgeRuntimeConfigObject",
-    "MongoKnowledgeService",
-    "MongoKnowledgePipelineService",
-    "RelationEvidenceObject",
-    "RetrievalResultObject",
-    "RetrievalRunObject",
-    "build_demo_agentsdb_service",
-    "build_demo_mongodb_service",
-    "build_demo_job_posting_knowledge_dataset",
-    "build_demo_seed_objects",
-    "load_agentsdb_pipeline_service",
-    "load_agentsdb_runtime_config_from_env",
-    "load_mongodb_pipeline_service",
-    "load_mongodb_runtime_config_from_env",
-    "load_demo_usage_lines",
-    "run_agentsdb_socket_server",
-    "run_agentsdb_socket_server_from_env",
-    "sync_parser_result_to_agentsdb_knowledge",
-    "sync_parser_result_to_mongodb_knowledge",
-    "sync_retrieval_run_to_agentsdb_knowledge",
-    "sync_retrieval_run_to_mongodb_knowledge",
-]

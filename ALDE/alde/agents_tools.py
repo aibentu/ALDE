@@ -197,7 +197,21 @@ except ImportError as e:
     else:
         raise
 # Extractor import (local module)
-_DEFAULT_SAVE_DIR = os.path.join(os.path.expanduser("~"), "Cover_letters")
+
+
+def _default_cover_letter_output_dir() -> str:
+    try:
+        base_dir = GetPath()._parent(parg=f"{__file__}")
+        if isinstance(base_dir, str) and base_dir.strip():
+            return os.path.abspath(
+                os.path.join(base_dir, "AppData", "VSM_4_Data", "cover_letters")
+            )
+    except Exception:
+        pass
+    return os.path.abspath(os.path.join(os.path.expanduser("~"), "Cover_letters"))
+
+
+_DEFAULT_SAVE_DIR = _default_cover_letter_output_dir()
 
 
 def _sha256_file(path: str, chunk_size: int = 1024 * 1024) -> str:
@@ -296,13 +310,60 @@ def _atomic_write_json(path: str, payload: object) -> None:
 
 
 def _default_dispatcher_db_path() -> str:
-    # Keep this local and file-based for now (schema can be swapped later).
-    base = GetPath()._parent(parg=f"{__file__}")
-    return os.path.join(base, "AppData", "dispatcher_doc_db.json")
+    # AgentsDB storage key for dispatcher records.
+    return "2331:127.0.0.1://agentsdb::dispatcher_doc_db"
 
 
 def _default_document_db_path(obj: str) -> str:
-    return os.path.join(_default_appdata_dir(), f"{obj}_db.json")
+    return f"2331:127.0.0.1://agentsdb::{obj}_db"
+
+
+def _is_agentsdb_storage_key(path_value: str | None) -> bool:
+    normalized_path = str(path_value or "").strip().lower()
+    if not normalized_path:
+        return False
+    return normalized_path.startswith("agentsdb://") or "agentsdb::" in normalized_path
+
+
+def _repair_dispatch_prefixed_path(path_value: str | None) -> str:
+    raw_path = str(path_value or "").strip()
+    if not raw_path:
+        return ""
+
+    lowered_path = raw_path.lower()
+    if lowered_path.startswith("/dispatch/"):
+        return "/" + raw_path[len("/dispatch/"):]
+    if lowered_path.startswith("dispatch/"):
+        return "/" + raw_path[len("dispatch/"):]
+    return raw_path
+
+
+def _resolve_runtime_path(path_value: str | None, *, prefer_existing: bool) -> str:
+    raw_path = str(path_value or "").strip()
+    if not raw_path:
+        return ""
+
+    if _is_agentsdb_storage_key(raw_path):
+        return raw_path
+
+    candidates: list[str] = [os.path.abspath(os.path.expanduser(raw_path))]
+    repaired_path = _repair_dispatch_prefixed_path(raw_path)
+    if repaired_path and repaired_path != raw_path:
+        repaired_candidate = os.path.abspath(os.path.expanduser(repaired_path))
+        if repaired_candidate not in candidates:
+            candidates.append(repaired_candidate)
+
+    if prefer_existing:
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return candidate
+        return candidates[0]
+
+    for candidate in candidates:
+        parent_directory = os.path.dirname(candidate) or "."
+        if os.path.isdir(parent_directory):
+            return candidate
+    return candidates[0]
 
 
 _DOCUMENT_SECTION_KEYS: dict[str, str] = {
@@ -540,11 +601,14 @@ class AgentsDbDocumentBackend:
 
         if self._is_socket_uri(agents_db_uri) and AgentDbSocketRepository is not None:
             try:
-                self._repository = AgentDbSocketRepository.create_from_uri(agents_db_uri, database_name)
+                socket_repository = AgentDbSocketRepository.create_from_uri(agents_db_uri, database_name)
+                # Validate socket reachability before selecting this backend.
+                socket_repository.ensure_index_objects()
+                self._repository = socket_repository
                 self._last_repository_error = None
                 return self._repository
             except Exception as exc:
-                self._last_repository_error = f"socket_repository_init_failed: {type(exc).__name__}: {exc}"
+                self._last_repository_error = f"socket_repository_unreachable: {type(exc).__name__}: {exc}"
                 self._repository = None
 
         if KnowledgeRepository is not None:
@@ -579,7 +643,7 @@ class AgentsDbDocumentBackend:
             "backend_mode": backend_mode,
             "repository_type": repository_type,
             "repository_available": repository is not None,
-            "fallback_file_backend": repository is None,
+            "fallback_file_backend": False,
             "agents_db_uri": str(self._config.agents_db_uri or "").strip(),
             "backend_uri": str(self._config.backend_uri or "").strip(),
             "effective_uri": effective_uri,
@@ -737,7 +801,7 @@ class AgentsDbDocumentBackend:
 
     @classmethod
     def load_from_env(cls) -> "AgentsDbDocumentBackend | None":
-        agents_db_uri = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_URI", "") or "agentsdb://127.0.0.1:2331").strip() or "agentsdb://127.0.0.1:2331"
+        agents_db_uri = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_URI", "") or "agentsdb://localhost:2331").strip() or "agentsdb://localhost:2331"
         backend_uri = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_BACKEND_URI", "") or "agentsmem://local").strip() or "agentsmem://local"
         database_name = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_NAME", "alde_knowledge")).strip() or "alde_knowledge"
         memory_image_path = str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_MEMORY_IMAGE_PATH", "")).strip() or None
@@ -806,25 +870,15 @@ class AgentsDbDocumentBackend:
             collection_name=collection_name,
             storage_key=storage_key,
         )
-        if isinstance(repository_record_map, dict):
-            db = deepcopy(empty_db)
-            db[root_key] = {}
-            for record_id, raw_record in repository_record_map.items():
-                if not isinstance(raw_record, dict):
-                    continue
-                db[root_key][str(record_id)] = self._deserialize_record(raw_record) or {}
-            return db
+        if repository_record_map is None:
+            raise RuntimeError("agentsdb_repository_unavailable")
 
-        _, record_map = self._load_record_map(storage_key)
-        collection_payload = record_map.get(collection_name)
-        storage_payload = collection_payload.get(str(storage_key)) if isinstance(collection_payload, dict) else None
         db = deepcopy(empty_db)
         db[root_key] = {}
-        if isinstance(storage_payload, dict):
-            for record_id, raw_record in storage_payload.items():
-                if not isinstance(raw_record, dict):
-                    continue
-                db[root_key][str(record_id)] = self._deserialize_record(raw_record) or {}
+        for record_id, raw_record in repository_record_map.items():
+            if not isinstance(raw_record, dict):
+                continue
+            db[root_key][str(record_id)] = self._deserialize_record(raw_record) or {}
         return db
 
     def save_db(
@@ -844,45 +898,28 @@ class AgentsDbDocumentBackend:
             collection_name=collection_name,
             storage_key=storage_key,
         )
-        if repository_record_map is not None:
-            for record_id, record_value in records.items():
-                if not isinstance(record_value, dict):
-                    continue
-                self._upsert_repository_record(
-                    collection_name=collection_name,
-                    storage_key=storage_key,
-                    record_id=str(record_id),
-                    record_value=record_value,
-                )
-            next_record_id_set = {str(record_id) for record_id, record_value in records.items() if isinstance(record_value, dict)}
-            for existing_record_id in repository_record_map.keys():
-                if str(existing_record_id) in next_record_id_set:
-                    continue
-                self._delete_repository_record(
-                    collection_name=collection_name,
-                    storage_key=storage_key,
-                    record_id=str(existing_record_id),
-                )
-            return
+        if repository_record_map is None:
+            raise RuntimeError("agentsdb_repository_unavailable")
 
-        storage_path, record_map = self._load_record_map(storage_key)
-        collection_payload = record_map.get(collection_name)
-        if not isinstance(collection_payload, dict):
-            collection_payload = {}
-            record_map[collection_name] = collection_payload
-        storage_payload: dict[str, Any] = {}
         for record_id, record_value in records.items():
             if not isinstance(record_value, dict):
                 continue
-            serialized = self._serialize_record(
+            self._upsert_repository_record(
                 collection_name=collection_name,
                 storage_key=storage_key,
                 record_id=str(record_id),
                 record_value=record_value,
             )
-            storage_payload[str(record_id)] = serialized
-        collection_payload[str(storage_key)] = storage_payload
-        self._store_record_map(storage_path, record_map)
+
+        next_record_id_set = {str(record_id) for record_id, record_value in records.items() if isinstance(record_value, dict)}
+        for existing_record_id in repository_record_map.keys():
+            if str(existing_record_id) in next_record_id_set:
+                continue
+            self._delete_repository_record(
+                collection_name=collection_name,
+                storage_key=storage_key,
+                record_id=str(existing_record_id),
+            )
 
     def load_record(
         self,
@@ -893,6 +930,8 @@ class AgentsDbDocumentBackend:
         obj_name: str | None = None,
     ) -> dict[str, Any] | None:
         collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
+        if self._load_repository() is None:
+            raise RuntimeError("agentsdb_repository_unavailable")
         repository_record = self._record_from_repository(
             collection_name=collection_name,
             storage_key=storage_key,
@@ -900,12 +939,7 @@ class AgentsDbDocumentBackend:
         )
         if isinstance(repository_record, dict):
             return self._deserialize_record(repository_record)
-
-        _, record_map = self._load_record_map(storage_key)
-        collection_payload = record_map.get(collection_name)
-        storage_payload = collection_payload.get(str(storage_key)) if isinstance(collection_payload, dict) else None
-        raw_record = storage_payload.get(str(record_id)) if isinstance(storage_payload, dict) else None
-        return self._deserialize_record(raw_record if isinstance(raw_record, dict) else None)
+        return None
 
     def upsert_record(
         self,
@@ -917,31 +951,13 @@ class AgentsDbDocumentBackend:
         obj_name: str | None = None,
     ) -> None:
         collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
-        if self._upsert_repository_record(
+        if not self._upsert_repository_record(
             collection_name=collection_name,
             storage_key=storage_key,
             record_id=str(record_id),
             record_value=record_value,
         ):
-            return
-
-        storage_path, record_map = self._load_record_map(storage_key)
-        collection_payload = record_map.get(collection_name)
-        if not isinstance(collection_payload, dict):
-            collection_payload = {}
-            record_map[collection_name] = collection_payload
-        storage_payload = collection_payload.get(str(storage_key))
-        if not isinstance(storage_payload, dict):
-            storage_payload = {}
-            collection_payload[str(storage_key)] = storage_payload
-        serialized = self._serialize_record(
-            collection_name=collection_name,
-            storage_key=storage_key,
-            record_id=record_id,
-            record_value=record_value,
-        )
-        storage_payload[str(record_id)] = serialized
-        self._store_record_map(storage_path, record_map)
+            raise RuntimeError("agentsdb_repository_unavailable")
 
     def delete_record(
         self,
@@ -952,19 +968,12 @@ class AgentsDbDocumentBackend:
         obj_name: str | None = None,
     ) -> None:
         collection_name = self._collection_name(db_name=db_name, obj_name=obj_name)
-        if self._delete_repository_record(
+        if not self._delete_repository_record(
             collection_name=collection_name,
             storage_key=storage_key,
             record_id=str(record_id),
         ):
-            return
-
-        storage_path, record_map = self._load_record_map(storage_key)
-        collection_payload = record_map.get(collection_name)
-        storage_payload = collection_payload.get(str(storage_key)) if isinstance(collection_payload, dict) else None
-        if isinstance(storage_payload, dict):
-            storage_payload.pop(str(record_id), None)
-            self._store_record_map(storage_path, record_map)
+            raise RuntimeError("agentsdb_repository_unavailable")
 
 
 # Backward-compatible aliases for legacy backend naming.
@@ -1031,13 +1040,29 @@ class DocumentRepository:
             return self._agentsdb_backend
         self._agentsdb_backend_loaded = True
         try:
-            self._agentsdb_backend = AgentsDbDocumentBackend.load_from_env()
+            backend = AgentsDbDocumentBackend.load_from_env()
+            if backend is None:
+                self._agentsdb_backend = None
+                return None
+
+            diagnostic = dict(backend.load_backend_diagnostic())
+            if not bool(diagnostic.get("repository_available")):
+                self._agentsdb_backend = None
+                return None
+
+            self._agentsdb_backend = backend
         except Exception:
             self._agentsdb_backend = None
         return self._agentsdb_backend
 
     def _use_agentsdb_backend(self) -> bool:
         return self._load_agentsdb_backend() is not None
+
+    def _require_agentsdb_backend(self) -> AgentsDbDocumentBackend:
+        backend = self._load_agentsdb_backend()
+        if backend is None:
+            raise RuntimeError("agentsdb_backend_unavailable")
+        return backend
 
     def _backend_diagnostic_enabled(self) -> bool:
         value = str(os.getenv("AI_IDE_AGENTS_DB_BACKEND_DIAGNOSTIC", "1")).strip().lower()
@@ -1052,7 +1077,7 @@ class DocumentRepository:
                 "backend_mode": "unavailable",
                 "repository_type": None,
                 "repository_available": False,
-                "fallback_file_backend": True,
+                "fallback_file_backend": False,
                 "agents_db_uri": str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_URI", "")).strip(),
                 "backend_uri": str(os.getenv("AI_IDE_KNOWLEDGE_AGENTS_DB_BACKEND_URI", "")).strip(),
                 "effective_uri": "",
@@ -1095,51 +1120,43 @@ class DocumentRepository:
 
     def _resolve_db_path(self, db_path: str | None = None, *, db_name: str | None = None, obj_name: str | None = None) -> str:
         if db_path:
-            return os.path.abspath(os.path.expanduser(str(db_path)))
+            return _resolve_runtime_path(str(db_path), prefer_existing=False)
         normalized_db_name = self.normalize_db_name(db_name=db_name, obj_name=obj_name)
         if normalized_db_name == "dispatcher_documents":
-            return os.path.abspath(os.path.expanduser(_default_dispatcher_db_path()))
+            dispatcher_db_path = _default_dispatcher_db_path()
+            if _is_agentsdb_storage_key(dispatcher_db_path):
+                return dispatcher_db_path
+            return os.path.abspath(os.path.expanduser(dispatcher_db_path))
         resolved_obj_name = self._resolve_obj_name(db_name=normalized_db_name, obj_name=obj_name)
-        return os.path.abspath(os.path.expanduser(_default_document_db_path(resolved_obj_name)))
+        object_db_path = _default_document_db_path(resolved_obj_name)
+        if _is_agentsdb_storage_key(object_db_path):
+            return object_db_path
+        return os.path.abspath(os.path.expanduser(object_db_path))
 
     def load_db(self, db_path: str | None = None, *, db_name: str | None = None, obj_name: str | None = None) -> dict[str, Any]:
-        if _agentsdb_pipeline_strict_mode():
-            return self._build_db(db_name=db_name, obj_name=obj_name)
         resolved_db_path = self._resolve_db_path(db_path, db_name=db_name, obj_name=obj_name)
         empty_db = self._build_db(db_name=db_name, obj_name=obj_name)
         root_key = "documents" if self.normalize_db_name(db_name=db_name, obj_name=obj_name) == "dispatcher_documents" else self._resolve_obj_name(db_name=db_name, obj_name=obj_name)
-        mongo_backend = self._load_agentsdb_backend()
-        if mongo_backend is not None:
-            return mongo_backend.load_db(
-                storage_key=resolved_db_path,
-                empty_db=empty_db,
-                db_name=db_name,
-                obj_name=obj_name,
-                root_key=root_key,
-            )
-        if not os.path.exists(resolved_db_path):
-            return empty_db
-        raw = _load_json_file(resolved_db_path)
-        if isinstance(raw, dict) and isinstance(raw.get(root_key), dict):
-            return raw
-        return empty_db
+        mongo_backend = self._require_agentsdb_backend()
+        return mongo_backend.load_db(
+            storage_key=resolved_db_path,
+            empty_db=empty_db,
+            db_name=db_name,
+            obj_name=obj_name,
+            root_key=root_key,
+        )
 
     def save_db(self, db_path: str | None, db: dict[str, Any], *, db_name: str | None = None, obj_name: str | None = None) -> str:
         resolved_db_path = self._resolve_db_path(db_path, db_name=db_name, obj_name=obj_name)
-        if _agentsdb_pipeline_strict_mode():
-            return resolved_db_path
-        mongo_backend = self._load_agentsdb_backend()
-        if mongo_backend is not None:
-            root_key = "documents" if self.normalize_db_name(db_name=db_name, obj_name=obj_name) == "dispatcher_documents" else self._resolve_obj_name(db_name=db_name, obj_name=obj_name)
-            mongo_backend.save_db(
-                storage_key=resolved_db_path,
-                db=db,
-                db_name=db_name,
-                obj_name=obj_name,
-                root_key=root_key,
-            )
-            return resolved_db_path
-        _atomic_write_json(resolved_db_path, db)
+        mongo_backend = self._require_agentsdb_backend()
+        root_key = "documents" if self.normalize_db_name(db_name=db_name, obj_name=obj_name) == "dispatcher_documents" else self._resolve_obj_name(db_name=db_name, obj_name=obj_name)
+        mongo_backend.save_db(
+            storage_key=resolved_db_path,
+            db=db,
+            db_name=db_name,
+            obj_name=obj_name,
+            root_key=root_key,
+        )
         return resolved_db_path
 
     def upsert_db(
@@ -1152,10 +1169,6 @@ class DocumentRepository:
         record_value: dict[str, Any],
     ) -> dict[str, Any]:
         resolved_obj_name = self._resolve_obj_name(db_name=db_name, obj_name=obj_name)
-        if _agentsdb_pipeline_strict_mode():
-            bucket = self._projection_bucket(resolved_obj_name)
-            bucket[record_id] = deepcopy(record_value)
-            return {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: deepcopy(bucket)}
         db = self.load_db(db_path, db_name=db_name, obj_name=obj_name)
         if not isinstance(db.get(resolved_obj_name), dict):
             db[resolved_obj_name] = {}
@@ -1176,63 +1189,15 @@ class DocumentRepository:
         resolved_obj_name = _normalize_document_obj_name(obj_name)
         resolved_section_key = _document_section_key(resolved_obj_name)
         resolved_db_path = self._resolve_db_path(db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
-        if _agentsdb_pipeline_strict_mode():
-            ts = _now_utc_iso()
-            parse_section = result_payload.get("parse") if isinstance(result_payload.get("parse"), dict) else {}
-            document_section = _extract_document_section(result_payload, resolved_obj_name)
-            db_updates = result_payload.get("db_updates") if isinstance(result_payload.get("db_updates"), dict) else {}
-            metadata = dict(handoff_metadata or {})
-            incoming_payload = dict(handoff_payload or {})
-            output_payload = incoming_payload.get("output") if isinstance(incoming_payload.get("output"), dict) else {}
-            fallback_source_payload = output_payload if output_payload else result_payload
-            record = {
-                "correlation_id": correlation_id,
-                "updated_at": ts,
-                "created_at": ts,
-                "source_agent": str(
-                    incoming_payload.get("agent_label")
-                    or metadata.get("source_agent")
-                    or result_payload.get("agent")
-                    or _document_default_agent(resolved_obj_name)
-                ),
-                "link": deepcopy(result_payload.get("link") if isinstance(result_payload.get("link"), dict) else output_payload.get("link") if isinstance(output_payload.get("link"), dict) else {}),
-                "file": deepcopy(result_payload.get("file") if isinstance(result_payload.get("file"), dict) else output_payload.get("file") if isinstance(output_payload.get("file"), dict) else {}),
-                "parse": deepcopy(parse_section),
-                resolved_section_key: deepcopy(document_section),
-                "db_updates": deepcopy(db_updates),
-                "handoff_metadata": deepcopy(metadata),
-                "source_payload": deepcopy(fallback_source_payload),
-            }
-            for explicit_key in ("raw_text_document", "entity_objects", "relation_objects"):
-                explicit_value = result_payload.get(explicit_key)
-                if explicit_value is not None:
-                    record[explicit_key] = deepcopy(explicit_value)
-            self._projection_bucket(resolved_obj_name)[correlation_id] = record
-            return {
-                "ok": True,
-                "backend": "agents_db",
-                "db_path": f"agentsdb://{resolved_obj_name}",
-                "obj_name": resolved_obj_name,
-                "correlation_id": correlation_id,
-                "stored": True,
-            }
-        mongo_backend = self._load_agentsdb_backend()
-        existing_record = (
-            mongo_backend.load_record(
-                storage_key=resolved_db_path,
-                record_id=correlation_id,
-                db_name=resolved_obj_name,
-                obj_name=resolved_obj_name,
-            )
-            if mongo_backend is not None
-            else None
+        mongo_backend = self._require_agentsdb_backend()
+        existing_record = mongo_backend.load_record(
+            storage_key=resolved_db_path,
+            record_id=correlation_id,
+            db_name=resolved_obj_name,
+            obj_name=resolved_obj_name,
         )
         if existing_record is None:
-            db = self.load_db(resolved_db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
-            if not isinstance(db.get(resolved_obj_name), dict):
-                db[resolved_obj_name] = {}
-            document_records = db[resolved_obj_name]
-            record = document_records.get(correlation_id) if isinstance(document_records.get(correlation_id), dict) else {}
+            record = {}
         else:
             record = existing_record
         record = dict(record)
@@ -1267,18 +1232,13 @@ class DocumentRepository:
         record["handoff_metadata"] = deepcopy(metadata)
         record["source_payload"] = deepcopy(fallback_source_payload)
 
-        if mongo_backend is not None:
-            mongo_backend.upsert_record(
-                storage_key=resolved_db_path,
-                record_id=correlation_id,
-                record_value=record,
-                db_name=resolved_obj_name,
-                obj_name=resolved_obj_name,
-            )
-        else:
-            document_records[correlation_id] = record
-            db[resolved_obj_name] = document_records
-            self.save_db(resolved_db_path, db, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+        mongo_backend.upsert_record(
+            storage_key=resolved_db_path,
+            record_id=correlation_id,
+            record_value=record,
+            db_name=resolved_obj_name,
+            obj_name=resolved_obj_name,
+        )
         return {
             "ok": True,
             "db_path": resolved_db_path,
@@ -1296,39 +1256,14 @@ class DocumentRepository:
     ) -> dict[str, Any] | None:
         resolved_obj_name = _normalize_document_obj_name(obj_name)
         resolved_section_key = _document_section_key(resolved_obj_name)
-        if _agentsdb_pipeline_strict_mode():
-            record = self._projection_bucket(resolved_obj_name).get(correlation_id)
-            if not isinstance(record, dict):
-                return None
-            result = {
-                "agent": str(record.get("source_agent") or record.get("agent") or _document_default_agent(resolved_obj_name)),
-                "correlation_id": str(record.get("correlation_id") or correlation_id),
-                "link": deepcopy(record.get("link") or {}),
-                "file": deepcopy(record.get("file") or {}),
-                "parse": deepcopy(record.get("parse") or {}),
-                resolved_section_key: deepcopy(record.get(resolved_section_key) or record.get(resolved_obj_name) or {}),
-                "db_updates": deepcopy(record.get("db_updates") or {}),
-            }
-            for explicit_key in ("raw_text_document", "entity_objects", "relation_objects"):
-                explicit_value = record.get(explicit_key)
-                if explicit_value is not None:
-                    result[explicit_key] = deepcopy(explicit_value)
-            return result
         resolved_db_path = self._resolve_db_path(db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
-        mongo_backend = self._load_agentsdb_backend()
-        if mongo_backend is not None:
-            record = mongo_backend.load_record(
-                storage_key=resolved_db_path,
-                record_id=correlation_id,
-                db_name=resolved_obj_name,
-                obj_name=resolved_obj_name,
-            )
-        else:
-            db = self.load_db(resolved_db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
-            document_records = db.get(resolved_obj_name) if isinstance(db, dict) else None
-            if not isinstance(document_records, dict):
-                return None
-            record = document_records.get(correlation_id)
+        mongo_backend = self._require_agentsdb_backend()
+        record = mongo_backend.load_record(
+            storage_key=resolved_db_path,
+            record_id=correlation_id,
+            db_name=resolved_obj_name,
+            obj_name=resolved_obj_name,
+        )
         if not isinstance(record, dict):
             return None
         result = {
@@ -1352,25 +1287,14 @@ class DocumentRepository:
         *,
         db_path: str | None = None,
     ) -> dict[str, Any] | None:
-        if _agentsdb_pipeline_strict_mode():
-            record = self._projection_bucket("dispatcher_documents").get(correlation_id)
-            return deepcopy(record) if isinstance(record, dict) else None
         resolved_db_path = self._resolve_db_path(db_path, db_name="dispatcher_documents")
-        mongo_backend = self._load_agentsdb_backend()
-        if mongo_backend is not None:
-            record = mongo_backend.load_record(
-                storage_key=resolved_db_path,
-                record_id=correlation_id,
-                db_name="dispatcher_documents",
-                obj_name="documents",
-            )
-            return deepcopy(record) if isinstance(record, dict) else None
-
-        db = self.load_db(resolved_db_path, db_name="dispatcher_documents")
-        docs = db.get("documents") if isinstance(db, dict) else None
-        if not isinstance(docs, dict):
-            return None
-        record = docs.get(correlation_id)
+        mongo_backend = self._require_agentsdb_backend()
+        record = mongo_backend.load_record(
+            storage_key=resolved_db_path,
+            record_id=correlation_id,
+            db_name="dispatcher_documents",
+            obj_name="documents",
+        )
         return deepcopy(record) if isinstance(record, dict) else None
 
     def get_dispatcher_records(
@@ -1379,41 +1303,23 @@ class DocumentRepository:
         *,
         db_path: str | None = None,
     ) -> dict[str, dict[str, Any]]:
-        if _agentsdb_pipeline_strict_mode():
-            bucket = self._projection_bucket("dispatcher_documents")
-            return {
-                correlation_id: deepcopy(bucket[correlation_id])
-                for correlation_id in [str(item).strip() for item in correlation_ids if str(item).strip()]
-                if isinstance(bucket.get(correlation_id), dict)
-            }
         resolved_db_path = self._resolve_db_path(db_path, db_name="dispatcher_documents")
         normalized_ids = [str(correlation_id).strip() for correlation_id in correlation_ids if str(correlation_id).strip()]
         if not normalized_ids:
             return {}
 
-        mongo_backend = self._load_agentsdb_backend()
-        if mongo_backend is not None:
-            records: dict[str, dict[str, Any]] = {}
-            for correlation_id in normalized_ids:
-                record = mongo_backend.load_record(
-                    storage_key=resolved_db_path,
-                    record_id=correlation_id,
-                    db_name="dispatcher_documents",
-                    obj_name="documents",
-                )
-                if isinstance(record, dict):
-                    records[correlation_id] = deepcopy(record)
-            return records
-
-        db = self.load_db(resolved_db_path, db_name="dispatcher_documents")
-        docs = db.get("documents") if isinstance(db, dict) else None
-        if not isinstance(docs, dict):
-            return {}
-        return {
-            correlation_id: deepcopy(docs[correlation_id])
-            for correlation_id in normalized_ids
-            if isinstance(docs.get(correlation_id), dict)
-        }
+        mongo_backend = self._require_agentsdb_backend()
+        records: dict[str, dict[str, Any]] = {}
+        for correlation_id in normalized_ids:
+            record = mongo_backend.load_record(
+                storage_key=resolved_db_path,
+                record_id=correlation_id,
+                db_name="dispatcher_documents",
+                obj_name="documents",
+            )
+            if isinstance(record, dict):
+                records[correlation_id] = deepcopy(record)
+        return records
 
     def update_dispatcher_status(
         self,
@@ -1425,55 +1331,15 @@ class DocumentRepository:
         failed_reason: str | None = None,
         extra_updates: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        if _agentsdb_pipeline_strict_mode():
-            bucket = self._projection_bucket("dispatcher_documents")
-            record = dict(bucket.get(correlation_id) if isinstance(bucket.get(correlation_id), dict) else {})
-            normalized_state = str(processing_state or "").strip().lower() or "failed"
-            effective_processed = bool(processed) if processed is not None else normalized_state == "processed"
-            ts = _now_utc_iso()
-            record.setdefault("id", correlation_id)
-            record["content_sha256"] = correlation_id
-            record["processing_state"] = normalized_state
-            record["processed"] = effective_processed
-            record["last_seen_at"] = ts
-            if effective_processed:
-                record["processed_at"] = ts
-                record["failed_reason"] = None
-                record["last_error"] = None
-                record["last_error_at"] = None
-            else:
-                reason = str(failed_reason or "").strip() or None
-                record["failed_reason"] = reason
-                record["last_error"] = reason
-                record["last_error_at"] = ts if reason else None
-            if isinstance(extra_updates, dict):
-                for key, value in extra_updates.items():
-                    record[str(key)] = deepcopy(value)
-            bucket[correlation_id] = record
-            return {
-                "ok": True,
-                "backend": "agents_db",
-                "db_path": "agentsdb://dispatcher_documents",
-                "correlation_id": correlation_id,
-                "processing_state": normalized_state,
-                "processed": effective_processed,
-            }
         resolved_db_path = self._resolve_db_path(db_path, db_name="dispatcher_documents")
-        mongo_backend = self._load_agentsdb_backend()
-        if mongo_backend is not None:
-            existing_record = mongo_backend.load_record(
-                storage_key=resolved_db_path,
-                record_id=correlation_id,
-                db_name="dispatcher_documents",
-                obj_name="documents",
-            )
-            record = existing_record if isinstance(existing_record, dict) else {}
-        else:
-            db = self.load_db(resolved_db_path, db_name="dispatcher_documents")
-            if not isinstance(db.get("documents"), dict):
-                db["documents"] = {}
-            docs = db["documents"]
-            record = docs.get(correlation_id) if isinstance(docs.get(correlation_id), dict) else {}
+        mongo_backend = self._require_agentsdb_backend()
+        existing_record = mongo_backend.load_record(
+            storage_key=resolved_db_path,
+            record_id=correlation_id,
+            db_name="dispatcher_documents",
+            obj_name="documents",
+        )
+        record = existing_record if isinstance(existing_record, dict) else {}
         record = dict(record)
 
         normalized_state = str(processing_state or "").strip().lower() or "failed"
@@ -1504,17 +1370,13 @@ class DocumentRepository:
                 elif value is not None:
                     record[str(key)] = value
 
-        if mongo_backend is not None:
-            mongo_backend.upsert_record(
-                storage_key=resolved_db_path,
-                record_id=correlation_id,
-                record_value=record,
-                db_name="dispatcher_documents",
-                obj_name="documents",
-            )
-        else:
-            docs[correlation_id] = record
-            self.save_db(resolved_db_path, db, db_name="dispatcher_documents")
+        mongo_backend.upsert_record(
+            storage_key=resolved_db_path,
+            record_id=correlation_id,
+            record_value=record,
+            db_name="dispatcher_documents",
+            obj_name="documents",
+        )
         return {
             "ok": True,
             "db_path": resolved_db_path,
@@ -1572,7 +1434,7 @@ class DocumentRepository:
         resolved_obj_name = _normalize_document_obj_name(obj_name)
         resolved_dispatcher_db_path = self._resolve_db_path(dispatcher_db_path, db_name="dispatcher_documents")
         resolved_obj_db_path = self._resolve_db_path(obj_db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
-        mongo_backend = self._load_agentsdb_backend()
+        mongo_backend = self._require_agentsdb_backend()
 
         resolved_section_key = _document_section_key(resolved_obj_name)
         ts = _now_utc_iso()
@@ -1582,24 +1444,16 @@ class DocumentRepository:
         metadata = {"source_agent": str(source_agent or result_payload.get("agent") or _document_default_agent(resolved_obj_name))}
         source_payload_dict = deepcopy(source_payload) if isinstance(source_payload, dict) else {}
 
-        existing_record = (
-            mongo_backend.load_record(
-                storage_key=resolved_obj_db_path,
-                record_id=record_id,
-                db_name=resolved_obj_name,
-                obj_name=resolved_obj_name,
-            )
-            if mongo_backend is not None
-            else None
+        existing_record = mongo_backend.load_record(
+            storage_key=resolved_obj_db_path,
+            record_id=record_id,
+            db_name=resolved_obj_name,
+            obj_name=resolved_obj_name,
         )
         if existing_record is None:
-            original_obj_db = self.load_db(resolved_obj_db_path, db_name=resolved_obj_name, obj_name=resolved_obj_name)
-            next_obj_db = deepcopy(original_obj_db if isinstance(original_obj_db, dict) else {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}})
-            if not isinstance(next_obj_db.get(resolved_obj_name), dict):
-                next_obj_db[resolved_obj_name] = {}
-            existing_record = next_obj_db[resolved_obj_name].get(record_id) if isinstance(next_obj_db[resolved_obj_name].get(record_id), dict) else {}
+            existing_record = {}
         else:
-            original_obj_db = None
+            existing_record = dict(existing_record)
         next_record = dict(existing_record)
         next_record["correlation_id"] = record_id
         next_record["updated_at"] = ts
@@ -1616,8 +1470,6 @@ class DocumentRepository:
         next_record["db_updates"] = deepcopy(db_updates)
         next_record["handoff_metadata"] = deepcopy(metadata)
         next_record["source_payload"] = deepcopy(source_payload_dict)
-        if mongo_backend is None:
-            next_obj_db[resolved_obj_name][record_id] = next_record
 
         normalized_state = str(
             processing_state
@@ -1628,16 +1480,13 @@ class DocumentRepository:
         effective_failed_reason = str(failed_reason or db_updates.get("failed_reason") or "").strip() or None
 
         try:
-            if mongo_backend is not None:
-                mongo_backend.upsert_record(
-                    storage_key=resolved_obj_db_path,
-                    record_id=record_id,
-                    record_value=next_record,
-                    db_name=resolved_obj_name,
-                    obj_name=resolved_obj_name,
-                )
-            else:
-                self.save_db(resolved_obj_db_path, next_obj_db, db_name=resolved_obj_name, obj_name=resolved_obj_name)
+            mongo_backend.upsert_record(
+                storage_key=resolved_obj_db_path,
+                record_id=record_id,
+                record_value=next_record,
+                db_name=resolved_obj_name,
+                obj_name=resolved_obj_name,
+            )
             dispatcher_result = self.update_dispatcher_status(
                 correlation_id=record_id,
                 processing_state=normalized_state,
@@ -1648,26 +1497,18 @@ class DocumentRepository:
             )
         except Exception as exc:
             try:
-                if mongo_backend is not None:
-                    if isinstance(existing_record, dict) and existing_record:
-                        mongo_backend.upsert_record(
-                            storage_key=resolved_obj_db_path,
-                            record_id=record_id,
-                            record_value=existing_record,
-                            db_name=resolved_obj_name,
-                            obj_name=resolved_obj_name,
-                        )
-                    else:
-                        mongo_backend.delete_record(
-                            storage_key=resolved_obj_db_path,
-                            record_id=record_id,
-                            db_name=resolved_obj_name,
-                            obj_name=resolved_obj_name,
-                        )
+                if isinstance(existing_record, dict) and existing_record:
+                    mongo_backend.upsert_record(
+                        storage_key=resolved_obj_db_path,
+                        record_id=record_id,
+                        record_value=existing_record,
+                        db_name=resolved_obj_name,
+                        obj_name=resolved_obj_name,
+                    )
                 else:
-                    self.save_db(
-                        resolved_obj_db_path,
-                        original_obj_db if isinstance(original_obj_db, dict) else {"schema": f"{resolved_obj_name}_db_v1", resolved_obj_name: {}},
+                    mongo_backend.delete_record(
+                        storage_key=resolved_obj_db_path,
+                        record_id=record_id,
                         db_name=resolved_obj_name,
                         obj_name=resolved_obj_name,
                     )
@@ -2725,6 +2566,52 @@ class ActionRequestService:
             enriched_payload[field_name] = normalized_value
         return enriched_payload
 
+    def apply_cover_letter_request_fallbacks(
+        self,
+        *,
+        request_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        enriched_payload = deepcopy(request_payload)
+        action_name = normalize_action_request_name(str(enriched_payload.get("action") or ""))
+        if action_name != "generate_cover_letter":
+            return enriched_payload
+
+        if not isinstance(enriched_payload.get("applicant_profile"), dict):
+            profile_result = enriched_payload.get("profile_result")
+            if isinstance(profile_result, dict):
+                profile_payload = profile_result.get("profile")
+                if isinstance(profile_payload, dict) and profile_payload:
+                    enriched_payload["applicant_profile"] = {
+                        "source": "text",
+                        "value": deepcopy(profile_payload),
+                    }
+                else:
+                    profile_correlation_id = str(profile_result.get("correlation_id") or "").strip()
+                    if profile_correlation_id:
+                        enriched_payload["applicant_profile"] = {
+                            "source": "profile_id",
+                            "value": profile_correlation_id,
+                        }
+
+        if not isinstance(enriched_payload.get("job_posting"), dict):
+            job_posting_result = enriched_payload.get("job_posting_result")
+            if isinstance(job_posting_result, dict):
+                job_posting_payload = job_posting_result.get("job_posting")
+                if isinstance(job_posting_payload, dict) and job_posting_payload:
+                    enriched_payload["job_posting"] = {
+                        "source": "text",
+                        "value": deepcopy(job_posting_payload),
+                    }
+                else:
+                    job_correlation_id = str(job_posting_result.get("correlation_id") or "").strip()
+                    if job_correlation_id:
+                        enriched_payload["job_posting"] = {
+                            "source": "correlation_id",
+                            "value": job_correlation_id,
+                        }
+
+        return enriched_payload
+
     def resolve_request_payload(self, payload: Any) -> Any:
         raw_payload = payload
         if isinstance(payload, str):
@@ -2784,6 +2671,10 @@ class ActionRequestService:
                     resolved_obj_name=resolved_obj_name,
                 )
                 enriched_payload.pop(resolved_db_path_field, None)
+
+            enriched_payload = self.apply_cover_letter_request_fallbacks(
+                request_payload=enriched_payload,
+            )
 
         return enriched_payload
 
@@ -3068,8 +2959,9 @@ class ActionRequestService:
             recursive=bool(request_payload.get("recursive", True)),
             extensions=request_payload.get("extensions") if isinstance(request_payload.get("extensions"), list) else None,
             max_files=int(request_payload.get("max_files")) if request_payload.get("max_files") is not None else None,
-            agent_name=str(request_payload.get("agent_name") or request_payload.get("target_agent") or "_xworker").strip() or "_xworker",
+            agent_name=str(request_payload.get("agent_name") or "_xworker").strip() or "_xworker",
             parser_agent_name=str(request_payload.get("parser_agent_name") or "").strip() or None,
+            parser_job_name=str(request_payload.get("parser_job_name") or "").strip() or None,
             dry_run=bool(request_payload.get("dry_run", False)),
         )
         return json.dumps(result, ensure_ascii=False)
@@ -3100,10 +2992,21 @@ class ActionRequestService:
         payload = deepcopy(payload)
         payload["action"] = action_name
 
-        schema_config = get_action_request_schema_config(action_name, payload)
+        resolved_payload = self.resolve_request_payload(payload)
+        if isinstance(resolved_payload, str):
+            try:
+                resolved_payload = json.loads(resolved_payload)
+            except Exception:
+                resolved_payload = payload
+        if not isinstance(resolved_payload, dict):
+            resolved_payload = payload
+        resolved_payload = deepcopy(resolved_payload)
+        resolved_payload["action"] = action_name
+
+        schema_config = get_action_request_schema_config(action_name, resolved_payload)
         resolution_config = dict(schema_config.get("request_resolution") or {}) if isinstance(schema_config, dict) else {}
         if schema_config:
-            validation = validate_action_request(action_name, payload)
+            validation = validate_action_request(action_name, resolved_payload)
             if not validation.get("valid"):
                 return json.dumps(
                     {
@@ -3116,15 +3019,6 @@ class ActionRequestService:
                     },
                     ensure_ascii=False,
                 )
-
-        resolved_payload = self.resolve_request_payload(payload)
-        if isinstance(resolved_payload, str):
-            try:
-                resolved_payload = json.loads(resolved_payload)
-            except Exception:
-                resolved_payload = payload
-        if not isinstance(resolved_payload, dict):
-            resolved_payload = payload
 
         execution_config = dict(schema_config.get("action_execution") or {}) if isinstance(schema_config, dict) else {}
         handler_name = execution_config.get("handler_name") if execution_config else None
@@ -3480,7 +3374,11 @@ class DocumentDispatchService:
         document_paths: list[str] = []
         if recursive:
             for root, dirs, files in os.walk(scan_dir):
-                dirs[:] = [directory for directory in dirs if not str(directory).startswith("Cover_letters")]
+                dirs[:] = [
+                    directory
+                    for directory in dirs
+                    if not str(directory).strip().lower().startswith("cover_letters")
+                ]
                 for file_name in files:
                     if file_name == "Muster_Anschreiben.pdf":
                         continue
@@ -3632,6 +3530,7 @@ class DocumentDispatchService:
         *,
         dispatch_policy: dict[str, Any],
         thread_id: str,
+        parser_job_name: str,
         resolved_obj_name: str,
         item: dict[str, Any],
         record: dict[str, Any] | None,
@@ -3639,6 +3538,7 @@ class DocumentDispatchService:
     ) -> dict[str, Any]:
         return {
             "type": str(dispatch_policy.get("document_type") or "file"),
+            "job_name": parser_job_name,
             "correlation_id": item["content_sha256"],
             "obj_name": resolved_obj_name,
             "link": {"thread_id": thread_id, "message_id": "PENDING"},
@@ -3661,6 +3561,7 @@ class DocumentDispatchService:
         *,
         dispatch_policy: dict[str, Any],
         target_agent: str,
+        parser_job_name: str,
         payload: dict[str, Any],
         correlation_id: str,
         dispatcher_message_id: str,
@@ -3676,6 +3577,8 @@ class DocumentDispatchService:
             "obj_name": resolved_obj_name,
             "obj_db_path": obj_db_path,
         }
+        if parser_job_name:
+            handoff_metadata["job_name"] = parser_job_name
         if resolved_obj_db_path_field and resolved_obj_db_path_field != "obj_db_path":
             handoff_metadata[resolved_obj_db_path_field] = obj_db_path
         legacy_obj_db_path_field = f"{resolved_obj_name}_db_path"
@@ -3703,6 +3606,7 @@ class DocumentDispatchService:
         thread_id: str,
         dispatcher_message_id: str,
         agent_name: str,
+        parser_job_name: str,
         resolved_obj_name: str,
         resolved_obj_db_path_field: str,
         dry_run: bool,
@@ -3737,6 +3641,7 @@ class DocumentDispatchService:
             payload = self.build_dispatch_payload(
                 dispatch_policy=dispatch_policy,
                 thread_id=thread_id,
+                parser_job_name=parser_job_name,
                 resolved_obj_name=resolved_obj_name,
                 item=item,
                 record=record if isinstance(record, dict) else None,
@@ -3755,6 +3660,7 @@ class DocumentDispatchService:
                 self.build_handoff_message(
                     dispatch_policy=dispatch_policy,
                     target_agent=agent_name,
+                    parser_job_name=parser_job_name,
                     payload=payload,
                     correlation_id=correlation_id,
                     dispatcher_message_id=dispatcher_message_id,
@@ -3822,7 +3728,9 @@ class DocumentDispatchService:
         extensions: list | None = None,
         max_files: int | None = None,
         agent_name: str = "_xworker",
+        target_agent_name: str | None = "0::jobposting_parser",
         parser_agent_name: str | None = None,
+        parser_job_name: str | None = None,
         dry_run: bool = False,
     ) -> dict:
         ts = _now_utc_iso()
@@ -3830,9 +3738,13 @@ class DocumentDispatchService:
         scan_dir_original = str(scan_dir or "")
         thread_id = thread_id or "UNKNOWN"
         dispatcher_message_id = dispatcher_message_id or "UNKNOWN"
+        resolved_target_agent_name = str(parser_agent_name or target_agent_name or "").strip() or None
         agent_name = str(
-            agent_name or parser_agent_name or dispatch_policy.get("default_target_agent") or "_xworker"
+            agent_name or resolved_target_agent_name or dispatch_policy.get("default_target_agent") or "_xworker"
         ).strip() or "_xworker"
+        resolved_parser_job_name = str(
+            parser_job_name or dispatch_policy.get("parser_job_name") or "job_posting_parser"
+        ).strip() or "job_posting_parser"
         resolved_obj_name = str(obj_name or obj or dispatch_policy.get("obj_name") or "job_postings").strip() or "job_postings"
         resolved_obj_db_path_field = str(dispatch_policy.get("obj_db_path_field") or f"{resolved_obj_name}_db_path").strip() or f"{resolved_obj_name}_db_path"
 
@@ -3840,8 +3752,11 @@ class DocumentDispatchService:
             extensions = [".pdf", ".PDF"]
         ext_set = {str(extension) for extension in extensions}
 
-        resolved_db_path = ((db or {}).get("path") if isinstance(db, dict) else None) or db_path or _default_dispatcher_db_path()
-        resolved_db_path = os.path.abspath(os.path.expanduser(str(resolved_db_path)))
+        resolved_db_path_candidate = ((db or {}).get("path") if isinstance(db, dict) else None) or db_path
+        resolved_db_path = DOCUMENT_REPOSITORY._resolve_db_path(
+            str(resolved_db_path_candidate) if resolved_db_path_candidate is not None else None,
+            db_name="dispatcher_documents",
+        )
 
         DOCUMENT_REPOSITORY.emit_dispatch_backend_diagnostic_once(db_path=resolved_db_path)
 
@@ -3891,6 +3806,7 @@ class DocumentDispatchService:
             thread_id=thread_id,
             dispatcher_message_id=dispatcher_message_id,
             agent_name=agent_name,
+            parser_job_name=resolved_parser_job_name,
             resolved_obj_name=resolved_obj_name,
             resolved_obj_db_path_field=resolved_obj_db_path_field,
             dry_run=dry_run,
@@ -3926,6 +3842,7 @@ def dispatch_docs(
     max_files: int | None = None,
     agent_name: str = "_xworker",
     parser_agent_name: str | None = None,
+    parser_job_name: str | None = None,
     dry_run: bool = False,
 ) -> dict:
     return DOCUMENT_DISPATCH_SERVICE.dispatch_documents(
@@ -3941,6 +3858,7 @@ def dispatch_docs(
         max_files=max_files,
         agent_name=agent_name,
         parser_agent_name=parser_agent_name,
+        parser_job_name=parser_job_name,
         dry_run=dry_run,
     )
 
@@ -3994,24 +3912,35 @@ def batch_generate_documents_tool(
     write_pdf: bool = True,
     rerun_processed: bool = False,
 ) -> dict[str, Any]:
-    try:
-        from .batch_document import batch_document_generate  # type: ignore
-    except Exception:
-        from batch_document import batch_document_generate  # type: ignore
-
-    return batch_document_generate(
+    # Legacy compatibility wrapper: route legacy batch requests into
+    # dispatch-driven per-document handoff fan-out.
+    dispatch_result = DOCUMENT_DISPATCH_SERVICE.dispatch_documents(
         scan_dir=scan_dir,
-        profile_path=profile_path,
-        dispatcher_db_path=db_path,
-        out_dir=out_dir,
-        workflow_name=workflow_name,
-        model=model,
+        db_path=db_path,
         max_files=max_files,
-        max_text_chars=max_text_chars,
         dry_run=dry_run,
-        write_pdf=write_pdf,
-        rerun_processed=rerun_processed,
+        parser_job_name="job_posting_parser",
     )
+    if not isinstance(dispatch_result, dict):
+        return {
+            "ok": False,
+            "error": "dispatch_result_invalid",
+            "result": dispatch_result,
+        }
+
+    result_payload = dict(dispatch_result)
+    result_payload["compat"] = {
+        "legacy_tool": "batch_generate_documents",
+        "strategy": "dispatch_fanout_per_document",
+        "workflow_name": workflow_name,
+        "profile_path": profile_path,
+        "out_dir": out_dir,
+        "model": model,
+        "max_text_chars": int(max_text_chars),
+        "write_pdf": bool(write_pdf),
+        "rerun_processed": bool(rerun_processed),
+    }
+    return result_payload
 
 
 def md_to_pdf(
@@ -5261,10 +5190,21 @@ def write_document(
     path: str | None = None,
     doc_id: str | None = None,
     filename: str | None = None,
+    titel: str | None = None,
     correlation_id: str | None = None,
 ) -> dict[str, Any]:
         """Persist the generated cover letter as a canonical record and export a markdown artifact."""
-        target_dir = os.path.abspath(os.path.expanduser(path or _DEFAULT_SAVE_DIR))
+        raw_path = os.path.abspath(os.path.expanduser(path or _DEFAULT_SAVE_DIR))
+        path_filename_hint: str | None = None
+        if path:
+            candidate = Path(raw_path)
+            if candidate.suffix.lower() in {".md", ".markdown", ".txt"}:
+                target_dir = str(candidate.parent)
+                path_filename_hint = candidate.name
+            else:
+                target_dir = raw_path
+        else:
+            target_dir = raw_path
         os.makedirs(target_dir, exist_ok=True)
 
         normalized_content = str(content or "").rstrip() + "\n"
@@ -5273,7 +5213,9 @@ def write_document(
         safe_prefix = safe_prefix[:80] or "cover_letter"
         hash_suffix = hashlib.sha1(prefix_raw.encode("utf-8", "ignore")).hexdigest()[:8]
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        resolved_filename = str(filename or f"{safe_prefix}_{hash_suffix}_{timestamp}.md").strip() or f"{safe_prefix}_{hash_suffix}_{timestamp}.md"
+        resolved_filename = str(filename or titel or path_filename_hint or f"{safe_prefix}_{hash_suffix}_{timestamp}.md").strip() or f"{safe_prefix}_{hash_suffix}_{timestamp}.md"
+        if not Path(resolved_filename).suffix:
+            resolved_filename = f"{resolved_filename}.md"
         file_path = os.path.join(target_dir, resolved_filename)
 
         with open(file_path, "w", encoding="utf-8") as file:
@@ -5386,13 +5328,39 @@ def _read_pdf_text_with_pdftotext(file_path: str) -> str | None:
     return extracted_text or None
 
 
+def _file_path_looks_like_job_name(file_path: str) -> bool:
+    candidate = str(file_path or "").strip()
+    if not candidate:
+        return False
+    if os.path.isabs(candidate):
+        return False
+    if "/" in candidate or "\\" in candidate:
+        return False
+    if os.path.splitext(candidate)[1]:
+        return False
+
+    candidate_key = candidate.lower()
+    try:
+        available_job_names = {str(name).strip().lower() for name in get_available_job_names()}
+    except Exception:
+        return False
+    return candidate_key in available_job_names
+
+
 def pypdf_read_document(file_path: str) -> str:
     """Read a PDF from disk using pypdf only.
 
     This tool is intended for explicit pypdf-based PDF extraction requests.
     For non-PDF files, use read_document.
     """
-    resolved_path = os.path.abspath(os.path.expanduser(str(file_path or "").strip()))
+    raw_path = str(file_path or "").strip()
+    if _file_path_looks_like_job_name(raw_path):
+        return (
+            f"Error: '{raw_path}' sieht wie ein Job-Name aus, nicht wie ein Dateipfad. "
+            "Uebergib fuer file_path den konkreten Pfad zu einer Datei."
+        )
+
+    resolved_path = _resolve_runtime_path(str(file_path), prefer_existing=True)
     if not resolved_path:
         return "Error: Kein Dateipfad angegeben."
     if not os.path.exists(resolved_path):
@@ -5417,7 +5385,14 @@ def read_document(file_path: str) -> str:
     extrahiert (plus pdftotext-Fallback), damit auch Dateien in
     uebersprungenen Ordnern (z.B. AppData) robust gelesen werden koennen.
     """
-    resolved_path = os.path.abspath(os.path.expanduser(str(file_path or "").strip()))
+    raw_path = str(file_path or "").strip()
+    if _file_path_looks_like_job_name(raw_path):
+        return (
+            f"Error: '{raw_path}' sieht wie ein Job-Name aus, nicht wie ein Dateipfad. "
+            "Uebergib fuer file_path den konkreten Pfad zu einer Datei."
+        )
+
+    resolved_path = _resolve_runtime_path(str(file_path), prefer_existing=True)
     if not resolved_path:
         return "Error: Kein Dateipfad angegeben."
     if not os.path.exists(resolved_path):
@@ -5721,7 +5696,7 @@ _TOOL_IMPLEMENTATIONS: dict[str, Callable | None] = {
     "code_tool": code_tool,
     "iter_documents": iter_documents,
     "dispatch_documents": DOCUMENT_DISPATCH_SERVICE.dispatch_documents,
-    "dispatch_docs": DOCUMENT_DISPATCH_SERVICE.dispatch_documents,
+    "dispatch_documents": DOCUMENT_DISPATCH_SERVICE.dispatch_documents,
     "fetch_url": fetch_url,
     "fetch_data": fetch_data,
     "call_api": call_api,

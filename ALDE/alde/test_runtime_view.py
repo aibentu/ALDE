@@ -145,11 +145,23 @@ class TestRuntimeView(unittest.TestCase):
             self.assertEqual(exported_view["trace"][0]["tool_calls"][0]["function"]["name"], "vectordb")
             self.assertEqual(exported_view["trace"][1]["handoff"]["protocol"], "agent_handoff_v1")
 
-            snapshot = load_runtime_observability_snapshot(
-                base_dir=temp_dir,
-                session_id="session-view",
-                history_entries=history_entries,
-            )
+            with patch(
+                "alde.control_plane_runtime.QUEUE_HEALTH_SERVICE.load_queue_health",
+                return_value=("inmemory", True),
+            ), patch(
+                "alde.control_plane_runtime.WORKFLOW_VALIDATION_SERVICE.load_report",
+                return_value={
+                    "valid": True,
+                    "errors": [],
+                    "valid_count": 4,
+                    "invalid_count": 0,
+                },
+            ):
+                snapshot = load_runtime_observability_snapshot(
+                    base_dir=temp_dir,
+                    session_id="session-view",
+                    history_entries=history_entries,
+                )
 
             self.assertTrue(snapshot["healthy"])
             self.assertEqual(snapshot["session_count"], 1)
@@ -158,11 +170,23 @@ class TestRuntimeView(unittest.TestCase):
             self.assertIn("handoff", snapshot["metrics"]["event_family_counts"])
             self.assertTrue(snapshot["validation"]["valid"])
 
-            monitoring_snapshot = load_desktop_monitoring_snapshot(
-                base_dir=temp_dir,
-                session_id="session-view",
-                history_entries=history_entries,
-            )
+            with patch(
+                "alde.control_plane_runtime.QUEUE_HEALTH_SERVICE.load_queue_health",
+                return_value=("inmemory", True),
+            ), patch(
+                "alde.control_plane_runtime.WORKFLOW_VALIDATION_SERVICE.load_report",
+                return_value={
+                    "valid": True,
+                    "errors": [],
+                    "valid_count": 4,
+                    "invalid_count": 0,
+                },
+            ):
+                monitoring_snapshot = load_desktop_monitoring_snapshot(
+                    base_dir=temp_dir,
+                    session_id="session-view",
+                    history_entries=history_entries,
+                )
 
             self.assertTrue(monitoring_snapshot["healthy"])
             self.assertEqual(monitoring_snapshot["queue_backend"], "inmemory")
@@ -255,6 +279,16 @@ class TestRuntimeView(unittest.TestCase):
                     "dispatcher_error": None,
                 },
             ), patch(
+                "alde.control_plane_runtime.OPERATOR_STATUS_SERVICE.load_agentsdb_status",
+                return_value={
+                    "agentsdb_uri": "agentsdb://localhost:2331",
+                    "agentsdb_database_name": "alde_knowledge",
+                    "agentsdb_endpoint": "localhost:2331",
+                    "agentsdb_healthy": None,
+                    "agentsdb_error": "",
+                    "agentsdb_detail": "socket @ localhost:2331",
+                },
+            ), patch(
                 "alde.control_plane_runtime.OPERATOR_STATUS_SERVICE.load_mcp_config_path",
                 return_value=mcp_config_path,
             ):
@@ -283,10 +317,13 @@ class TestRuntimeView(unittest.TestCase):
             self.assertTrue(snapshot["mcp_config_present"])
             self.assertTrue(snapshot["mcp_probe"]["ok"])
             self.assertEqual(snapshot["snapshot_kind"], "operator")
-            self.assertEqual(snapshot["service_count"], 4)
+            self.assertEqual(snapshot["service_count"], 5)
             self.assertEqual(snapshot["healthy_service_count"], 4)
             self.assertEqual(snapshot["attention_count"], 0)
-            self.assertEqual([row["title"] for row in snapshot["service_rows"]], ["Queue", "Dispatcher", "MCP", "Workflow Validation"])
+            self.assertEqual(
+                [row["title"] for row in snapshot["service_rows"]],
+                ["Queue", "AgentsDB", "Dispatcher", "MCP", "Workflow Validation"],
+            )
             self.assertEqual(snapshot["recent_item_count"], 1)
             self.assertEqual(snapshot["recent_actions"][0]["title"], "Queue probe")
             self.assertEqual(snapshot["recent_actions"][0]["status"], "pass")
@@ -318,6 +355,16 @@ class TestRuntimeView(unittest.TestCase):
                     "dispatcher_db_path": "/tmp/dispatcher.json",
                     "dispatcher_healthy": False,
                     "dispatcher_error": "dispatcher locked",
+                },
+            ), patch(
+                "alde.control_plane_runtime.OPERATOR_STATUS_SERVICE.load_agentsdb_status",
+                return_value={
+                    "agentsdb_uri": "agentsdb://localhost:2331",
+                    "agentsdb_database_name": "alde_knowledge",
+                    "agentsdb_endpoint": "localhost:2331",
+                    "agentsdb_healthy": None,
+                    "agentsdb_error": "",
+                    "agentsdb_detail": "socket @ localhost:2331",
                 },
             ), patch(
                 "alde.control_plane_runtime.OPERATOR_STATUS_SERVICE.load_mcp_config_path",

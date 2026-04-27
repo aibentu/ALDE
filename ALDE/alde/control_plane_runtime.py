@@ -1453,6 +1453,119 @@ class OperatorStatusService:
             "healthy": normalized_state == "pass",
         }
 
+    def _load_numeric_value(self, value: Any) -> float:
+        try:
+            return float(value)
+        except Exception:
+            return 0.0
+
+    def _load_percentile_value(self, values: list[float], percentile: float) -> float:
+        if not values:
+            return 0.0
+        sorted_values = sorted(float(item) for item in values)
+        if len(sorted_values) == 1:
+            return sorted_values[0]
+        clamped_percentile = max(0.0, min(100.0, float(percentile)))
+        position = (clamped_percentile / 100.0) * (len(sorted_values) - 1)
+        lower_index = int(position)
+        upper_index = min(lower_index + 1, len(sorted_values) - 1)
+        fraction = position - lower_index
+        return sorted_values[lower_index] + (sorted_values[upper_index] - sorted_values[lower_index]) * fraction
+
+    def _build_transport_metrics_from_attempts(self, attempts: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+        transport_metrics: dict[str, dict[str, Any]] = {}
+        for attempt in attempts:
+            if not isinstance(attempt, dict):
+                continue
+            transport_name = _safe_str(attempt.get("transport") or "unknown") or "unknown"
+            metric_payload = transport_metrics.setdefault(
+                transport_name,
+                {
+                    "attempt_count": 0,
+                    "success_count": 0,
+                    "failure_count": 0,
+                    "timeout_count": 0,
+                    "latency_values": [],
+                },
+            )
+            metric_payload["attempt_count"] += 1
+            if bool(attempt.get("ok")):
+                metric_payload["success_count"] += 1
+            else:
+                metric_payload["failure_count"] += 1
+            if bool(attempt.get("timed_out")):
+                metric_payload["timeout_count"] += 1
+            metric_payload["latency_values"].append(self._load_numeric_value(attempt.get("latency_ms")))
+
+        normalized_transport_metrics: dict[str, dict[str, Any]] = {}
+        for transport_name, metric_payload in transport_metrics.items():
+            attempt_count = max(int(metric_payload.get("attempt_count") or 0), 1)
+            latency_values = [
+                self._load_numeric_value(item)
+                for item in (metric_payload.get("latency_values") or [])
+                if self._load_numeric_value(item) >= 0.0
+            ]
+            normalized_transport_metrics[transport_name] = {
+                "attempt_count": int(metric_payload.get("attempt_count") or 0),
+                "success_count": int(metric_payload.get("success_count") or 0),
+                "failure_count": int(metric_payload.get("failure_count") or 0),
+                "timeout_count": int(metric_payload.get("timeout_count") or 0),
+                "error_rate": round(float(metric_payload.get("failure_count") or 0) / float(attempt_count), 4),
+                "timeout_rate": round(float(metric_payload.get("timeout_count") or 0) / float(attempt_count), 4),
+                "p50_latency_ms": round(self._load_percentile_value(latency_values, 50), 3),
+                "p95_latency_ms": round(self._load_percentile_value(latency_values, 95), 3),
+                "avg_latency_ms": round(sum(latency_values) / len(latency_values), 3) if latency_values else 0.0,
+            }
+        return normalized_transport_metrics
+
+    def _build_overall_metrics_from_attempts(self, attempts: list[dict[str, Any]]) -> dict[str, Any]:
+        attempt_count = len(attempts)
+        if attempt_count <= 0:
+            return {
+                "attempt_count": 0,
+                "success_count": 0,
+                "failure_count": 0,
+                "timeout_count": 0,
+                "error_rate": 0.0,
+                "timeout_rate": 0.0,
+                "p50_latency_ms": 0.0,
+                "p95_latency_ms": 0.0,
+                "avg_latency_ms": 0.0,
+            }
+
+        success_count = sum(1 for attempt in attempts if bool((attempt or {}).get("ok")))
+        failure_count = attempt_count - success_count
+        timeout_count = sum(1 for attempt in attempts if bool((attempt or {}).get("timed_out")))
+        latency_values = [self._load_numeric_value((attempt or {}).get("latency_ms")) for attempt in attempts]
+
+        return {
+            "attempt_count": int(attempt_count),
+            "success_count": int(success_count),
+            "failure_count": int(failure_count),
+            "timeout_count": int(timeout_count),
+            "error_rate": round(float(failure_count) / float(attempt_count), 4),
+            "timeout_rate": round(float(timeout_count) / float(attempt_count), 4),
+            "p50_latency_ms": round(self._load_percentile_value(latency_values, 50), 3),
+            "p95_latency_ms": round(self._load_percentile_value(latency_values, 95), 3),
+            "avg_latency_ms": round(sum(latency_values) / len(latency_values), 3) if latency_values else 0.0,
+        }
+
+    def _load_mcp_probe_metrics(self, normalized_probe: dict[str, Any]) -> dict[str, Any]:
+        probe_metrics = normalized_probe.get("probe_metrics") if isinstance(normalized_probe.get("probe_metrics"), dict) else {}
+        overall_metrics = probe_metrics.get("overall_metrics") if isinstance(probe_metrics.get("overall_metrics"), dict) else {}
+        transport_metrics = probe_metrics.get("transport_metrics") if isinstance(probe_metrics.get("transport_metrics"), dict) else {}
+        if overall_metrics and transport_metrics:
+            return {
+                "overall_metrics": dict(overall_metrics),
+                "transport_metrics": dict(transport_metrics),
+            }
+
+        attempts = [attempt for attempt in (normalized_probe.get("attempts") or []) if isinstance(attempt, dict)]
+        return {
+            "overall_metrics": self._build_overall_metrics_from_attempts(attempts),
+            "transport_metrics": self._build_transport_metrics_from_attempts(attempts),
+        }
+
     def _infer_recent_action_status(self, title: str, summary: str) -> str:
         combined_text = f"{title} {summary}".lower()
         if any(token in combined_text for token in ("fail", "error", "missing", "unreachable", "degraded", "locked")):
@@ -1605,6 +1718,13 @@ class OperatorStatusService:
                 "stderr": "probe not executed yet" if mcp_config_path.is_file() else "mcp_servers.json not found",
             }
 
+        mcp_probe_metrics = self._load_mcp_probe_metrics(normalized_probe)
+        mcp_overall_metrics = dict(mcp_probe_metrics.get("overall_metrics") or {})
+        mcp_transport_metrics = dict(mcp_probe_metrics.get("transport_metrics") or {})
+        mcp_active_server = _safe_str(normalized_probe.get("active_server") or normalized_probe.get("selected_server"))
+        mcp_active_transport = _safe_str(normalized_probe.get("active_transport") or normalized_probe.get("selected_transport"))
+        mcp_fallback_used = bool(normalized_probe.get("fallback_used"))
+
         validation_errors = [
             str(item)
             for item in (validation_report.get("errors") or validation_report.get("mapping_errors") or [])
@@ -1624,7 +1744,19 @@ class OperatorStatusService:
         agentsdb_detail = _safe_str(agentsdb_status.get("agentsdb_detail")) or _safe_str(agentsdb_status.get("agentsdb_uri")) or "not configured"
         mcp_stdout = _safe_str(normalized_probe.get("stdout"))
         mcp_stderr = _safe_str(normalized_probe.get("stderr"))
+        mcp_latency_p95 = self._load_numeric_value(mcp_overall_metrics.get("p95_latency_ms"))
+        mcp_error_rate = self._load_numeric_value(mcp_overall_metrics.get("error_rate"))
+        mcp_timeout_rate = self._load_numeric_value(mcp_overall_metrics.get("timeout_rate"))
         mcp_probe_message = (mcp_stderr or mcp_stdout or "No MCP probe output available.")[:220]
+        if mcp_active_transport:
+            mcp_probe_message = (
+                f"transport={mcp_active_transport} "
+                f"p95={round(mcp_latency_p95, 3)}ms "
+                f"err={round(mcp_error_rate, 4)} "
+                f"timeout={round(mcp_timeout_rate, 4)}"
+            )
+            if mcp_fallback_used:
+                mcp_probe_message = f"fallback active; {mcp_probe_message}"
         validation_summary = (
             f"{int(validation_report.get('valid_count') or 0)} valid / {int(validation_report.get('invalid_count') or 0)} invalid"
             if validation_report else "No validation report available"
@@ -1657,7 +1789,11 @@ class OperatorStatusService:
             self._build_service_row(
                 title="MCP",
                 state=mcp_state,
-                detail="config ready" if mcp_config_path.is_file() else "config missing",
+                detail=(
+                    f"{mcp_active_transport or 'unknown'} @ {mcp_active_server or 'n/a'}"
+                    if mcp_config_path.is_file()
+                    else "config missing"
+                ),
                 note=mcp_probe_message,
             ),
             self._build_service_row(
@@ -1695,6 +1831,13 @@ class OperatorStatusService:
             "agentsdb_monitored": 1 if agentsdb_healthy is not None else 0,
             "recent_fail_count": int(recent_action_summary["status_counts"].get("fail") or 0),
             "recent_pass_count": int(recent_action_summary["status_counts"].get("pass") or 0),
+            "mcp_probe_attempt_count": int(mcp_overall_metrics.get("attempt_count") or 0),
+            "mcp_fallback_used": 1 if mcp_fallback_used else 0,
+            "mcp_error_rate": round(self._load_numeric_value(mcp_overall_metrics.get("error_rate")), 4),
+            "mcp_timeout_rate": round(self._load_numeric_value(mcp_overall_metrics.get("timeout_rate")), 4),
+            "mcp_latency_p50_ms": round(self._load_numeric_value(mcp_overall_metrics.get("p50_latency_ms")), 3),
+            "mcp_latency_p95_ms": round(self._load_numeric_value(mcp_overall_metrics.get("p95_latency_ms")), 3),
+            "mcp_active_transport": mcp_active_transport or "",
         }
 
         return _build_projection_snapshot(
@@ -1727,6 +1870,12 @@ class OperatorStatusService:
             mcp_config_path=str(mcp_config_path),
             mcp_config_present=mcp_config_path.is_file(),
             mcp_probe=normalized_probe,
+            mcp_active_server=mcp_active_server,
+            mcp_active_transport=mcp_active_transport,
+            mcp_fallback_used=mcp_fallback_used,
+            mcp_probe_metrics=mcp_probe_metrics,
+            mcp_overall_metrics=mcp_overall_metrics,
+            mcp_transport_metrics=mcp_transport_metrics,
             service_count=len(service_rows),
             healthy_service_count=healthy_service_count,
             service_rows=service_rows,

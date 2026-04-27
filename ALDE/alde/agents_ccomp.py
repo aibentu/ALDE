@@ -1394,6 +1394,28 @@ class ChatCom(ChatCompletion,ChatHistory):
                     return str(val)
             return str(val)
 
+        def _should_use_deterministic_action_result(result: Any) -> bool:
+            """Only short-circuit when deterministic action execution produced a valid terminal result."""
+            if result is None:
+                return False
+            if not isinstance(result, str):
+                return True
+            try:
+                parsed_result = json.loads(result)
+            except Exception:
+                return True
+            if not isinstance(parsed_result, dict):
+                return True
+            error_name = str(parsed_result.get("error") or "").strip().lower()
+            if error_name in {
+                "invalid_action_request",
+                "invalid_action_request_json",
+                "unknown_or_unsupported_action",
+                "action_request_must_be_object",
+            }:
+                return False
+            return True
+
         original_workflow_input = self._input_text
         self._deterministic_action_result: str | None = None
         self._deterministic_action_meta: dict[str, Any] | None = None
@@ -1406,7 +1428,9 @@ class ChatCom(ChatCompletion,ChatHistory):
                     from ALDE_Projekt.ALDE.alde.agents_tools import execute_deterministic_action_request, resolve_configured_request_payload  # type: ignore
                 else:
                     raise
-            self._deterministic_action_result = execute_deterministic_action_request(self._input_text)
+            deterministic_action_result = execute_deterministic_action_request(self._input_text)
+            if _should_use_deterministic_action_result(deterministic_action_result):
+                self._deterministic_action_result = str(deterministic_action_result)
             if self._deterministic_action_result is not None:
                 parsed_request = None
                 if isinstance(self._input_text, str):
@@ -1443,10 +1467,13 @@ class ChatCom(ChatCompletion,ChatHistory):
         # ------------------------------------------------------------------
         self._forced_route: dict[str, str] | None = None
         try:
+            available_agents = set(getattr(agents_registry, "AGENTS_REGISTRY", {}).keys())
+            if not available_agents:
+                available_agents = {"_xrouter_xplanner", "_xplaner_xrouter", "_xworker"}
             self._forced_route = resolve_forced_route(
                 self._agent_label,
                 self._input_text,
-                set(getattr(agents_registry, "AGENTS_REGISTRY", {}).keys()),
+                available_agents,
             )
         except Exception:
             # Never let routing shortcuts break normal chat execution.

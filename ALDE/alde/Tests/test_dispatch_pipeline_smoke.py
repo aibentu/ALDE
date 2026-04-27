@@ -11,7 +11,7 @@ PKG_ROOT = Path(__file__).resolve().parents[2]
 if str(PKG_ROOT) not in sys.path:
     sys.path.insert(0, str(PKG_ROOT))
 
-from alde.agents_tools import DOCUMENT_REPOSITORY, dispatch_docs, execute_action_request_tool
+from alde.agents_tools import DOCUMENT_REPOSITORY, dispatch_docs, execute_action_request_tool, read_document
 
 
 # Tiny but valid single-page PDF fixture for end-to-end dispatch smoke tests.
@@ -109,6 +109,18 @@ class TestDispatchPipelineSmoke(unittest.TestCase):
             self.assertEqual(result.get("db", {}).get("reachable"), True)
             self.assertEqual(result.get("summary", {}).get("pdf_found"), 1)
             self.assertEqual(result.get("summary", {}).get("errors"), 0)
+
+    def test_read_document_repairs_dispatch_prefixed_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            dispatcher_db_path = tmp_path / "dispatcher_doc_db.json"
+            dispatcher_db_path.write_text('{"documents": {"corr-1": {"processing_state": "queued"}}}', encoding="utf-8")
+
+            prefixed_path = f"/dispatch{dispatcher_db_path.as_posix()}"
+            result = read_document(prefixed_path)
+
+            self.assertIn('"documents"', result)
+            self.assertIn('"corr-1"', result)
 
 
 if __name__ == "__main__":

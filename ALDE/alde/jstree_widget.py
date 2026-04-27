@@ -121,6 +121,10 @@ class TreeDataPersistenceService:
         value = str(os.getenv("AI_IDE_AGENTS_DB_TREE_STRICT", "1")).strip().lower()
         return value not in {"0", "false", "no", "off"}
 
+    def _agentsdb_tree_sync_enabled(self) -> bool:
+        value = str(os.getenv("AI_IDE_AGENTS_DB_TREE_SYNC", "0")).strip().lower()
+        return value in {"1", "true", "yes", "on"}
+
     def _normalize_projection_conflict_policy_value(self, value: Any) -> str | None:
         policy_value = str(value or "").strip().lower()
         if not policy_value:
@@ -214,6 +218,31 @@ class TreeDataPersistenceService:
     def _tree_object_id(self) -> str:
         configured_id = str(os.getenv("AI_IDE_TREE_AGENTS_DB_OBJECT_ID", "")).strip()
         return configured_id or "tree_widget:tree_data"
+
+    def _purge_agentsdb_tree_object(self, repository: Any | None) -> bool:
+        if repository is None:
+            return False
+        object_id = self._tree_object_id()
+        try:
+            delete_object = getattr(repository, "delete_object", None)
+            if callable(delete_object):
+                return bool(delete_object("document", object_id))
+        except Exception:
+            return False
+
+        try:
+            load_collection = getattr(repository, "load_collection", None)
+            collection = load_collection("document") if callable(load_collection) else None
+            if isinstance(collection, dict) and object_id in collection:
+                collection.pop(object_id, None)
+                flush_image = getattr(repository, "_flush_image", None)
+                if callable(flush_image):
+                    flush_image()
+                return True
+        except Exception:
+            return False
+
+        return False
 
     def _normalize_tree_data_structure(self, data: Any) -> dict[str, Any]:
         normalized_data: dict[str, Any] = {}
@@ -783,7 +812,11 @@ class TreeDataPersistenceService:
 
     def load_data(self) -> tuple[dict[str, Any], str, str]:
         runtime_config, repository = self._load_agentsdb_repository()
-        if repository is not None:
+        tree_sync_enabled = self._agentsdb_tree_sync_enabled()
+        if repository is not None and not tree_sync_enabled:
+            self._purge_agentsdb_tree_object(repository)
+
+        if repository is not None and tree_sync_enabled:
             try:
                 record = repository.load_object("document", self._tree_object_id())
                 tree_payload = record.get("tree_data") if isinstance(record, dict) else None
@@ -826,7 +859,7 @@ class TreeDataPersistenceService:
                         runtime_config=runtime_config,
                         repository=repository,
                     )
-                    if repository is not None and runtime_config is not None:
+                    if tree_sync_enabled and repository is not None and runtime_config is not None:
                         try:
                             repository.upsert_object(
                                 "document",
@@ -848,7 +881,7 @@ class TreeDataPersistenceService:
                     runtime_config=runtime_config,
                     repository=repository,
                 )
-                if repository is not None and runtime_config is not None:
+                if tree_sync_enabled and repository is not None and runtime_config is not None:
                     try:
                         repository.upsert_object(
                             "document",
@@ -858,7 +891,7 @@ class TreeDataPersistenceService:
                     except Exception:
                         pass
                 return normalized_loaded_data, "json", str(self._json_path)
-        if self._agentsdb_strict_mode():
+        if tree_sync_enabled and self._agentsdb_strict_mode():
             raise RuntimeError("agents_db tree object not found and strict mode is enabled")
         return self._merge_local_projection_sections(
             self._normalize_tree_data_structure({}),
@@ -868,23 +901,27 @@ class TreeDataPersistenceService:
 
     def save_data(self, data: dict[str, Any]) -> tuple[str, str]:
         runtime_config, repository = self._load_agentsdb_repository()
+        tree_sync_enabled = self._agentsdb_tree_sync_enabled()
         normalized_data = self._merge_local_projection_sections(
             self._normalize_tree_data_structure(data),
             runtime_config=runtime_config,
             repository=repository,
         )
         if repository is not None and runtime_config is not None:
-            try:
-                repository.upsert_object(
-                    "document",
-                    self._tree_object_id(),
-                    self._agentsdb_tree_payload(runtime_config=runtime_config, repository=repository, data=normalized_data),
-                )
-                return "agents_db", self._tree_object_id()
-            except Exception as exc:
-                if self._agentsdb_strict_mode():
-                    raise RuntimeError(f"agents_db tree save failed: {exc}") from exc
-                print(f"[WARNING] agents_db tree save failed, trying legacy backends: {exc}")
+            if tree_sync_enabled:
+                try:
+                    repository.upsert_object(
+                        "document",
+                        self._tree_object_id(),
+                        self._agentsdb_tree_payload(runtime_config=runtime_config, repository=repository, data=normalized_data),
+                    )
+                    return "agents_db", self._tree_object_id()
+                except Exception as exc:
+                    if self._agentsdb_strict_mode():
+                        raise RuntimeError(f"agents_db tree save failed: {exc}") from exc
+                    print(f"[WARNING] agents_db tree save failed, trying legacy backends: {exc}")
+            else:
+                self._purge_agentsdb_tree_object(repository)
 
         mongo_collection = self._get_mongo_collection()
         if mongo_collection is not None:
@@ -903,7 +940,7 @@ class TreeDataPersistenceService:
             except Exception as exc:
                 print(f"[WARNING] MongoDB tree save failed, falling back to JSON: {exc}")
 
-        if self._agentsdb_strict_mode():
+        if tree_sync_enabled and self._agentsdb_strict_mode():
             raise RuntimeError("agents_db tree persistence required but unavailable")
 
         self._app_data_dir.mkdir(exist_ok=True)
@@ -3190,7 +3227,7 @@ class JsonTreeWidget(QTreeWidget):
             QMessageBox.warning(self, "History", f"Could not load history: {e}")
             return
         # Restore original behavior: show the full history structure.
-        # Persist chat history in agents_db-backed tree storage.
+        # Persist chat history in the configured tree storage backend.
         try:
             self.remove_from_section("CHAT_HISTORY", "Chat History")
         except Exception:

@@ -80,6 +80,7 @@ def setup_rag_documents(create_rag_system):
     }
 
 
+@unittest.skip("workflow_rag is deprecated; project-internal workflow data flows through AgentsDB.")
 class TestWorkflowRagIntegration(unittest.TestCase):
     def setUp(self) -> None:
         chat_mod.ChatHistory._history_ = []

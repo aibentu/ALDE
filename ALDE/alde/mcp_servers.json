@@ -1,10 +1,45 @@
 {
+  "default_server": "local-tcp",
+  "fallback_order": ["local-http"],
   "servers": {
+    "local-tcp": {
+      "type": "tcp",
+      "host": "127.0.0.1",
+      "port": 8765,
+      "command": "python3",
+      "args": [
+        "-m",
+        "ALDE.alde.mcp_net_server",
+        "--transport",
+        "tcp",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8765"
+      ]
+    },
+    "local-http": {
+      "type": "http",
+      "url": "http://127.0.0.1:8766/mcp",
+      "health": "http://127.0.0.1:8766/health",
+      "command": "python3",
+      "args": [
+        "-m",
+        "ALDE.alde.mcp_net_server",
+        "--transport",
+        "http",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8766"
+      ]
+    },
     "local-stdio": {
       "type": "stdio",
-      "command": "python",
+      "command": "python3",
       "args": [
-        "./ai_ide/mcp_server.py"
+        "-m",
+        "ALDE.alde.mcp_server"
       ]
     }
   }

@@ -5,7 +5,7 @@ def load_runtime_metrics(
     *,
     base_dir: str | None = None,
     session_id: str | None = None,
-    history_entries: list[dict[str, Any]] | None = None,
+    history_entries: list[dict[str,]] | None = None,
 ) -> dict[str, object]:
     from .control_plane_runtime import RUNTIME_METRICS_SERVICE
 
@@ -20,7 +20,7 @@ def load_runtime_observability_snapshot(
     *,
     base_dir: str | None = None,
     session_id: str | None = None,
-    history_entries: list[dict[str, Any]] | None = None,
+    history_entries: list[dict[str, ]] | None = None,
     event_limit: int | None = None,
     trace_limit: int | None = None,
 ) -> dict[str, object]:

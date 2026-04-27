@@ -266,7 +266,7 @@ write_document(
 | Tone | `modern` | Set `options.tone: "professional"` \| `"creative"` |
 | Max words | `350` | Set `options.max_words: 400` |
 | Profile location | `AppData/applicant_profile.json` | Provide explicit path or ID |
-| Output directory | `AppData/Cover_letters/` | Set in `options.output_dir` |
+| Output directory | `AppData/VSM_4_Data/cover_letters/` | Set in `options.output_dir` |
 
 ---
 

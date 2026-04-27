@@ -1,0 +1,78 @@
+{
+  "TEMPLATES": {
+    "Quick Action - E2E Dispatcher Writer": {
+      "kind": "quick_action",
+      "agent_label": "_xplaner_xrouter",
+      "job_name": "router_planner_cover_letter_sequence",
+      "target_agent": "_xworker",
+      "route_job_name": "document_dispatch",
+      "sequence_name": "dispatch_parse_generate_cover_letter",
+      "parser_job_name": "job_posting_parser",
+      "writer_job_name": "cover_letter_writer",
+      "description": "Initialize the deterministic dispatch -> parse -> cover-letter writer sequence from a file-based job-offer source.",
+      "placeholders": {
+        "scan_dir": "<ABSOLUTE_PATH_TO_JOB_OFFERS>",
+        "applicant_profile": "<STRUCTURED_PROFILE_OR_REQUEST_STYLE_PROFILE>",
+        "options": {
+          "language": "de",
+          "tone": "modern",
+          "max_words": 350,
+          "output_dir": "<OPTIONAL_OUTPUT_DIRECTORY>"
+        },
+        "correlation_id": "<OPTIONAL_CORRELATION_ID>"
+      },
+      "prompt_text": "Initialize the end-to-end dispatcher-to-writer workflow for cover-letter generation. Use the specialized router planner sequence `router_planner_cover_letter_sequence` to create one deterministic route initialization payload for `_xworker`. Start with `document_dispatch`. Preserve any provided `applicant_profile`, `profile_result`, `job_posting`, `job_posting_result`, and `options` fields unchanged. If `action` is missing, set it to `generate_cover_letter`. Keep sequence metadata explicit with `dispatch_parse_generate_cover_letter`, `job_posting_parser`, and `cover_letter_writer`. Do not invent filesystem state, DB state, parsed job data, or applicant facts. Return the deterministic route initialization payload only.",
+      "expected_route": {
+        "target_agent": "_xworker",
+        "job_name": "document_dispatch",
+        "handoff_metadata": {
+          "sequence_name": "dispatch_parse_generate_cover_letter",
+          "parser_job_name": "job_posting_parser",
+          "writer_job_name": "cover_letter_writer"
+        }
+      }
+    },
+    "Quick Action - Direct Writer Bypass": {
+      "kind": "quick_action",
+      "agent_label": "_xplaner_xrouter",
+      "job_name": "cover_letter_writer",
+      "target_agent": "_xworker",
+      "description": "Route directly to the cover-letter writer when `job_posting_result` and `profile_result` are already available.",
+      "placeholders": {
+        "job_posting_result": "<PARSED_JOB_POSTING_RESULT>",
+        "profile_result": "<PARSED_PROFILE_RESULT>",
+        "options": {
+          "language": "de",
+          "tone": "modern",
+          "max_words": 350,
+          "output_dir": "<OPTIONAL_OUTPUT_DIRECTORY>"
+        }
+      },
+      "prompt_text": "Route directly to `cover_letter_writer`. Use `_xworker` with the writer job only. Do not use `document_dispatch`. Do not route through `job_posting_parser`. Preserve `job_posting_result`, `profile_result`, `applicant_profile`, and `options` unchanged when provided. Do not invent applicant facts, parsed job fields, or missing contact details. Return the deterministic writer route or writer-ready payload only.",
+      "expected_route": {
+        "target_agent": "_xworker",
+        "job_name": "cover_letter_writer"
+      }
+    }
+  },
+  "RUNTIME": {
+    "Dispatcher Writer Quick Actions": {
+      "primary_action": {
+        "agent_label": "_xplaner_xrouter",
+        "job_name": "router_planner_cover_letter_sequence",
+        "target_agent": "_xworker"
+      },
+      "bypass_action": {
+        "agent_label": "_xplaner_xrouter",
+        "job_name": "cover_letter_writer",
+        "target_agent": "_xworker"
+      }
+    }
+  },
+  "DOCUMENTS": {
+    "Dispatcher Writer Prompt Docs": {
+      "prompt_doc": "E2E_DISPATCHER_WRITER_PROMPT.md",
+      "network_doc": "Agentic_Networking.md"
+    }
+  }
+}

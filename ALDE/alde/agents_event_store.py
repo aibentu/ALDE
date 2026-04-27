@@ -9,7 +9,7 @@ try:
 except ImportError as e:
     msg = str(e)
     if "attempted relative import" in msg or "no known parent package" in msg:
-        from ALDE_Projekt.ALDE.alde.agents_runtime_events import validate_runtime_event  # type: ignore
+        from alde.agents_runtime_events import validate_runtime_event  # type: ignore
     else:
         raise
 

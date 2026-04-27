@@ -24,16 +24,42 @@ if _THIS_MODULE is not None:
         sys.modules.setdefault("ALDE_Projekt.ALDE.alde.agents_factory", _THIS_MODULE)
 
 try:
-    from .agents_config import build_agent_handoff, get_agent_config, get_agent_workflow_config, get_default_job_name, get_handoff_route_contract, get_job_config, get_specialized_system_prompt, normalize_agent_label, normalize_tool_name, prepare_incoming_handoff, validate_handoff_for_target  # type: ignore
+    from .agents_config import (
+        build_agent_handoff,
+        get_agent_config,
+        get_agent_workflow_config,
+        get_default_job_name,
+        get_handoff_route_contract,
+        get_job_config,
+        get_specialized_system_prompt,
+        get_workflow_config,
+        normalize_agent_label,
+        normalize_tool_name,
+        prepare_incoming_handoff,
+        validate_handoff_for_target
+    )  # type: ignore
 except ImportError as e:
     msg = str(e)
     if "no known parent package" in msg or "attempted relative import" in msg:
-        from alde.agents_config import build_agent_handoff, get_agent_config, get_agent_workflow_config, get_default_job_name, get_handoff_route_contract, get_job_config, get_specialized_system_prompt, normalize_agent_label, normalize_tool_name, prepare_incoming_handoff, validate_handoff_for_target  # type: ignore
+        from alde.agents_config import (
+            build_agent_handoff,
+            get_agent_config,
+            get_agent_workflow_config,
+            get_default_job_name,
+            get_handoff_route_contract,
+            get_job_config,
+            get_specialized_system_prompt,
+            get_workflow_config,
+            normalize_agent_label,
+            normalize_tool_name,
+            prepare_incoming_handoff,
+            validate_handoff_for_target
+            )  # type: ignore
     else:
         raise
 
 try:
-    from .chat_completion import ChatComE, ChatCompletion
+    from .agents_ccomp import ChatComE, ChatCompletion
 except ImportError as e:
     msg = str(e)
     if "no known parent package" in msg or "attempted relative import" in msg:
@@ -43,11 +69,12 @@ except ImportError as e:
         _pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         if _pkg_parent not in sys.path:
             sys.path.insert(0, _pkg_parent)
-        from alde.chat_completion import ChatComE, ChatCompletion
+        from alde.agents_ccomp import ChatComE, ChatCompletion
     else:
         raise
 try:
     from .agents_tools import (  # type: ignore
+        DOCUMENT_REPOSITORY,
         UNIFIED_TOOLS,
         function_dispatcher,
         get_agent_tools,
@@ -62,7 +89,8 @@ try:
 except ImportError as e:
     msg = str(e)
     if "no known parent package" in msg or "attempted relative import" in msg:
-        from ALDE_Projekt.ALDE.alde.agents_tools import (  # type: ignore
+        from alde.agents_tools import (  # type: ignore
+            DOCUMENT_REPOSITORY,
             UNIFIED_TOOLS,
             function_dispatcher,
             get_agent_tools,
@@ -76,11 +104,11 @@ except ImportError as e:
         )
     else:
         raise
-if __name__ == '__main__':  
+if __name__ == '__main__':
     _script_dir = Path(__file__).parent
     _parent_dir = _script_dir.parent
     if str(_parent_dir) not in sys.path:
-        
+
         sys.path.insert(0, str(_parent_dir))
     if str(_script_dir) not in sys.path:
         sys.path.insert(0, str(_script_dir))
@@ -105,6 +133,20 @@ _TOOL_CACHE: dict[str, str] = {}
 _WORKFLOW_SESSION_CACHE: dict[str, dict[str, Any]] = {}
 _MODEL = "gpt-4.1-mini-2025-04-14"
 model = _MODEL
+
+
+def _default_cover_letter_output_dir() -> str:
+    try:
+        base_dir = GetPath()._parent(parg=f"{__file__}")
+        if isinstance(base_dir, str) and base_dir.strip():
+            return os.path.abspath(
+                os.path.join(base_dir, "AppData", "VSM_4_Data", "cover_letters")
+            )
+    except Exception:
+        pass
+    return os.path.join(os.path.expanduser("~"), "Cover_letters")
+
+
 # NOTE: This must be a real dict at runtime; tool-call dispatch reads from it.
 try:
     from . import agents_registry as _agents_registry  # type: ignore
@@ -149,6 +191,81 @@ class AgentRuntimeConfigService:
     def load_object_tools(self, agent_name: str | None) -> list[dict[str, Any]]:
         config = self.load_object_config(agent_name)
         return get_agent_tools(config.get("tools") or [])
+
+    def load_object_attachment_entries(
+        self,
+        *,
+        agent_name: str | None,
+        job_name: str | None = None,
+        tool_name: str | None = None,
+        scope_key: str | None = None,
+        thread_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if not agent_name:
+            return []
+        resolved_memory_slot = AGENT_MEMORY_SERVICE.load_memory_slot(
+            job_name=job_name,
+            tool_name=tool_name,
+        )
+        resolved_scope_key = AGENT_MEMORY_SERVICE.load_session_scope_key(
+            scope_key=scope_key,
+            thread_id=thread_id,
+        )
+        return AGENT_MEMORY_ATTACHMENT_SERVICE.load_object_attachment_entries(
+            agent_label=agent_name,
+            memory_slot=resolved_memory_slot,
+            scope_key=resolved_scope_key,
+        )
+
+    def load_object_attachment_documents(
+        self,
+        *,
+        agent_name: str | None,
+        job_name: str | None = None,
+        tool_name: str | None = None,
+        scope_key: str | None = None,
+        thread_id: int | None = None,
+    ) -> list[dict[str, Any]]:
+        if not agent_name:
+            return []
+        resolved_memory_slot = AGENT_MEMORY_SERVICE.load_memory_slot(
+            job_name=job_name,
+            tool_name=tool_name,
+        )
+        resolved_scope_key = AGENT_MEMORY_SERVICE.load_session_scope_key(
+            scope_key=scope_key,
+            thread_id=thread_id,
+        )
+        return AGENT_MEMORY_ATTACHMENT_SERVICE.load_object_attachment_documents(
+            agent_label=agent_name,
+            memory_slot=resolved_memory_slot,
+            scope_key=resolved_scope_key,
+        )
+
+    def load_object_attachment_message(
+        self,
+        *,
+        agent_name: str | None,
+        job_name: str | None = None,
+        tool_name: str | None = None,
+        scope_key: str | None = None,
+        thread_id: int | None = None,
+    ) -> dict[str, str] | None:
+        if not agent_name:
+            return None
+        resolved_memory_slot = AGENT_MEMORY_SERVICE.load_memory_slot(
+            job_name=job_name,
+            tool_name=tool_name,
+        )
+        resolved_scope_key = AGENT_MEMORY_SERVICE.load_session_scope_key(
+            scope_key=scope_key,
+            thread_id=thread_id,
+        )
+        return AGENT_MEMORY_ATTACHMENT_SERVICE.load_attachment_context_message(
+            agent_label=agent_name,
+            memory_slot=resolved_memory_slot,
+            scope_key=resolved_scope_key,
+        )
 
 
 AGENT_RUNTIME_CONFIG_SERVICE = AgentRuntimeConfigService()
@@ -263,7 +380,10 @@ def _agent_history_policy(agent_name: str | None) -> dict[str, Any]:
 
 class WorkflowSnapshotService:
     def load_actor(self, workflow_session: dict[str, Any], current_state: str) -> dict[str, Any]:
-        workflow_config = get_agent_workflow_config(str(workflow_session.get("agent_label") or "")) or {}
+        workflow_name = str(workflow_session.get("workflow_name") or "").strip()
+        workflow_config = get_workflow_config(workflow_name) if workflow_name else {}
+        if not workflow_config:
+            workflow_config = get_agent_workflow_config(str(workflow_session.get("agent_label") or "")) or {}
         state_config = ((workflow_config.get("states") or {}).get(current_state) or {}) if current_state else {}
         actor_config = state_config.get("actor") if isinstance(state_config.get("actor"), dict) else {}
         return {
@@ -679,11 +799,30 @@ class WorkflowSessionService:
             thread_id=thread_id,
         )
 
-    def create_session(self, agent_name: str | None, *, thread_id: int | None = None) -> dict[str, Any] | None:
+    def create_session(
+        self,
+        agent_name: str | None,
+        *,
+        thread_id: int | None = None,
+        routing_request: dict[str, Any] | None = None,
+        workflow_name: str | None = None,
+    ) -> dict[str, Any] | None:
         if not agent_name:
             return None
 
-        workflow_config = get_agent_workflow_config(agent_name)
+        workflow_config: dict[str, Any] = {}
+        resolved_workflow_name = str(workflow_name or "").strip()
+
+        if not resolved_workflow_name and routing_request is not None:
+            resolved_workflow_name = AGENT_EXECUTION_SELECTION_SERVICE.load_workflow_name(
+                normalize_agent_label(agent_name),
+                routing_request,
+            )
+
+        if resolved_workflow_name:
+            workflow_config = get_workflow_config(resolved_workflow_name)
+        if not workflow_config:
+            workflow_config = get_agent_workflow_config(agent_name)
         if not workflow_config:
             return None
 
@@ -694,7 +833,7 @@ class WorkflowSessionService:
 
         retry_policy = self.normalize_retry_policy(workflow_config)
         runtime_metadata = WORKFLOW_CONTEXT_SERVICE.load_runtime_metadata(agent_name)
-        workflow_name = str(workflow_config.get("name") or "")
+        workflow_name = str(workflow_config.get("name") or resolved_workflow_name or "").strip()
         scope_key = self.build_scope_key(agent_name, workflow_name, thread_id=thread_id)
         cached_session = _WORKFLOW_SESSION_CACHE.get(scope_key) if scope_key else None
         if cached_session and not bool(cached_session.get("terminal")):
@@ -749,7 +888,10 @@ class WorkflowSessionService:
         if not workflow_session:
             return None
 
-        workflow_config = get_agent_workflow_config(str(workflow_session.get("agent_label") or ""))
+        workflow_name = str(workflow_session.get("workflow_name") or "").strip()
+        workflow_config = get_workflow_config(workflow_name) if workflow_name else {}
+        if not workflow_config:
+            workflow_config = get_agent_workflow_config(str(workflow_session.get("agent_label") or ""))
         if not workflow_config:
             return workflow_session
 
@@ -821,7 +963,7 @@ class WorkflowHistoryQueryService:
                     "assistant_name": entry.get("assistant-name"),
                     "thread_id": entry.get("thread-id"),
                     "thread_name": entry.get("thread-name"),
-                    "time": entry.get("time"), 
+                    "time": entry.get("time"),
                     "workflow": deepcopy(workflow),
                 }
             )
@@ -936,6 +1078,24 @@ class WorkflowHistoryLogService:
 WORKFLOW_HISTORY_LOG_SERVICE = WorkflowHistoryLogService()
 
 
+# AgentMemoryService has been migrated to agents_db (module-context alignment).
+# Re-exported here to preserve the existing public API.
+try:
+    from .agents_db import (  # type: ignore
+        AgentMemoryAttachmentService,
+        AgentMemoryService,
+        AGENT_MEMORY_ATTACHMENT_SERVICE,
+        AGENT_MEMORY_SERVICE,
+    )
+except ImportError:
+    from alde.agents_db import (  # type: ignore
+        AgentMemoryAttachmentService,
+        AgentMemoryService,
+        AGENT_MEMORY_ATTACHMENT_SERVICE,
+        AGENT_MEMORY_SERVICE,
+    )
+
+
 def _current_thread_id() -> int | None:
     return WORKFLOW_SESSION_SERVICE.load_current_thread_id()
 
@@ -1006,8 +1166,19 @@ def get_latest_workflow_status(
     )
 
 
-def _create_workflow_session(agent_name: str | None, *, thread_id: int | None = None) -> dict[str, Any] | None:
-    return WORKFLOW_SESSION_SERVICE.create_session(agent_name, thread_id=thread_id)
+def _create_workflow_session(
+    agent_name: str | None,
+    *,
+    thread_id: int | None = None,
+    routing_request: dict[str, Any] | None = None,
+    workflow_name: str | None = None,
+) -> dict[str, Any] | None:
+    return WORKFLOW_SESSION_SERVICE.create_session(
+        agent_name,
+        thread_id=thread_id,
+        routing_request=routing_request,
+        workflow_name=workflow_name,
+    )
 
 
 def _update_workflow_retry_status(
@@ -1286,11 +1457,11 @@ def _latest_user_message(default: str = "") -> str:
     return HISTORY_ACCESS_SERVICE.load_latest_user_message(default)
 
 # Flush on exit only when new entries were added
-#def _cleanup_on_exit():
- #   if len(ChatHistory._history_) > _initial_history_length:
-  #      history._flush()
+# def _cleanup_on_exit():
+# if len(ChatHistory._history_) > _initial_history_length:
+# history._flush()
+# atexit.register(_cleanup_on_exit)
 
-#atexit.register(_cleanup_on_exit)
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -1320,7 +1491,7 @@ class ParamSpec:
         if not self.required:
             py_type = f"{py_type} | None"
         return py_type
-    
+
     def to_tool_property(self) -> dict:
         """Convert to OpenAI tool parameter property."""
         prop = {"type": self.type, "description": self.description}
@@ -1330,28 +1501,28 @@ class ParamSpec:
             prop["items"] = self.items #:dict
         return prop
 
-@dataclass  
+@dataclass
 class ToolSpec:
     """Complete tool specification - single source of truth."""
     name: str
     description: str
     parameters: list[ParamSpec] = field(default_factory=list)
     implementation: Callable | None = None  # Optional: actual function reference
-    
-    # Callbacks bound to this tool 
+
+    # Callbacks bound to this tool
     on_call: Callable[[str, dict], None] | None = None  # Called before execution
     on_result: Callable[[str, str], None] | None = None  # Called after execution
-    
+
     def to_tool_definition(self) -> dict:
         """Generate OpenAI-compatible tool definition."""
         properties = {}
         required = []
-        
+
         for param in self.parameters:
             properties[param.name] = param.to_tool_property()
             if param.required:
                 required.append(param.name)
-        
+
         return {
             "type": "function",
             "function": {
@@ -1364,7 +1535,7 @@ class ToolSpec:
                 }
             }
         }
-    
+
     def execute(self, args: dict, tool_call_id: str = None) -> str:
         """Execute this tool with logging callbacks."""
         # Call on_call callback if registered
@@ -1373,7 +1544,7 @@ class ToolSpec:
                 self.on_call(self.name, args)
             except Exception as e:
                 print(f"on_call error: {e}")
-        
+
         # Execute the tool
         result = ""
         try:
@@ -1392,16 +1563,16 @@ class ToolSpec:
                 result = f"Tool '{self.name}' has no implementation"
         except Exception as e:
             result = f"Tool execution error: {e}"
-        
+
         # Call on_result callback if registered
         if self.on_result:
             try:
                 self.on_result(self.name, result, tool_call_id)
             except Exception as e:
                 print(f"on_result error: {e}")
-        
+
         return result
-    
+
     def to_function_signature(self) -> str:
         """Generate Python function signature string."""
         params = []
@@ -1412,7 +1583,7 @@ class ToolSpec:
                 default = f'"{p.default}"' if isinstance(p.default, str) else p.default
                 params.append(f"{p.name}: {p.to_python_type()} = {default}")
         return f"def {self.name}({', '.join(params)}) -> str:"
-    
+
     def to_function_stub(self) -> str:
         """Generate complete Python function stub."""
         sig = self.to_function_signature()
@@ -1421,7 +1592,7 @@ class ToolSpec:
         docstring = f'    """{safe_desc}"""'
         body = f'    return f"{self.name} executed with params: {{{", ".join(p.name for p in self.parameters)}}}"'
         return f"{sig}\n{docstring}\n{body}"
-    
+
     def compile_stub(
         self,
         *,
@@ -1501,7 +1672,7 @@ class ToolRegistryBootstrapService:
 
 TOOL_REGISTRY_BOOTSTRAP_SERVICE = ToolRegistryBootstrapService()
 
-# ============================================================================ 
+# ============================================================================
 # Default Logging Callbacks - bound to each tool
 # ============================================================================
 class ToolExecutionCallbackService:
@@ -1617,6 +1788,59 @@ class AgentExecutionSelectionService:
     def load_tool_name(self, routing_request: dict[str, Any] | None) -> str:
         return ROUTING_HANDOFF_VIEW_SERVICE.load_tool_name(routing_request)
 
+    def load_workflow_name(self, agent_label: str, routing_request: dict[str, Any] | None) -> str:
+        selected_job_name = self.load_job_name(routing_request)
+        if selected_job_name:
+            selected_job_config = get_job_config(selected_job_name)
+            selected_job_workflow_name = str(selected_job_config.get("workflow_name") or "").strip()
+            if selected_job_workflow_name:
+                return selected_job_workflow_name
+
+        selected_contract = ROUTING_HANDOFF_VIEW_SERVICE.load_contract(routing_request)
+        selected_contract_workflow_name = str(selected_contract.get("workflow_name") or "").strip()
+        if selected_contract_workflow_name:
+            return selected_contract_workflow_name
+
+        handoff_payload = ROUTING_HANDOFF_VIEW_SERVICE.load_payload(routing_request)
+        metadata = ROUTING_HANDOFF_VIEW_SERVICE.load_metadata(routing_request)
+        output_payload = handoff_payload.get("output") if isinstance(handoff_payload.get("output"), dict) else {}
+        for candidate in (
+            metadata.get("workflow_name"),
+            output_payload.get("workflow_name"),
+            handoff_payload.get("workflow_name"),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+
+        target_config = _get_runtime_agent_config(agent_label)
+        return str(target_config.get("workflow_name") or (target_config.get("workflow") or {}).get("definition") or "").strip()
+
+    def load_job_default_tool_names(self, agent_label: str, routing_request: dict[str, Any] | None) -> list[str]:
+        selected_job_name = self.load_job_name(routing_request)
+        if not selected_job_name:
+            return []
+
+        selected_job_config = get_job_config(selected_job_name)
+        selected_runtime_agent = normalize_agent_label(str(selected_job_config.get("runtime_agent") or ""))
+        resolved_agent_label = normalize_agent_label(agent_label)
+        if selected_runtime_agent and resolved_agent_label and selected_runtime_agent != resolved_agent_label:
+            return []
+
+        raw_default_tools = selected_job_config.get("default_tool_names")
+        if not isinstance(raw_default_tools, list):
+            raw_default_tools = selected_job_config.get("default_tools")
+        if not isinstance(raw_default_tools, list):
+            return []
+
+        resolved_default_tools: list[str] = []
+        for raw_tool_name in raw_default_tools:
+            if not isinstance(raw_tool_name, str) or not raw_tool_name.strip():
+                continue
+            normalized_tool_name = normalize_tool_name(raw_tool_name)
+            if normalized_tool_name:
+                resolved_default_tools.append(normalized_tool_name)
+        return resolved_default_tools
+
     def load_selection_value(self, routing_request: dict[str, Any] | None, selection_mode: str) -> str:
         if selection_mode == "tool_name":
             return self.load_tool_name(routing_request)
@@ -1667,6 +1891,14 @@ class AgentExecutionSelectionService:
             if selected_tool_name:
                 requested_tool_names.append(normalize_tool_name(selected_tool_name))
 
+        if not requested_tool_names:
+            requested_tool_names.extend(
+                self.load_job_default_tool_names(
+                    agent_label,
+                    routing_request,
+                )
+            )
+
         unique_tool_names: list[str] = []
         seen_tool_names: set[str] = set()
         for tool_name in requested_tool_names:
@@ -1702,6 +1934,10 @@ class AgentExecutionSelectionService:
             explicit_tools=explicit_tools,
         )
         if not requested_tool_names:
+            selected_job_name = self.load_job_name(routing_request)
+            selected_job_config = get_job_config(selected_job_name) if selected_job_name else {}
+            if bool(selected_job_config.get("disable_runtime_tools")):
+                return []
             return get_agent_runtime_tools(agent_label)
         return get_agent_tools(requested_tool_names)
 
@@ -1743,13 +1979,89 @@ class AgentExecutionSelectionService:
                 ),
             }
         )
+
+        handoff_metadata = ROUTING_HANDOFF_VIEW_SERVICE.load_metadata(routing_request)
+        session_cache_scope_key = str(handoff_metadata.get("session_cache_scope_key") or "").strip() or None
+        attachment_documents = AGENT_RUNTIME_CONFIG_SERVICE.load_object_attachment_documents(
+            agent_name=agent_label,
+            job_name=str(runtime_metadata.get("job_name") or "").strip() or None,
+            tool_name=str(runtime_metadata.get("tool_name") or "").strip() or None,
+            scope_key=session_cache_scope_key,
+            thread_id=WORKFLOW_CONTEXT_SERVICE.load_current_thread_id(),
+        )
+        if attachment_documents:
+            runtime_metadata["attachment_documents"] = attachment_documents
+            runtime_metadata["attachment_count"] = len(attachment_documents)
         return runtime_metadata
 
 
 AGENT_EXECUTION_SELECTION_SERVICE = AgentExecutionSelectionService()
 
 
+
+
 class AgentRoutingDispatcher:
+    def _load_route_defaults(self, job_name: str | None) -> dict[str, Any]:
+        normalized_job_name = str(job_name or "").strip()
+        if not normalized_job_name:
+            return {}
+        job_config = get_job_config(normalized_job_name)
+        route_defaults = job_config.get("route_defaults") if isinstance(job_config, dict) else None
+        return deepcopy(route_defaults) if isinstance(route_defaults, dict) else {}
+
+    def _build_sequence_handoff_payload(
+        self,
+        *,
+        args: dict[str, Any],
+        route_defaults: dict[str, Any],
+        route_job_name: str,
+    ) -> dict[str, Any]:
+        sequence_payload = route_defaults.get("sequence_payload") if isinstance(route_defaults.get("sequence_payload"), dict) else {}
+        if not sequence_payload:
+            return {}
+
+        output_payload = deepcopy(sequence_payload)
+        passthrough_keys = (
+            "action",
+            "applicant_profile",
+            "job_posting",
+            "job_posting_result",
+            "profile_result",
+            "options",
+        )
+        for key in passthrough_keys:
+            if key in args and args.get(key) is not None:
+                output_payload[key] = deepcopy(args.get(key))
+        if not str(output_payload.get("action") or "").strip():
+            output_payload["action"] = "generate_cover_letter"
+
+        handoff_payload: dict[str, Any] = {"output": output_payload}
+        if route_job_name:
+            handoff_payload["job_name"] = route_job_name
+        return handoff_payload
+
+    def _payload_path_exists(self, payload: dict[str, Any], key_path: str) -> bool:
+        current: Any = payload
+        for segment in str(key_path or "").split("."):
+            if not segment:
+                continue
+            if not isinstance(current, dict) or segment not in current:
+                return False
+            current = current.get(segment)
+        return current is not None
+
+    def _load_route_guard_config(self, *, target: str, job_name: str | None) -> dict[str, Any]:
+        normalized_job_name = str(job_name or "").strip()
+        if normalize_agent_label(target) != "_xworker" or not normalized_job_name:
+            return {}
+        job_config = get_job_config(normalized_job_name)
+        workflow_name = str(job_config.get("workflow_name") or "").strip()
+        if not workflow_name:
+            return {}
+        workflow_config = get_workflow_config(workflow_name)
+        route_guard = workflow_config.get("route_guard") if isinstance(workflow_config, dict) else None
+        return dict(route_guard) if isinstance(route_guard, dict) else {}
+
     def resolve_object_name(self, args: dict[str, Any]) -> str:
         agent_response = args.get('agent_response')
         handoff_payload = args.get('handoff_payload')
@@ -1770,6 +2082,7 @@ class AgentRoutingDispatcher:
         source_agent_label: str | None = None,
     ) -> tuple[str, dict | None]:
         source_agent_label = normalize_agent_label(source_agent_label or "") if source_agent_label else None
+
         allow_internal_handoff = bool(args.get("allow_internal_handoff"))
         agent_response = args.get('agent_response')
         handoff_payload = args.get('handoff_payload')
@@ -1796,7 +2109,39 @@ class AgentRoutingDispatcher:
             str(args.get('tool_name') or nested_tool_name or (explicit_tools[0] if len(explicit_tools) == 1 else '')).strip()
         ) if str(args.get('tool_name') or nested_tool_name or (explicit_tools[0] if len(explicit_tools) == 1 else '')).strip() else None
         handoff_id = str(args.get('handoff_id') or '').strip() or None
-        target = object_name
+
+        route_defaults = self._load_route_defaults(job_name)
+        default_target_agent = normalize_agent_label(str(route_defaults.get("target_agent") or "").strip()) if route_defaults else ""
+        if not str(args.get("target_agent") or "").strip() and default_target_agent:
+            args["target_agent"] = default_target_agent
+
+        default_handoff_metadata = route_defaults.get("handoff_metadata") if isinstance(route_defaults.get("handoff_metadata"), dict) else {}
+        if default_handoff_metadata:
+            merged_handoff_metadata = deepcopy(default_handoff_metadata)
+            if isinstance(handoff_metadata, dict):
+                merged_handoff_metadata.update(deepcopy(handoff_metadata))
+            handoff_metadata = merged_handoff_metadata
+            args["handoff_metadata"] = deepcopy(handoff_metadata)
+
+        route_job_name = str(route_defaults.get("job_name") or "").strip() if route_defaults else ""
+        if route_job_name and job_name:
+            if str(args.get("job_name") or "").strip() == str(job_name).strip():
+                job_name = route_job_name
+                args["job_name"] = job_name
+
+        if route_defaults and agent_response is None and handoff_payload is None:
+            route_handoff_payload = self._build_sequence_handoff_payload(
+                args=args,
+                route_defaults=route_defaults,
+                route_job_name=str(job_name or "").strip(),
+            )
+            if route_handoff_payload:
+                handoff_payload = route_handoff_payload
+                args["handoff_payload"] = deepcopy(route_handoff_payload)
+
+        target = normalize_agent_label(
+            str(args.get('target_agent') or object_name or '').strip()
+        ) if str(args.get('target_agent') or object_name or '').strip() else ""
 
         denied_result = AGENT_ROUTING_REQUEST_SERVICE.load_denied_result(
             target=target,
@@ -1814,6 +2159,51 @@ class AgentRoutingDispatcher:
             result = "Invalid route_to_agent payload for _xworker: missing required job_name or tool_name"
             _default_on_result('route_to_agent', result, tool_call_id)
             return result, None
+
+        route_guard_config = self._load_route_guard_config(target=target, job_name=job_name)
+        user_question_preview = str(args.get('user_question') or args.get('message_text') or '').strip().lower()
+        dispatch_keywords = [
+            str(keyword).strip().lower()
+            for keyword in (route_guard_config.get("dispatch_keywords") or ["dispatch", "dispatcher"])
+            if str(keyword).strip()
+        ]
+        dispatch_context_requested = bool(
+            user_question_preview
+            and any(keyword in user_question_preview for keyword in dispatch_keywords)
+        )
+        requires_structured_handoff = bool(route_guard_config.get("require_structured_handoff_for_dispatch"))
+        if requires_structured_handoff and dispatch_context_requested and agent_response is None and handoff_payload is None:
+            result = (
+                "Invalid route_to_agent payload for parser dispatch: "
+                "missing structured handoff_payload/agent_response. "
+                "Use dispatch_documents handoff (agent_handoff_v1) with metadata paths."
+            )
+            _default_on_result('route_to_agent', result, tool_call_id)
+            return result, None
+
+        required_route_paths = [
+            str(path).strip()
+            for path in (route_guard_config.get("required_route_payload_paths") or [])
+            if str(path).strip()
+        ]
+        if required_route_paths and (agent_response is not None or handoff_payload is not None):
+            route_payload = {
+                "agent_response": agent_response if isinstance(agent_response, dict) else {},
+                "handoff_payload": handoff_payload if isinstance(handoff_payload, dict) else {},
+                "handoff_metadata": handoff_metadata if isinstance(handoff_metadata, dict) else {},
+            }
+            missing_paths = [
+                key_path
+                for key_path in required_route_paths
+                if not self._payload_path_exists(route_payload, key_path)
+            ]
+            if missing_paths:
+                result = (
+                    "Invalid route_to_agent payload for parser dispatch: "
+                    f"missing required handoff paths: {', '.join(missing_paths)}"
+                )
+                _default_on_result('route_to_agent', result, tool_call_id)
+                return result, None
 
         user_question = AGENT_ROUTING_REQUEST_SERVICE.load_user_question(
             args,
@@ -1985,6 +2375,61 @@ class AgentRoutingRequestService:
             routing_request_view,
             explicit_tools=tools,
         )
+        runtime_metadata = AGENT_EXECUTION_SELECTION_SERVICE.load_runtime_metadata(
+            target,
+            target_config,
+            routing_request_view,
+            explicit_tools=tools,
+        )
+        current_thread_id = WORKFLOW_CONTEXT_SERVICE.load_current_thread_id()
+        memory_slot = AGENT_MEMORY_SERVICE.load_memory_slot(
+            job_name=str(runtime_metadata.get("job_name") or "").strip() or job_name,
+            tool_name=str(runtime_metadata.get("tool_name") or "").strip() or tool_name,
+        )
+        session_cache_scope_key = AGENT_MEMORY_SERVICE.load_session_scope_key(
+            scope_key=str(resolved_handoff_metadata.get("session_cache_scope_key") or "").strip() or None,
+            thread_id=current_thread_id,
+        )
+        scoped_attachment_documents = AGENT_RUNTIME_CONFIG_SERVICE.load_object_attachment_documents(
+            agent_name=target,
+            job_name=memory_slot,
+            tool_name=str(runtime_metadata.get("tool_name") or "").strip() or None,
+            scope_key=session_cache_scope_key,
+            thread_id=current_thread_id,
+        )
+        if scoped_attachment_documents:
+            runtime_metadata["attachment_documents"] = scoped_attachment_documents
+            runtime_metadata["attachment_count"] = len(scoped_attachment_documents)
+
+        AGENT_MEMORY_SERVICE.ensure_object_memory(
+            agent_label=target,
+            memory_slot=memory_slot,
+            scope_key=session_cache_scope_key,
+            runtime_metadata=runtime_metadata,
+            system_prompt=resolved_system_text,
+            source_agent_label=source_agent_label,
+        )
+        cache_source_payload = (
+            handoff_payload
+            if isinstance(handoff_payload, dict)
+            else (handoff.get("handoff_payload") if isinstance(handoff, dict) else None)
+        )
+        cache_source_metadata = (
+            resolved_handoff_metadata
+            if isinstance(resolved_handoff_metadata, dict)
+            else (handoff.get("metadata") if isinstance(handoff, dict) else None)
+        )
+        AGENT_MEMORY_SERVICE.cache_dispatch_profile_context(
+            target_agent_label=target,
+            target_memory_slot=memory_slot,
+            source_agent_label=source_agent_label,
+            handoff_payload=cache_source_payload,
+            handoff_metadata=cache_source_metadata,
+            thread_id=current_thread_id,
+            runtime_metadata=runtime_metadata,
+            system_prompt=resolved_system_text,
+        )
+
         messages: list[dict[str, Any]] = [{"role": "system", "content": resolved_system_text }]
         if prepared_handoff.get("system_context"):
             messages.append({"role": "system", "content": str(prepared_handoff.get("system_context") or "")})
@@ -1992,6 +2437,22 @@ class AgentRoutingRequestService:
             "role": "user",
             "content": str(prepared_handoff.get("user_message") or handoff.get("message_text") or ""),
         })
+        session_cache_message = AGENT_MEMORY_SERVICE.load_session_cache_message(
+            agent_label=target,
+            memory_slot=memory_slot,
+            scope_key=session_cache_scope_key,
+        )
+        if session_cache_message is not None:
+            messages.append(session_cache_message)
+        attachment_context_message = AGENT_RUNTIME_CONFIG_SERVICE.load_object_attachment_message(
+            agent_name=target,
+            job_name=memory_slot,
+            tool_name=str(runtime_metadata.get("tool_name") or "").strip() or None,
+            scope_key=session_cache_scope_key,
+            thread_id=current_thread_id,
+        )
+        if attachment_context_message is not None:
+            messages.append(attachment_context_message)
         target_history_policy = _agent_history_policy(target)
         return {
             'messages': messages,
@@ -2002,12 +2463,7 @@ class AgentRoutingRequestService:
             'history_depth': int(target_history_policy.get("routed_history_depth") or 0),
             'handoff': handoff,
             'handoff_context': prepared_handoff,
-            'runtime': AGENT_EXECUTION_SELECTION_SERVICE.load_runtime_metadata(
-                target,
-                target_config,
-                routing_request_view,
-                explicit_tools=tools,
-            ),
+            'runtime': runtime_metadata,
         }
 
 
@@ -2221,6 +2677,20 @@ def execute_route_to_agent(
     )
 
 
+def initialize_router_planner_cover_letter_sequence(
+    args: dict[str, Any] | None = None,
+    *,
+    source_agent_label: str | None = "_xrouter_xplanner",
+) -> tuple[str, dict | None]:
+    route_args = dict(args or {})
+    route_args["job_name"] = "router_planner_cover_letter_sequence"
+    return execute_route_to_agent(
+        route_args,
+        source_agent_label=source_agent_label or "_xrouter_xplanner",
+    )
+
+
+
 def execute_forced_route(args: dict, *, ChatCom=None, origin_agent_label: str = "_xplaner_xrouter") -> str:
     return FORCED_ROUTE_DISPATCHER.dispatch_object(
         args or {},
@@ -2388,6 +2858,47 @@ class RoutingResultPayloadService:
             fallback_result_text=fallback_result_text,
         )
 
+    def resolve_handoff_job_name(
+        self,
+        *,
+        handoff_item: dict[str, Any],
+        handoff_payload: dict[str, Any],
+        handoff_metadata: dict[str, Any],
+    ) -> str | None:
+        output_payload = handoff_payload.get("output") if isinstance(handoff_payload.get("output"), dict) else {}
+        for candidate in (
+            handoff_item.get("job_name"),
+            handoff_payload.get("job_name"),
+            output_payload.get("job_name"),
+            handoff_metadata.get("job_name"),
+            handoff_metadata.get("parser_job_name"),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return str(candidate).strip()
+
+        requested_actions = output_payload.get("requested_actions") if isinstance(output_payload.get("requested_actions"), list) else []
+        if any(str(action).strip().lower() == "parse" for action in requested_actions):
+            return "job_posting_parser"
+        return None
+
+    def resolve_handoff_tool_name(
+        self,
+        *,
+        handoff_item: dict[str, Any],
+        handoff_payload: dict[str, Any],
+        handoff_metadata: dict[str, Any],
+    ) -> str | None:
+        output_payload = handoff_payload.get("output") if isinstance(handoff_payload.get("output"), dict) else {}
+        for candidate in (
+            handoff_item.get("tool_name"),
+            handoff_payload.get("tool_name"),
+            output_payload.get("tool_name"),
+            handoff_metadata.get("tool_name"),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return normalize_tool_name(str(candidate).strip())
+        return None
+
     def extract_tool_handoff_messages(self, result: Any) -> list[dict[str, Any]]:
         if not isinstance(result, dict):
             return []
@@ -2403,15 +2914,39 @@ class RoutingResultPayloadService:
             target_agent = normalize_agent_label(str(item.get("target_agent") or item.get("handoff_to") or ""))
             if not target_agent:
                 continue
+            handoff_payload = deepcopy(item.get("handoff_payload") or {}) if isinstance(item.get("handoff_payload"), dict) else item.get("handoff_payload")
+            raw_handoff_metadata = (
+                item.get("handoff_metadata")
+                if isinstance(item.get("handoff_metadata"), dict)
+                else item.get("metadata")
+                if isinstance(item.get("metadata"), dict)
+                else {}
+            )
+            handoff_metadata = deepcopy(raw_handoff_metadata)
+            resolved_job_name = self.resolve_handoff_job_name(
+                handoff_item=item,
+                handoff_payload=handoff_payload if isinstance(handoff_payload, dict) else {},
+                handoff_metadata=handoff_metadata,
+            )
+            resolved_tool_name = self.resolve_handoff_tool_name(
+                handoff_item=item,
+                handoff_payload=handoff_payload if isinstance(handoff_payload, dict) else {},
+                handoff_metadata=handoff_metadata,
+            )
+            route_args: dict[str, Any] = {
+                "target_agent": target_agent,
+                "handoff_protocol": str(item.get("handoff_protocol") or item.get("protocol") or "").strip() or None,
+                "allow_internal_handoff": True,
+                "message_text": item.get("message_text"),
+                "handoff_payload": handoff_payload,
+                "handoff_metadata": handoff_metadata,
+            }
+            if resolved_job_name:
+                route_args["job_name"] = resolved_job_name
+            if resolved_tool_name:
+                route_args["tool_name"] = resolved_tool_name
             handoff_messages.append(
-                {
-                    "target_agent": target_agent,
-                    "handoff_protocol": str(item.get("handoff_protocol") or item.get("protocol") or "").strip() or None,
-                    "allow_internal_handoff": True,
-                    "message_text": item.get("message_text"),
-                    "handoff_payload": deepcopy(item.get("handoff_payload") or {}) if isinstance(item.get("handoff_payload"), dict) else item.get("handoff_payload"),
-                    "handoff_metadata": deepcopy(item.get("handoff_metadata") or {}) if isinstance(item.get("handoff_metadata"), dict) else {},
-                }
+                route_args
             )
         return handoff_messages
 
@@ -2466,11 +3001,34 @@ class RoutingPayloadObject:
         text = self.payload_value.strip()
         if not text:
             return {}
-        try:
-            parsed = json.loads(text)
-        except Exception:
-            return {}
-        return parsed if isinstance(parsed, dict) else {}
+
+        candidates: list[str] = [text]
+
+        if text.startswith("```"):
+            fence_lines = text.splitlines()
+            if fence_lines:
+                body_lines = fence_lines[1:]
+                if body_lines and body_lines[-1].strip().startswith("```"):
+                    body_lines = body_lines[:-1]
+                fenced_candidate = "\n".join(body_lines).strip()
+                if fenced_candidate:
+                    candidates.insert(0, fenced_candidate)
+
+        json_start = text.find("{")
+        json_end = text.rfind("}")
+        if json_start != -1 and json_end > json_start:
+            sliced_candidate = text[json_start:json_end + 1].strip()
+            if sliced_candidate and sliced_candidate not in candidates:
+                candidates.insert(0, sliced_candidate)
+
+        for candidate in candidates:
+            try:
+                parsed = json.loads(candidate)
+            except Exception:
+                continue
+            if isinstance(parsed, dict):
+                return parsed
+        return {}
 
     def load_result_text(self) -> str:
         payload = self.load_json_object()
@@ -2498,6 +3056,8 @@ class RoutingPayloadObject:
 
 
 class RoutingDocumentArtifactObject:
+    PAGE_BREAK_MARKER = "<!-- pagebreak -->"
+
     def __init__(
         self,
         *,
@@ -2525,8 +3085,429 @@ class RoutingDocumentArtifactObject:
             self.parsed_result.setdefault("document", deepcopy(cover_letter))
         return document
 
+    def extract_text_blocks(
+        self,
+        value: Any,
+        *,
+        preferred_keys: tuple[str, ...] = (),
+    ) -> list[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            text = value.strip()
+            return [text] if text else []
+        if isinstance(value, list):
+            blocks: list[str] = []
+            for item in value:
+                blocks.extend(self.extract_text_blocks(item, preferred_keys=preferred_keys))
+            return blocks
+        if isinstance(value, dict):
+            blocks: list[str] = []
+            ordered_keys = [key for key in preferred_keys if key in value]
+            ordered_keys.extend([key for key in value.keys() if key not in ordered_keys])
+            for key in ordered_keys:
+                blocks.extend(self.extract_text_blocks(value.get(key), preferred_keys=preferred_keys))
+            return blocks
+        text = str(value).strip()
+        return [text] if text else []
+
+    def deduplicate_text_blocks(
+        self,
+        blocks: list[str],
+        *,
+        max_items: int = 12,
+    ) -> list[str]:
+        deduplicated: list[str] = []
+        seen: set[str] = set()
+        for block in blocks:
+            text = str(block or "").strip()
+            if not text:
+                continue
+            key = " ".join(text.lower().split())
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            deduplicated.append(text)
+            if len(deduplicated) >= max_items:
+                break
+        return deduplicated
+
+    def load_profile_result(self) -> dict[str, Any]:
+        profile_result = self.output_payload.get("profile_result")
+        return profile_result if isinstance(profile_result, dict) else {}
+
+    def load_profile(self) -> dict[str, Any]:
+        profile = self.load_profile_result().get("profile")
+        return profile if isinstance(profile, dict) else {}
+
+    def load_profile_name(self) -> str:
+        profile = self.load_profile()
+        personal_info = profile.get("personal_info") if isinstance(profile.get("personal_info"), dict) else {}
+        for candidate in (
+            personal_info.get("full_name"),
+            personal_info.get("name"),
+            profile.get("full_name"),
+            profile.get("name"),
+            profile.get("profile_id"),
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return ""
+
+    def load_profile_contact_lines(self) -> list[str]:
+        profile = self.load_profile()
+        personal_info = profile.get("personal_info") if isinstance(profile.get("personal_info"), dict) else {}
+        lines: list[str] = []
+        for label, value in (
+            ("Email", personal_info.get("email") or profile.get("email")),
+            ("Phone", personal_info.get("phone") or profile.get("phone")),
+            ("Location", personal_info.get("location") or profile.get("location")),
+            ("LinkedIn", personal_info.get("linkedin") or profile.get("linkedin")),
+        ):
+            if isinstance(value, str) and value.strip():
+                lines.append(f"{label}: {value.strip()}")
+        return lines
+
+    def load_profile_skill_blocks(self) -> list[str]:
+        profile = self.load_profile()
+        blocks: list[str] = []
+        for key in ("skills", "technical_skills", "core_skills", "key_skills", "competencies"):
+            blocks.extend(self.extract_text_blocks(profile.get(key)))
+        return self.deduplicate_text_blocks(blocks, max_items=12)
+
+    def load_profile_experience_blocks(self) -> list[str]:
+        profile = self.load_profile()
+        blocks: list[str] = []
+        for key in ("experience", "work_experience", "projects", "achievements"):
+            blocks.extend(
+                self.extract_text_blocks(
+                    profile.get(key),
+                    preferred_keys=(
+                        "role",
+                        "title",
+                        "company",
+                        "summary",
+                        "description",
+                        "text",
+                        "value",
+                    ),
+                )
+            )
+        return self.deduplicate_text_blocks(blocks, max_items=8)
+
+    def load_profile_education_blocks(self) -> list[str]:
+        profile = self.load_profile()
+        blocks = self.extract_text_blocks(
+            profile.get("education"),
+            preferred_keys=("degree", "institution", "field", "summary", "text", "value"),
+        )
+        return self.deduplicate_text_blocks(blocks, max_items=6)
+
+    def load_profile_language_blocks(self) -> list[str]:
+        profile = self.load_profile()
+        blocks = self.extract_text_blocks(
+            profile.get("languages"),
+            preferred_keys=("name", "level", "text", "value"),
+        )
+        return self.deduplicate_text_blocks(blocks, max_items=6)
+
+    def load_body_blocks(self) -> list[str]:
+        body_value = self.document.get("body")
+        return self.extract_text_blocks(
+            body_value,
+            preferred_keys=(
+                "opening",
+                "motivation",
+                "experience",
+                "fit",
+                "paragraphs",
+                "closing",
+                "text",
+                "value",
+            ),
+        )
+
+    def load_job_requirement_blocks(self) -> list[str]:
+        job_posting_result = self.load_job_posting_result()
+        job_posting = job_posting_result.get("job_posting") if isinstance(job_posting_result.get("job_posting"), dict) else {}
+        requirements = job_posting.get("requirements") if isinstance(job_posting.get("requirements"), dict) else {}
+
+        blocks: list[str] = []
+        for key in ("technical_skills", "soft_skills", "languages", "experience_description", "education"):
+            blocks.extend(self.extract_text_blocks(requirements.get(key)))
+        blocks.extend(self.extract_text_blocks(job_posting.get("responsibilities")))
+        return self.deduplicate_text_blocks(blocks, max_items=12)
+
+    def load_matched_skill_blocks(self) -> list[str]:
+        profile_skills = self.load_profile_skill_blocks()
+        if not profile_skills:
+            return []
+
+        job_requirements = self.load_job_requirement_blocks()
+        if not job_requirements:
+            return profile_skills[:6]
+
+        matched: list[str] = []
+        requirement_keys = [str(requirement).lower() for requirement in job_requirements]
+        for skill in profile_skills:
+            skill_key = str(skill).lower()
+            if any(skill_key in requirement_key or requirement_key in skill_key for requirement_key in requirement_keys):
+                matched.append(skill)
+        matched = self.deduplicate_text_blocks(matched, max_items=8)
+        return matched or profile_skills[:6]
+
+    def build_document_full_text(self) -> str:
+        header = self.document.get("header") if isinstance(self.document.get("header"), dict) else {}
+        subject = str(
+            header.get("subject")
+            or ((self.document.get("job_posting") or {}).get("job_title") if isinstance(self.document.get("job_posting"), dict) else "")
+            or ""
+        ).strip()
+        salutation_blocks = self.extract_text_blocks(
+            self.document.get("salutation") or self.document.get("introduction"),
+            preferred_keys=("first_sentence", "follow_up", "text", "value"),
+        )
+        conclusion_blocks = self.extract_text_blocks(
+            self.document.get("conclusion"),
+            preferred_keys=("final_sentence", "closing", "text", "value"),
+        )
+        sign_off_blocks = self.extract_text_blocks(
+            self.document.get("sign_off") or self.document.get("signature") or self.document.get("closing"),
+            preferred_keys=("closing", "applicant_name", "name", "text", "value"),
+        )
+        body_blocks = self.load_body_blocks()
+
+        lines: list[str] = []
+        if subject:
+            lines.extend([subject, ""])
+        for block in salutation_blocks:
+            lines.extend([block, ""])
+        for block in body_blocks:
+            lines.extend([block, ""])
+        for block in conclusion_blocks:
+            lines.extend([block, ""])
+        if sign_off_blocks:
+            lines.append("\n".join(sign_off_blocks).strip())
+
+        return "\n".join(lines).strip()
+
+    def should_replace_full_text(self, full_text: str) -> bool:
+        normalized = str(full_text or "").strip()
+        if not normalized:
+            return False
+        if normalized.startswith("{") or normalized.startswith("["):
+            return True
+        if "\n\n{" in normalized or "\n\n[" in normalized:
+            return True
+        return False
+
+    def load_application_full_text(self) -> str:
+        full_text = str(self.document.get("full_text") or "").strip()
+        if full_text and not self.should_replace_full_text(full_text):
+            return full_text
+
+        synthesized_text = self.build_document_full_text()
+        if not synthesized_text and full_text:
+            return full_text
+        if not synthesized_text:
+            return ""
+
+        self.document["full_text"] = synthesized_text
+        if isinstance(self.parsed_result.get("document"), dict):
+            self.parsed_result["document"]["full_text"] = synthesized_text
+        if isinstance(self.parsed_result.get("cover_letter"), dict):
+            self.parsed_result["cover_letter"]["full_text"] = synthesized_text
+        return synthesized_text
+
+    def load_cv_payload(self) -> dict[str, Any]:
+        cv_payload = self.parsed_result.get("cv") if isinstance(self.parsed_result.get("cv"), dict) else {}
+        if cv_payload:
+            return cv_payload
+        resume_payload = self.parsed_result.get("resume") if isinstance(self.parsed_result.get("resume"), dict) else {}
+        return resume_payload
+
+    def build_cv_full_text(self) -> str:
+        profile = self.load_profile()
+        profile_name = self.load_profile_name()
+        title, company = self.load_job_posting_identity()
+        target_role = " bei ".join(part for part in (title, company) if part)
+
+        cv_payload = self.load_cv_payload()
+        summary_text = str(cv_payload.get("summary") or profile.get("summary") or "").strip()
+        matched_skills = self.load_matched_skill_blocks()
+        profile_skills = self.load_profile_skill_blocks()
+        experience_blocks = self.load_profile_experience_blocks()
+        education_blocks = self.load_profile_education_blocks()
+        language_blocks = self.load_profile_language_blocks()
+        contact_lines = self.load_profile_contact_lines()
+
+        lines: list[str] = []
+        if profile_name:
+            lines.append(profile_name)
+        lines.extend(contact_lines)
+        if lines:
+            lines.append("")
+
+        if target_role:
+            lines.extend(["## Target Role", target_role, ""])
+
+        if summary_text:
+            lines.extend(["## Profile Summary", summary_text, ""])
+
+        if matched_skills:
+            lines.append("## Job Fit")
+            lines.extend(f"- {block}" for block in matched_skills)
+            lines.append("")
+
+        if profile_skills:
+            lines.append("## Skills")
+            lines.extend(f"- {block}" for block in profile_skills)
+            lines.append("")
+
+        if experience_blocks:
+            lines.append("## Experience")
+            lines.extend(f"- {block}" for block in experience_blocks)
+            lines.append("")
+
+        if education_blocks:
+            lines.append("## Education")
+            lines.extend(f"- {block}" for block in education_blocks)
+            lines.append("")
+
+        if language_blocks:
+            lines.append("## Languages")
+            lines.extend(f"- {block}" for block in language_blocks)
+            lines.append("")
+
+        if not lines:
+            lines.extend([
+                "## Target Role",
+                target_role or "Job-specific CV profile",
+                "",
+                "## Skills",
+                "- No structured profile skills provided.",
+            ])
+
+        return "\n".join(lines).strip()
+
+    def load_cv_full_text(self) -> str:
+        cv_payload = self.load_cv_payload()
+        cv_full_text = str(cv_payload.get("full_text") or "").strip()
+        if cv_full_text and not self.should_replace_full_text(cv_full_text):
+            return cv_full_text
+
+        synthesized_cv = self.build_cv_full_text()
+        if isinstance(self.parsed_result.get("cv"), dict):
+            self.parsed_result["cv"]["full_text"] = synthesized_cv
+        elif synthesized_cv:
+            self.parsed_result["cv"] = {"full_text": synthesized_cv}
+        return synthesized_cv
+
+    def load_page_signature(self, *, page_kind: str) -> str:
+        if page_kind == "application":
+            signature_blocks = self.extract_text_blocks(
+                self.document.get("signature") or self.document.get("sign_off") or self.document.get("closing"),
+                preferred_keys=("closing", "applicant_name", "name", "text", "value"),
+            )
+            if signature_blocks:
+                return "\n".join(signature_blocks).strip()
+        cv_payload = self.load_cv_payload()
+        signature = str(cv_payload.get("signature") or self.load_profile_name()).strip()
+        return signature
+
+    def build_page_entry(
+        self,
+        *,
+        page: int,
+        title: str,
+        page_content: str,
+        signature: str,
+    ) -> dict[str, Any]:
+        normalized_content = str(page_content or "").strip()
+        content_sha = hashlib.sha256(normalized_content.encode("utf-8", "ignore")).hexdigest()
+        metadata = {
+            "page": int(page),
+            "title": title,
+            "titel": title,
+            "signature": signature,
+            "content_sha": content_sha,
+            "content_sha256": content_sha,
+        }
+        return {
+            "page": int(page),
+            "title": title,
+            "titel": title,
+            "signature": signature,
+            "page_content": normalized_content,
+            "content_sha": content_sha,
+            "content_sha256": content_sha,
+            "metadata": metadata,
+        }
+
+    def load_pages(self) -> list[dict[str, Any]]:
+        existing_pages = self.parsed_result.get("pages") if isinstance(self.parsed_result.get("pages"), list) else []
+        existing_page_1 = existing_pages[0] if len(existing_pages) > 0 and isinstance(existing_pages[0], dict) else {}
+        existing_page_2 = existing_pages[1] if len(existing_pages) > 1 and isinstance(existing_pages[1], dict) else {}
+
+        application_text = str(existing_page_1.get("page_content") or "").strip() or self.load_application_full_text()
+        cv_text = str(existing_page_2.get("page_content") or "").strip() or self.load_cv_full_text()
+
+        page_1_title = str(existing_page_1.get("title") or existing_page_1.get("titel") or "Application").strip() or "Application"
+        page_2_title = str(existing_page_2.get("title") or existing_page_2.get("titel") or "CV").strip() or "CV"
+
+        pages = [
+            self.build_page_entry(
+                page=1,
+                title=page_1_title,
+                page_content=application_text,
+                signature=self.load_page_signature(page_kind="application"),
+            ),
+            self.build_page_entry(
+                page=2,
+                title=page_2_title,
+                page_content=cv_text,
+                signature=self.load_page_signature(page_kind="cv"),
+            ),
+        ]
+
+        if isinstance(self.parsed_result.get("cover_letter"), dict):
+            self.parsed_result["cover_letter"]["full_text"] = application_text
+        elif application_text:
+            self.parsed_result["cover_letter"] = {"full_text": application_text}
+
+        if isinstance(self.parsed_result.get("cv"), dict):
+            self.parsed_result["cv"]["full_text"] = cv_text
+        elif cv_text:
+            self.parsed_result["cv"] = {"full_text": cv_text}
+
+        return pages
+
+    def serialize_pages_to_markdown(self, pages: list[dict[str, Any]]) -> str:
+        markdown_lines: list[str] = []
+        for index, page in enumerate(pages):
+            title = str(page.get("title") or page.get("titel") or "").strip()
+            content = str(page.get("page_content") or "").strip()
+            if index > 0:
+                markdown_lines.extend(["", self.PAGE_BREAK_MARKER, ""])
+            if title:
+                markdown_lines.extend([f"# {title}", ""])
+            if content:
+                markdown_lines.append(content)
+        return "\n".join(markdown_lines).strip()
+
     def load_full_text(self) -> str:
-        return str(self.document.get("full_text") or "").strip()
+        pages = self.load_pages()
+        markdown_text = self.serialize_pages_to_markdown(pages)
+        if not markdown_text:
+            return ""
+
+        self.parsed_result["pages"] = pages
+        self.parsed_result["page_count"] = len(pages)
+        self.parsed_result["document"] = self.parsed_result.get("document") if isinstance(self.parsed_result.get("document"), dict) else {}
+        self.parsed_result["document"]["full_text"] = markdown_text
+        self.parsed_result["document"]["page_break_marker"] = self.PAGE_BREAK_MARKER
+        self.document = self.parsed_result["document"]
+        return markdown_text
 
     def load_correlation_id(self) -> str:
         correlation = self.parsed_result.get("correlation") if isinstance(self.parsed_result.get("correlation"), dict) else {}
@@ -2546,14 +3527,7 @@ class RoutingDocumentArtifactObject:
             if isinstance(candidate, str) and candidate.strip():
                 return os.path.abspath(os.path.expanduser(candidate.strip()))
 
-        file_path = str(
-            ((self.output_payload.get("job_posting_result") or {}).get("file") or {}).get("path")
-            if isinstance(self.output_payload.get("job_posting_result"), dict)
-            else ""
-        ).strip() or str(self.output_payload.get("source_path") or "").strip()
-        if file_path:
-            return os.path.join(os.path.dirname(os.path.abspath(os.path.expanduser(file_path))), "Cover_letters")
-        return os.path.join(os.path.expanduser("~"), "Cover_letters")
+        return _default_cover_letter_output_dir()
 
     def load_job_posting_result(self) -> dict[str, Any]:
         job_posting_result = self.output_payload.get("job_posting_result")
@@ -2625,11 +3599,19 @@ class RoutingDocumentArtifactObject:
             return bool(options.get("write_pdf"))
         return bool(self.result_postprocess.get("default_write_pdf", True))
 
-    def load_pdf_title(self) -> str:
-        return str(((self.document.get("header") or {}).get("subject") if isinstance(self.document.get("header"), dict) else "") or None)
+    def load_pdf_title(self) -> str | None:
+        header = self.document.get("header") if isinstance(self.document.get("header"), dict) else {}
+        for candidate in (
+            header.get("subject"),
+            (self.parsed_result.get("pages") or [{}])[0].get("title") if isinstance(self.parsed_result.get("pages"), list) and self.parsed_result.get("pages") else None,
+        ):
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return None
 
-    def load_pdf_author(self) -> str:
-        return str((((self.output_payload.get("profile_result") or {}).get("profile") or {}).get("personal_info") or {}).get("full_name") or None)
+    def load_pdf_author(self) -> str | None:
+        author = self.load_profile_name()
+        return author or None
 
     def build_result_payload(
         self,
@@ -2989,8 +3971,10 @@ class ToolCallExecutionService:
 
             tool_content = self.render_object_result(result)
             tool_results.append(tool_content)
+            tool_failed = _message_indicates_failure(tool_content) and request is None
+            recoverable_direct_failure = bool(tool_failed and direct_final_result)
 
-            if _message_indicates_failure(tool_content) and request is None:
+            if tool_failed and not recoverable_direct_failure:
                 workflow_session = _advance_workflow_session(
                     workflow_session,
                     event_kind="state",
@@ -3013,23 +3997,31 @@ class ToolCallExecutionService:
                     event_name=str(tool_name),
                     payload=args,
                 )
-                workflow_session = _advance_workflow_session(
-                    workflow_session,
-                    event_kind="state",
-                    event_name="tool_complete",
-                    payload={
-                        **({"tool_name": normalize_tool_name(str(tool_name)), "result": tool_content}),
-                        **(args if isinstance(args, dict) else {}),
-                    },
-                )
+                if not recoverable_direct_failure:
+                    workflow_session = _advance_workflow_session(
+                        workflow_session,
+                        event_kind="state",
+                        event_name="tool_complete",
+                        payload={
+                            **({"tool_name": normalize_tool_name(str(tool_name)), "result": tool_content}),
+                            **(args if isinstance(args, dict) else {}),
+                        },
+                    )
                 workflow_history_event_kind = 'tool'
                 workflow_history_event_name = str(tool_name)
-                workflow_history_payload = args
+                if recoverable_direct_failure:
+                    workflow_history_payload = {
+                        **(args if isinstance(args, dict) else {}),
+                        "recoverable_failure": True,
+                        "result": tool_content,
+                    }
+                else:
+                    workflow_history_payload = args
 
-            if workflow_session and workflow_session.get("terminal"):
+            if workflow_session and workflow_session.get("terminal") and not recoverable_direct_failure and request is None:
                 terminal_tool_result = tool_content
                 terminal_tool_name = normalize_tool_name(str(tool_name))
-            elif direct_final_result and request is None:
+            elif direct_final_result and request is None and not tool_failed:
                 terminal_tool_result = tool_content
                 terminal_tool_name = normalize_tool_name(str(tool_name))
 
@@ -3208,6 +4200,47 @@ class AssistantResponseService:
     def resolve_object_label(self, routing_request: dict[str, Any] | None, agent_label: str) -> str:
         return self.resolve_agent_label(routing_request, agent_label)
 
+    def _latest_tool_failure(self, tool_results: list[str]) -> str | None:
+        for tool_result in reversed(tool_results or []):
+            text = str(tool_result or '').strip()
+            if text and _message_indicates_failure(text):
+                return text
+        return None
+
+    def _response_acknowledges_failure(self, text: str) -> bool:
+        normalized = str(text or '').strip().lower()
+        if not normalized:
+            return False
+        if _message_indicates_failure(normalized):
+            return True
+
+        failure_hints = (
+            'error',
+            'fehler',
+            'nicht gefunden',
+            'missing',
+            'invalid',
+            'dateipfad',
+            'path',
+            'unable',
+            'cannot',
+            "can't",
+            'konnte nicht',
+            'uebergib',
+            'provide',
+            'required',
+            'erforderlich',
+        )
+        return any(hint in normalized for hint in failure_hints)
+
+    def _coerce_text_against_tool_failures(self, *, text: str, tool_results: list[str]) -> str:
+        latest_failure = self._latest_tool_failure(tool_results)
+        if not latest_failure:
+            return text
+        if self._response_acknowledges_failure(text):
+            return text
+        return latest_failure
+
     def _handle_nested_object_calls(
         self,
         *,
@@ -3224,7 +4257,10 @@ class AssistantResponseService:
 
         next_workflow_session = workflow_session
         if not next_workflow_session or normalize_agent_label(str(next_workflow_session.get("agent_label") or "")) != normalize_agent_label(response_agent_label or ""):
-            next_workflow_session = _create_workflow_session(response_agent_label)
+            next_workflow_session = _create_workflow_session(
+                response_agent_label,
+                routing_request=routing_request,
+            )
         rec = _handle_tool_calls(
             message,
             depth + 1,
@@ -3262,7 +4298,12 @@ class AssistantResponseService:
         history: Any,
         response_agent_label: str,
         workflow_session: dict[str, Any] | None,
+        tool_results: list[str],
     ) -> str:
+        text = self._coerce_text_against_tool_failures(
+            text=text,
+            tool_results=tool_results,
+        )
         completion_event_name = 'followup_complete'
         completion_payload: dict[str, Any] = {}
         if ROUTING_REQUEST_VIEW_SERVICE.has_object_agent(routing_request):
@@ -3330,6 +4371,7 @@ class AssistantResponseService:
                     history=history,
                     response_agent_label=response_agent_label,
                     workflow_session=workflow_session,
+                    tool_results=tool_results,
                 )
 
         return "\n".join(tool_results).strip() or None
@@ -3391,7 +4433,7 @@ def _handle_tool_calls(agent_msg, depth: int = 0,
         warning = "Aborting: tool-call depth exceeded."
         WORKFLOW_HISTORY_LOG_SERVICE.log_depth_warning(history, warning)
         return warning
-    
+
     if not hasattr(agent_msg, 'tool_calls') or not agent_msg.tool_calls:
         return getattr(agent_msg, 'content', None) or None
     if workflow_session is None:
@@ -3434,4 +4476,3 @@ def _handle_tool_calls(agent_msg, depth: int = 0,
         agent_label=agent_label,
         workflow_session=workflow_session,
     )
-            

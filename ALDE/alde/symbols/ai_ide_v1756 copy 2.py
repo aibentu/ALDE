@@ -345,24 +345,24 @@ def _maybe_flush_history(chat_obj=None) -> None:
 # ═══════════════════════  Farben / Style  ══════════════════════════════════
 
 SCHEME_BLUE  = {"col1": "#3a5fff", "col2": "#6280ff",
-                "menu_bg": "#242424",
+                "menu_bg": "#000000",
                 "menu_sel": "rgba(58,95,255,72)"
                }
 
 
 SCHEME_GREEN = {"col1": "#0fe913", "col2": "#58ed5b",
-                "menu_bg": "#242424",
+                "menu_bg": "#000000",
                 "menu_sel": "rgba(88,237,91,72)"
                }
 
 
 SCHEME_GREY = {
-    "col5": "#242424",
+    "col5": "#080808",
     "col6": "#E3E3DED6",
-    "col7": "#171717",
+    "col7": "#0b0b0b",
     "col8": "#E3E3DED6",
-    "col9": "#202020",
-    "col10":"#3a3a3a",
+    "col9": "#101010",
+    "col10":"#1f1f1f",
     "col11":"#4a4a4a",
     "px1": "6px",
     "col12": "rgba(58,95,255,48)"
@@ -370,12 +370,12 @@ SCHEME_GREY = {
 
 
 SCHEME_DARK = {
-    "col5": "#242424",
+    "col5": "#080808",
     "col6": "#E3E3DED6",
-    "col7": "#171717",
+    "col7": "#0b0b0b",
     "col8": "#E3E3DED6",
-    "col9": "#202020",
-    "col10":"#3a3a3a",
+    "col9": "#101010",
+    "col10":"#1f1f1f",
     "col11":"#3a5fff",
     "px1": "6px",
     "col12": "rgba(58,95,255,48)",
@@ -392,12 +392,12 @@ SIGNAL_GREEN = "#7bd88f"
 
 _STYLE = """
 QMainWindow {{
-    background:  {col7};
+    background:  {col5};
     color:       {col6};
     }}
 
 QWidget {{
-    background:  {col5};
+    background:  {col7};
     color:       {col6};
     font-size:   14px;
     }}
@@ -422,29 +422,29 @@ QToolBar::handle {{
     }}
 
 QToolButton {{
-    background: {col5};
+    background: {col7};
     color: {col6};
-    border: 1px solid {col10};
-    border-radius: 3px;
-    padding: 2px;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    padding: 2px 4px;
     }}
 
 QToolButton:hover {{
-    background: {col9};
-    border: 1px solid {col1};
+    background: {col7};
+    border: 1px solid transparent;
     }}
 
 QToolButton:pressed,
 QToolButton:checked {{
-    background: transparent;
-    color: {col1};
-    border: 1px solid {col1};
+    background: {col7};
+    color: {col6};
+    border: 1px solid transparent;
     }}
 
 /* Tab widget / pane + tabs aligned with Explorer dock visuals */
 
 QTabWidget::pane {{
-    background: {col7};
+    background: {col9};
     border: 1px solid {col10};
     border-radius: 14px;
     margin: 4px;
@@ -463,7 +463,7 @@ QTabBar::tab {{
 
 QTabBar::tab:hover {{ 
     background: {col7};
-    border-color: {col1};
+    border-color: {col10};
     }}
 
 QTabBar::tab:selected {{ 
@@ -499,19 +499,19 @@ QPushButton {{
     }}
 
 QPushButton:hover {{
-    background: {col9};
-    color: {col1};
-    border: 1px solid {col1};
+    background: {col7};
+    color: {col6};
+    border: 1px solid {col10};
     }}
 
 QPushButton:pressed {{
-    background: {col1};
-    color: {col7};
-    border: 1px solid {col1};
+    background: {col7};
+    color: {col6};
+    border: 1px solid {col10};
     }}
 
 QTextEdit, QPlainTextEdit, QLineEdit, QComboBox, QSpinBox, QDoubleSpinBox {{
-    background: {col7};
+    background: {col9};
     color: {col6};
     border: 1px solid {col10};
     border-radius: 8px;
@@ -524,7 +524,7 @@ QComboBox::drop-down {{
     }}
 
 QComboBox QAbstractItemView {{
-    background: {col7};
+    background: {col9};
     color: {col6};
     border: 1px solid {col10};
     selection-background-color: {menu_sel};
@@ -536,7 +536,7 @@ QDockWidget {{
     }}
 
 QDockWidget::separator {{ 
-    background: #1f1f1f; width: {px1} 
+    background: {col5}; width: {px1} 
     }}
 
 QDockWidget::separator:hover {{ 
@@ -544,7 +544,7 @@ QDockWidget::separator:hover {{
     }}
 
 QTreeView, QListView {{
-    background: {col7};
+    background: {col9};
     color: {col6};
     border: 1px solid {col10};
     border-radius: 10px;
@@ -594,8 +594,8 @@ QListView::item:selected {{
 
 _SEP_QSS = """
 /*  MainWindow-Splitter: unsichtbar, aber weiter greifbar  */
-QMainWindow::separator              {{ background: #1f1f1f;      width: 3px; }}
-QMainWindow::separator:horizontal   {{ background: #1f1f1f;      height: 6px;}}
+QMainWindow::separator              {{ background: {col5};      width: 3px; }}
+QMainWindow::separator:horizontal   {{ background: {col5};      height: 6px;}}
 QMainWindow::separator:hover        {{ background: {col1}; }}
 """
 
@@ -2014,12 +2014,12 @@ class ChatDock(QDockWidget):
         self.setStyleSheet(f"""
             /* feste 1-px-Linie links */
             QDockWidget#ChatDock {{
-                border : 1px solid #1f1f1f;
+                border : 1px solid {self.scheme['col5']};
             }}
 
             /* Split-Handle: unsichtbar aber greifbar */
             QDockWidget::separator {{
-                background : #1f1f1f;
+                background : {self.scheme['col5']};
                 width      : 6px;
             }}
             QDockWidget::separator:hover {{
@@ -2038,6 +2038,10 @@ class AIWidget(QWidget):
     _PROMPT_SNAP_HEIGHT = 90
     _PROMPT_MAX_HEIGHT = 260
     _PROMPT_AUTOFIT_PADDING = 12
+    _PROMPT_COMPOSER_V_MARGIN = 10
+    _PROMPT_COMPOSER_H_MARGIN = 12
+    _PROMPT_COMPOSER_SPACING = 8
+    _PROMPT_SEND_BUTTON_SIZE = 34
 
     def __init__(self,
         accent, 
@@ -2057,7 +2061,7 @@ class AIWidget(QWidget):
 
         if self._api_key_missing:
             try:
-                for btn in (getattr(self, "btn_send", None), getattr(self, "btn_img_analyse", None), getattr(self, "btn_img_create", None)):
+                for btn in (getattr(self, "btn_send", None),):
                     if btn is not None:
                         btn.setEnabled(False)
             except Exception:
@@ -2099,8 +2103,7 @@ class AIWidget(QWidget):
         """Erstellt die Oberfläche des AI-Docks.
 
         • oben:   Chat-History  (ChatWindow → zeigt Text + Code farbig)
-        • unten:  Eingabefeld   (FileDropTextEdit)
-        • footer: Tool-Buttons
+        • unten:  Prompt-Composer mit Eingabefeld und internem Send-Button
         """
         # 1)  Chat-History (read-only)
         self.chat_view = ChatWindow(self.scheme)
@@ -2117,35 +2120,45 @@ class AIWidget(QWidget):
         self.prompt_edit.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.prompt_edit.setStyleSheet("QTextEdit#aiInput { font-size: 15px; }")
 
+        self.btn_send = ToolButton("send.svg", "Send", slot=self._send)
+        self.btn_send.setObjectName("chatPromptSendButton")
+        self.btn_send.setFixedSize(self._PROMPT_SEND_BUTTON_SIZE, self._PROMPT_SEND_BUTTON_SIZE)
+        self.btn_send.setIconSize(QSize(ToolButton._ICON_SIZE - 2, ToolButton._ICON_SIZE - 2))
+        self.btn_send.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+
+        self.prompt_composer = QFrame(self)
+        self.prompt_composer.setObjectName("chatPromptComposer")
+        self.prompt_composer.setAttribute(Qt.WA_StyledBackground, True)
+        composer_layout = QHBoxLayout(self.prompt_composer)
+        composer_layout.setContentsMargins(
+            self._PROMPT_COMPOSER_H_MARGIN,
+            self._PROMPT_COMPOSER_V_MARGIN,
+            self._PROMPT_COMPOSER_H_MARGIN,
+            self._PROMPT_COMPOSER_V_MARGIN,
+        )
+        composer_layout.setSpacing(self._PROMPT_COMPOSER_SPACING)
+        composer_layout.addWidget(self.prompt_edit, 1)
+        composer_layout.addWidget(self.btn_send, 0, Qt.AlignRight | Qt.AlignBottom)
+
+        self.footer_controls = QWidget(self)
+        self.footer_controls.setObjectName("chatFooterControls")
+        self.footer_controls.setAttribute(Qt.WA_StyledBackground, True)
+        self.footer_controls.setMinimumHeight(30)
+        self.footer_controls.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.footer_controls_layout = QHBoxLayout(self.footer_controls)
+        self.footer_controls_layout.setContentsMargins(2, 0, 2, 2)
+        self.footer_controls_layout.setSpacing(4)
+        self.footer_controls_layout.addStretch(1)
+
         # 3) Prompt in ChatWindow integrieren
-        self.chat_view.set_prompt_widget(self.prompt_edit, snap_height=self._PROMPT_SNAP_HEIGHT)
+        self.chat_view.set_prompt_widget(
+            self.prompt_composer,
+            snap_height=self._prompt_shell_height(self._PROMPT_SNAP_HEIGHT),
+        )
+        self.chat_view.set_footer_widget(self.footer_controls)
         QTimer.singleShot(0, self._apply_prompt_snap_height)
 
-        # 4) Footer-Buttons
-        footer = QWidget(self)
-        footer.setObjectName("chatFooterControls")
-        flay   = QHBoxLayout(footer)
-        flay.setContentsMargins(0, 0, 0, 0)
-        flay.setSpacing(4)
-
-        self.btn_img_create  = ToolButton("photo.svg",   "Create image",
-                                          slot=self._create_img)
-        self.btn_img_analyse = ToolButton("analyse.svg", "Analyse image",
-                                          slot=self._send_img)
-        self.btn_send        = ToolButton("send.svg",    "Send",
-                                          slot=self._send)
-        self.btn_mic         = ToolButton("mic.svg",     "Record speech")
-
-        for w in (self.btn_img_create,
-                  self.btn_img_analyse,
-                  self.btn_send,
-                  self.btn_mic):
-            flay.addWidget(w, 0, Qt.AlignLeft)
-
-        # Buttons ebenfalls in den ChatWindow-Container einhängen.
-        self.chat_view.set_footer_widget(footer)
-
-        # 5) Gesamtlayout
+        # 4) Gesamtlayout
         vbox = QVBoxLayout(self)
         vbox.setContentsMargins(0, 0, 0, 0)
         vbox.setSpacing(0)
@@ -2166,6 +2179,24 @@ class AIWidget(QWidget):
             pass
         self._schedule_prompt_autofit()
 
+    def _prompt_shell_height(self, editor_height: int) -> int:
+        composer = getattr(self, "prompt_composer", None)
+        if composer is None:
+            return int(editor_height)
+
+        layout = composer.layout()
+        if layout is None:
+            return int(editor_height)
+
+        margins = layout.contentsMargins()
+        return int(editor_height) + margins.top() + margins.bottom()
+
+    def _sync_prompt_shell_height(self, editor_height: int) -> None:
+        composer = getattr(self, "prompt_composer", None)
+        if composer is None:
+            return
+        composer.setFixedHeight(self._prompt_shell_height(editor_height))
+
     def _apply_prompt_snap_height(self) -> None:
         editor = getattr(self, "prompt_edit", None)
         if editor is None:
@@ -2173,6 +2204,7 @@ class AIWidget(QWidget):
 
         editor.setFixedHeight(self._PROMPT_SNAP_HEIGHT)
         editor.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self._sync_prompt_shell_height(self._PROMPT_SNAP_HEIGHT)
 
     def _schedule_prompt_autofit(self) -> None:
         QTimer.singleShot(0, self._autofit_prompt_editor)
@@ -2198,6 +2230,7 @@ class AIWidget(QWidget):
         editor.setVerticalScrollBarPolicy(
             Qt.ScrollBarAsNeeded if target_height >= self._PROMPT_MAX_HEIGHT else Qt.ScrollBarAlwaysOff
         )
+        self._sync_prompt_shell_height(target_height)
 
     @Slot(list)
     def _remember_files(self, paths:list|None) -> None:
@@ -2508,6 +2541,37 @@ class AIWidget(QWidget):
             """
         )
 
+        panel_bg = self.scheme.get("col7", "#050505")
+        button_bg = panel_bg
+        button_border = self.scheme.get("col10", "#242424")
+        panel.setStyleSheet(
+            f"""
+            QFrame#chatInlineBuilderPanel {{
+                background: {panel_bg};
+                border: 1px solid {button_border};
+                border-radius: 10px;
+            }}
+            QLabel#builderSectionTitle {{
+                color: {self.scheme.get('col6', '#E3E3DED6')};
+                font-weight: 700;
+            }}
+            QPushButton#builderPrimaryButton,
+            QPushButton#builderIconButton {{
+                background: {button_bg};
+                border: 1px solid {button_border};
+                border-radius: 8px;
+                padding: 1px;
+                min-width: 22px;
+                min-height: 22px;
+            }}
+            QPushButton#builderPrimaryButton:hover,
+            QPushButton#builderIconButton:hover {{
+                background: {panel_bg};
+                border-color: transparent;
+            }}
+            """
+        )
+
         panel_layout = QVBoxLayout(panel)
         panel_layout.setContentsMargins(12, 12, 12, 12)
         panel_layout.setSpacing(8)
@@ -2554,7 +2618,7 @@ class AIWidget(QWidget):
             auto_fit=False,
             accent_color=self.scheme.get("col1", "#3a5fff"),
             accent_selection_color=self.scheme.get("col2", "#6280ff"),
-            surface_color=self.scheme.get("col10", "#404040"),
+            surface_color=self.scheme.get("col9", "#101010"),
             font_size_px=17,
         )
         editor.setMinimumHeight(260)
@@ -3021,6 +3085,9 @@ class MsgWidget(QWidget):
         bubble = QWidget()
         bubble.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self._bubble = bubble
+        bubble_bg = self._scheme.get("col9", "#101010")
+        bubble_border = self._scheme.get("col10", "#242424")
+        bubble_fg = self._scheme.get("col6", "#e0e0e0")
 
         v_layout = QVBoxLayout(bubble)
         v_layout.setContentsMargins(14, 10, 14, 10)
@@ -3028,18 +3095,18 @@ class MsgWidget(QWidget):
 
         from PySide6.QtWidgets import QLabel
         bubble.setStyleSheet(
-            """
-            QWidget {
-                background: #2a2a2a;
-                border: none;
+            f"""
+            QWidget {{
+                background: {bubble_bg};
+                border: 1px solid {bubble_border};
                 border-radius: 10px;
                 padding: 10px 14px;
-                color: #e0e0e0;
-            }
-            QWidget * {
+                color: {bubble_fg};
+            }}
+            QWidget * {{
                 border: none;
                 outline: none;
-            }
+            }}
             """
         )
 
@@ -3349,8 +3416,8 @@ class ChatWindow(QWidget):
             self._footer_widget.setParent(None)
 
         footer_widget.setParent(self._prompt_container)
-        footer_widget.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
-        self._prompt_layout.addWidget(footer_widget, 0, Qt.AlignLeft)
+        footer_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self._prompt_layout.addWidget(footer_widget, 0)
         self._footer_widget = footer_widget
         self._prompt_container.show()
         footer_widget.show()
@@ -3389,9 +3456,27 @@ class ChatWindow(QWidget):
                 border-bottom-left-radius: 12px;
                 border-bottom-right-radius: 12px;
             }}
-            QFrame#chatPromptContainer QTextEdit#aiInput {{
+            QFrame#chatPromptComposer {{
                 background: {history_bg};
                 border: 1px solid {history_accent};
+                border-radius: 10px;
+            }}
+            QFrame#chatPromptComposer QTextEdit#aiInput {{
+                background: transparent;
+                border: none;
+            }}
+            QPushButton#chatPromptSendButton {{
+                background: transparent;
+                border: none;
+                padding: 0px;
+                border-radius: 8px;
+            }}
+            QPushButton#chatPromptSendButton:hover,
+            QPushButton#chatPromptSendButton:pressed,
+            QPushButton#chatPromptSendButton:checked {{
+                background: transparent;
+                border: none;
+                border-radius: 8px;
             }}
             QWidget#chatFooterControls {{
                 background: transparent;
@@ -5168,7 +5253,7 @@ class ControlPlaneWidget(QWidget):
         panel.setStyleSheet(
             f"""
             QFrame#runtimeWidgetPanel {{
-                background: {self.scheme['col5']};
+                background: {self.scheme['col7']};
                 border: 1px solid {self.scheme['col10']};
                 border-radius: 10px;
             }}
@@ -5177,22 +5262,24 @@ class ControlPlaneWidget(QWidget):
                 font-weight: 600;
             }}
             QToolButton#runtimeWidgetActionButton {{
-                border: none;
-                background: transparent;
-                padding: 0px;
+                background: {self.scheme['col7']};
+                border: 1px solid transparent;
+                border-radius: 6px;
+                padding: 2px;
             }}
             QToolButton#runtimeWidgetActionButton:hover {{
-                background: rgba(255, 255, 255, 0.10);
-                border-radius: 4px;
+                background: {self.scheme['col7']};
+                border: 1px solid transparent;
             }}
             QToolButton#runtimeWidgetRemoveButton {{
-                border: none;
-                background: transparent;
-                padding: 0px;
+                background: {self.scheme['col7']};
+                border: 1px solid transparent;
+                border-radius: 6px;
+                padding: 2px;
             }}
             QToolButton#runtimeWidgetRemoveButton:hover {{
-                background: rgba(255, 255, 255, 0.10);
-                border-radius: 4px;
+                background: {self.scheme['col7']};
+                border: 1px solid transparent;
             }}
             """
         )
@@ -5293,7 +5380,7 @@ class ControlPlaneWidget(QWidget):
                 auto_fit=False,
                 accent_color=self.scheme.get("col1", "#3a5fff"),
                 accent_selection_color=self.scheme.get("col2", "#6280ff"),
-                surface_color=self.scheme.get("col10", "#404040"),
+                surface_color=self.scheme.get("col9", "#101010"),
                 font_size_px=14,
             )
             editor.setMinimumHeight(96)
@@ -5561,7 +5648,8 @@ class ControlPlaneWidget(QWidget):
         panel_parent = parent_container if isinstance(parent_container, QWidget) else self
         panel = QFrame(panel_parent)
         panel.setObjectName("controlBuilderPanel")
-        panel_bg = self.scheme["col5"] if show_toolbar else "transparent"
+        panel_bg = self.scheme["col7"] if show_toolbar else "transparent"
+        button_bg = panel_bg
         panel_border = f"1px solid {self.scheme['col10']}" if show_toolbar else "none"
         panel_radius = "10px" if show_toolbar else "0px"
         panel.setStyleSheet(
@@ -5575,7 +5663,7 @@ class ControlPlaneWidget(QWidget):
             QPushButton#builderBuildButton,
             QPushButton#builderPostButton,
             QPushButton#builderCopyButton {{
-                background: transparent;
+                background: {button_bg};
                 border: 1px solid transparent;
                 border-radius: 8px;
                 padding: 1px;
@@ -5586,8 +5674,8 @@ class ControlPlaneWidget(QWidget):
             QPushButton#builderBuildButton:hover,
             QPushButton#builderPostButton:hover,
             QPushButton#builderCopyButton:hover {{
-                background: rgba(255, 255, 255, 0.08);
-                border-color: rgba(255, 255, 255, 0.18);
+                background: {button_bg};
+                border-color: transparent;
             }}
             """
         )
@@ -5645,7 +5733,7 @@ class ControlPlaneWidget(QWidget):
             auto_fit=False,
             accent_color=self.scheme.get("col1", "#3a5fff"),
             accent_selection_color=self.scheme.get("col2", "#6280ff"),
-            surface_color=self.scheme.get("col10", "#404040"),
+            surface_color=self.scheme.get("col9", "#101010"),
             font_size_px=14,
         )
         editor.setMinimumHeight(96)
@@ -6240,7 +6328,7 @@ class ControlPlaneWidget(QWidget):
             }}
             QTabWidget#controlPlaneTabs QTabBar::tab:hover {{
                 background: {self.scheme['col7']};
-                border-color: {self.scheme['col1']};
+                border-color: {self.scheme['col10']};
             }}
             QTabWidget#controlPlaneTabs QTabBar::tab:selected {{
                 background: {self.scheme['col7']};
@@ -6358,16 +6446,16 @@ class ControlPlaneWidget(QWidget):
                 min-height: 18px;
             }}
             QPushButton#controlRefresh {{
-                background: {self.scheme['col1']};
-                color: {self.scheme['col7']};
-                border: 1px solid {self.scheme['col1']};
+                background: {self.scheme['col5']};
+                color: {self.scheme['col6']};
+                border: 1px solid {self.scheme['col10']};
                 border-radius: 10px;
                 padding: 6px 12px;
                 font-weight: 600;
             }}
             QPushButton#controlRefresh:hover {{
-                background: {self.scheme['col2']};
-                border-color: {self.scheme['col2']};
+                background: {self.scheme['col5']};
+                border-color: {self.scheme['col10']};
             }}
             QPushButton#controlAction {{
                 background: {self.scheme['col5']};
@@ -6378,8 +6466,8 @@ class ControlPlaneWidget(QWidget):
                 font-weight: 600;
             }}
             QPushButton#controlAction:hover {{
-                border-color: {self.scheme['col2']};
-                color: {self.scheme['col2']};
+                border-color: {self.scheme['col10']};
+                color: {self.scheme['col6']};
             }}
             QPushButton#controlLegacyTabButton {{
                 background: {self.scheme['col5']};
@@ -6390,8 +6478,8 @@ class ControlPlaneWidget(QWidget):
                 font-weight: 600;
             }}
             QPushButton#controlLegacyTabButton:hover {{
-                border-color: {self.scheme['col2']};
-                color: {self.scheme['col2']};
+                border-color: {self.scheme['col10']};
+                color: {self.scheme['col6']};
             }}
             """
         )
@@ -7367,7 +7455,12 @@ class ControlPlaneWidget(QWidget):
             self._last_snapshot["operations"] = refreshed_operations
             self._render_operator_snapshot(refreshed_operations)
             if probe.get("ok"):
-                self._append_operator_log("MCP probe passed.")
+                active_transport = str(probe.get("active_transport") or "").strip() or "unknown"
+                active_server = str(probe.get("active_server") or "").strip() or "unknown"
+                fallback_note = " (fallback)" if bool(probe.get("fallback_used")) else ""
+                self._append_operator_log(
+                    f"MCP probe passed via {active_transport} @ {active_server}{fallback_note}."
+                )
             else:
                 self._append_operator_log(
                     f"MCP probe failed: {str(probe.get('stderr') or probe.get('stdout') or 'unknown error')[:180]}"
@@ -7389,15 +7482,48 @@ class ControlPlaneWidget(QWidget):
             [sys.executable, str(probe_path)],
             capture_output=True,
             text=True,
-            timeout=12,
+            timeout=30,
             cwd=str(probe_path.parent),
         )
-        return {
+        stdout_text = (completed.stdout or "").strip()
+        stderr_text = (completed.stderr or "").strip()
+
+        result = {
             "ok": completed.returncode == 0,
             "returncode": completed.returncode,
-            "stdout": (completed.stdout or "").strip(),
-            "stderr": (completed.stderr or "").strip(),
+            "stdout": stdout_text,
+            "stderr": stderr_text,
         }
+
+        probe_payload: dict[str, Any] | None = None
+        for output_line in reversed(stdout_text.splitlines()):
+            normalized_line = str(output_line or "").strip()
+            if not normalized_line.startswith("MCP_PROBE_JSON="):
+                continue
+            try:
+                payload_text = normalized_line.split("=", 1)[1]
+                loaded_payload = json.loads(payload_text)
+                if isinstance(loaded_payload, dict):
+                    probe_payload = loaded_payload
+            except Exception:
+                probe_payload = None
+            break
+
+        if isinstance(probe_payload, dict):
+            result["ok"] = bool(probe_payload.get("ok"))
+            result["active_server"] = str(probe_payload.get("active_server") or "").strip() or None
+            result["active_transport"] = str(probe_payload.get("active_transport") or "").strip() or None
+            result["selected_server"] = str(probe_payload.get("selected_server") or "").strip() or None
+            result["selected_transport"] = str(probe_payload.get("selected_transport") or "").strip() or None
+            result["fallback_used"] = bool(probe_payload.get("fallback_used"))
+            result["attempt_count"] = int(probe_payload.get("attempt_count") or 0)
+            result["tool_count"] = int(probe_payload.get("tool_count") or 0)
+            result["attempts"] = list(probe_payload.get("attempts") or [])
+            result["probe_metrics"] = dict(probe_payload.get("probe_metrics") or {})
+            if not result.get("stderr"):
+                result["stderr"] = str(probe_payload.get("error") or "").strip()
+
+        return result
 
     def _export_runtime_snapshot_report(self) -> None:
         try:
@@ -7514,7 +7640,7 @@ class ControlPlaneWidget(QWidget):
 class MainAIEditor(QMainWindow):
     ORG_NAME: Final = "ai.bentu"
 
-    APP_NAME: Final = "[/] AI IDE "
+    APP_NAME: Final = "[/\/]  AI IDE "
     _SCHEMA:  Final = 2
 
     # ---------------------------------------------------------------- init --
@@ -7581,11 +7707,24 @@ class MainAIEditor(QMainWindow):
 
     def _strip_dock_decoration(self, dock: QDockWidget) -> None:
         """remove title-bar & buttons, give uniform bg-colour (col5)"""
+        scheme = _build_scheme(self._accent, self._base)
+        button_bg = str(scheme.get("col5") or "#000000")
+        button_hover = button_bg
+        button_border = str(scheme.get("col10") or "#242424")
         dock.setTitleBarWidget(QWidget())                       # hide bar
         dock.setFeatures(QDockWidget.NoDockWidgetFeatures)      # no btns
         dock.setStyleSheet(f"""
-            background:#1f1f1f;
+            background:{scheme.get('col5', '#000000')};
                                 /* ← remove remaining frame   */
+            QToolButton {{
+                background: {button_bg};
+                border: 1px solid transparent;
+                border-radius: 6px;
+            }}
+            QToolButton:hover, QToolButton:pressed, QToolButton:checked {{
+                background: {button_hover};
+                border: 1px solid transparent;
+            }}
         """)
 
     def _editor_surface_enabled(self) -> bool:
@@ -7830,10 +7969,11 @@ class MainAIEditor(QMainWindow):
         handle_idle, _, _ = _splitter_handle_palette(scheme)
         handle_hover = str(scheme.get("col2") or scheme.get("col1") or "#6280ff")
         handle_pressed = str(scheme.get("col2") or scheme.get("col1") or "#6280ff")
+        splitter_bg = str(scheme.get("col5") or "#000000")
         splitter.setStyleSheet(
             f"""
             QSplitter#mainHorizontalSplitter {{
-                background: #1f1f1f;
+                background: {splitter_bg};
             }}
             QSplitter#mainHorizontalSplitter::handle:vertical {{
                 background: {handle_idle};
@@ -8081,6 +8221,11 @@ class MainAIEditor(QMainWindow):
         - Initializes the right (`tb_right`) vertical toolbar, applying the same icon size as the top toolbar.
         - Adds the control plane actions to the side toolbar.
         """
+        scheme = _build_scheme(self._accent, self._base)
+        chrome_bg = str(scheme.get("col5") or "#000000")
+        chrome_hover = chrome_bg
+        button_bg = chrome_bg
+        button_border = str(scheme.get("col10") or "#242424")
         self.tb_top = QToolBar("Main", self)
         # QMainWindow.saveState/restoreState rely on unique objectName values.
         self.tb_top.setObjectName("ToolbarTop")
@@ -8088,25 +8233,25 @@ class MainAIEditor(QMainWindow):
         self.tb_top.setFloatable(False)
         self.tb_top.setContentsMargins(8, 8, 8, 8)
         self.tb_top.setStyleSheet(
-            "QToolBar {"
-            " background: #1f1f1f;"
+            f"QToolBar {{"
+            f" background: {chrome_bg};"
             " border: none;"
             " border-radius: 0px;"
             " padding: 6px;"
             " spacing: 8px;"
             " }"
-            "QToolButton {"
-            " background: #1f1f1f;"
+            f"QToolButton {{"
+            f" background: {button_bg};"
             " min-width: 40px;"
             " min-height: 40px;"
             " padding: 4px;"
             " margin: 1px;"
-            " border: none;"
-            " border-radius: 0px;"
+            " border: 1px solid transparent;"
+            " border-radius: 6px;"
             " }"
-            "QToolButton:hover, QToolButton:pressed, QToolButton:checked {"
-            " background: #1f1f1f;"
-            " border: none;"
+            f"QToolButton:hover, QToolButton:pressed, QToolButton:checked {{"
+            f" background: {chrome_hover};"
+            " border: 1px solid transparent;"
             " }"
         )
 
@@ -8123,7 +8268,7 @@ class MainAIEditor(QMainWindow):
         ])
         self._tb_top_spacer = QWidget(self.tb_top)
         self._tb_top_spacer.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        self._tb_top_spacer.setStyleSheet("background: #1f1f1f; border: none;")
+        self._tb_top_spacer.setStyleSheet(f"background: {chrome_bg}; border: none;")
         self.tb_top.addWidget(self._tb_top_spacer)
 
         # ---------------- seitliche Toolbars ------------------------------- 
@@ -8144,8 +8289,8 @@ class MainAIEditor(QMainWindow):
             bar.setLayoutDirection(Qt.RightToLeft)
             bar.setContentsMargins(8, 8, 8, 8)
             bar.setStyleSheet(
-                "QToolBar {"
-                " background: #1f1f1f;"
+                f"QToolBar {{"
+                f" background: {chrome_bg};"
                 " border: none;"
                 " border-radius: 0px;"
                 " padding: 6px 0px 6px 6px;"
@@ -8166,18 +8311,18 @@ class MainAIEditor(QMainWindow):
                 " margin: 0px;"
                 " padding: 0px;"
                 " }"
-                "QToolButton {"
-                " background: #1f1f1f;"
+                f"QToolButton {{"
+                f" background: {button_bg};"
                 " min-width: 42px;"
                 " min-height: 42px;"
                 " padding: 4px;"
                 " margin: 1px 0px 1px 0px;"
-                " border: none;"
-                " border-radius: 0px;"
+                " border: 1px solid transparent;"
+                " border-radius: 6px;"
                 " }"
-                "QToolButton:hover, QToolButton:pressed, QToolButton:checked {"
-                " background: #1f1f1f;"
-                " border: none;"
+                f"QToolButton:hover, QToolButton:pressed, QToolButton:checked {{"
+                f" background: {chrome_hover};"
+                " border: 1px solid transparent;"
                 " }"
             )
             self.addToolBar(Qt.RightToolBarArea, bar)
@@ -8186,7 +8331,7 @@ class MainAIEditor(QMainWindow):
             self.tb_right.addAction(self.act_toggle_control_plane)
         self._tb_right_spacer = QWidget(self.tb_right)
         self._tb_right_spacer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
-        self._tb_right_spacer.setStyleSheet("background: #1f1f1f; border: none;")
+        self._tb_right_spacer.setStyleSheet(f"background: {chrome_bg}; border: none;")
         self.tb_right.addWidget(self._tb_right_spacer)
 
         self.tb_left = QToolBar(self, orientation=Qt.Vertical)
@@ -8200,8 +8345,8 @@ class MainAIEditor(QMainWindow):
         self.tb_left.setLayoutDirection(Qt.LeftToRight)
         self.tb_left.setContentsMargins(8, 8, 8, 8)
         self.tb_left.setStyleSheet(
-            "QToolBar {"
-            " background: #1f1f1f;"
+            f"QToolBar {{"
+            f" background: {chrome_bg};"
             " border: none;"
             " border-radius: 0px;"
             " padding: 6px 6px 6px 0px;"
@@ -8222,18 +8367,18 @@ class MainAIEditor(QMainWindow):
             " margin: 0px;"
             " padding: 0px;"
             " }"
-            "QToolButton {"
-            " background: #1f1f1f;"
+            f"QToolButton {{"
+            f" background: {button_bg};"
             " min-width: 42px;"
             " min-height: 42px;"
             " padding: 4px;"
             " margin: 1px 0px 1px 0px;"
-            " border: none;"
-            " border-radius: 0px;"
+            " border: 1px solid transparent;"
+            " border-radius: 6px;"
             " }"
-            "QToolButton:hover, QToolButton:pressed, QToolButton:checked {"
-            " background: #1f1f1f;"
-            " border: none;"
+            f"QToolButton:hover, QToolButton:pressed, QToolButton:checked {{"
+            f" background: {chrome_hover};"
+            " border: 1px solid transparent;"
             " }"
         )
         self.addToolBar(Qt.LeftToolBarArea, self.tb_left)
@@ -8244,7 +8389,7 @@ class MainAIEditor(QMainWindow):
             self.tb_left.addAction(self.act_toggle_explorer)
         if hasattr(self, "act_toggle_control_plane_left"):
             self._tb_left_spacer = QWidget(self.tb_left)
-            self._tb_left_spacer.setStyleSheet("background: #1f1f1f; border: none;")
+            self._tb_left_spacer.setStyleSheet(f"background: {chrome_bg}; border: none;")
             self._tb_left_spacer.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
             self.tb_left.addWidget(self._tb_left_spacer)
 
@@ -8271,17 +8416,20 @@ class MainAIEditor(QMainWindow):
     
     def _create_menu(self) -> None:
         # ------------------------------------------------------------------ ui
+        scheme = _build_scheme(self._accent, self._base)
+        chrome_bg = str(scheme.get("col5") or "#000000")
+        chrome_hover = str(scheme.get("col9") or chrome_bg)
         mbar: QMenuBar = QMenuBar(self)               # own menu-bar instance
         mbar.setStyleSheet(
-            "QMenuBar {"
-            " background: #1f1f1f;"
+            f"QMenuBar {{"
+            f" background: {chrome_bg};"
             " border: none;"
             " }"
-            "QMenuBar::item {"
-            " background: #1f1f1f;"
+            f"QMenuBar::item {{"
+            f" background: {chrome_bg};"
             " }"
-            "QMenuBar::item:selected {"
-            " background: #1f1f1f;"
+            f"QMenuBar::item:selected {{"
+            f" background: {chrome_hover};"
             " }"
         )
         self.setMenuBar(mbar)                         # make it the window bar
@@ -8432,8 +8580,9 @@ class MainAIEditor(QMainWindow):
     # ================================================= status =============
     
     def _create_status(self):
+        scheme = _build_scheme(self._accent, self._base)
         st = QStatusBar(self)
-        st.setStyleSheet("QStatusBar { background: #1f1f1f; border: none; }")
+        st.setStyleSheet(f"QStatusBar {{ background: {scheme.get('col5', '#000000')}; border: none; }}")
         st.showMessage("Ready")
         self._st_agents = QLabel("0 agents")
         self._st_workflows = QLabel("0 workflows")

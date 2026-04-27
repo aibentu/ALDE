@@ -35,6 +35,7 @@ ACTION_REQUEST_SCHEMA_CONFIGS = ACTIONS
 ACTION_REQUEST_NAME_ALIASES = ACTION_NAMES
 AGENT_MANIFEST_OVERRIDES = AGENT_MANIFEST
 AGENT_ROLE_CONFIGS = AGENT_ROLE
+AGENT_RUNTIME_CONFIG = AGENT_RUNTIME
 AGENT_SKILL_PROFILES = AGENT_SKILLS
 FORCED_ROUTE_CONFIGS = FORCED_ROUTES
 HANDOFF_PROTOCOL_CONFIGS = HANDOFF_PROTOCOL
@@ -131,7 +132,6 @@ def _normalize_config_object_token(value: str, *, fallback: str = "object") -> s
 
     normalized_value = re.sub(r"[^A-Za-z0-9_]+", "_", str(value or "").strip()).strip("_").lower()
     return normalized_value or fallback
-
 
 def _workflow_definition_for_agent(agent_label: str) -> str:
     runtime_config = AGENT_RUNTIME.get(agent_label) or {}
@@ -562,9 +562,32 @@ def _resolve_route_template_value(value: Any, *, original_text: str, original_pa
             if not isinstance(original_payload, dict):
                 return deepcopy(original_payload)
             narrowed_payload: dict[str, Any] = {}
-            for key in ("action", "job_posting_result", "profile_result", "options", "correlation_id"):
+            for key in (
+                "action",
+                "job_posting_result",
+                "profile_result",
+                "applicant_profile",
+                "options",
+                "correlation_id",
+            ):
                 if key in original_payload:
                     narrowed_payload[key] = deepcopy(original_payload.get(key))
+            if "applicant_profile" not in narrowed_payload:
+                profile_result = narrowed_payload.get("profile_result")
+                if isinstance(profile_result, dict):
+                    profile_payload = profile_result.get("profile")
+                    if isinstance(profile_payload, dict) and profile_payload:
+                        narrowed_payload["applicant_profile"] = {
+                            "source": "text",
+                            "value": deepcopy(profile_payload),
+                        }
+                    else:
+                        profile_correlation_id = profile_result.get("correlation_id")
+                        if isinstance(profile_correlation_id, str) and profile_correlation_id.strip():
+                            narrowed_payload["applicant_profile"] = {
+                                "source": "profile_id",
+                                "value": profile_correlation_id.strip(),
+                            }
             return narrowed_payload
         return value
     if isinstance(value, list):
@@ -1940,6 +1963,8 @@ class WorkflowValidationService:
     def validate_all_objects(self) -> dict[str, Any]:
         workflow_reports = [self.validate_object_workflow(name, config) for name, config in WORKFLOWS.items()]
         invalid_reports = [report for report in workflow_reports if not report.get("valid")]
+        batch_workflow_reports = [self.validate_batch_object_workflow(name, config) for name, config in BATCH_WORKFLOW_CONFIGS.items()]
+        invalid_batch_reports = [report for report in batch_workflow_reports if not report.get("valid")]
         map_errors: list[str] = []  
         for agent_label, workflow_name in AGENT_WORKFLOW_MAP.items():
             if agent_label not in AGENT_MANIFESTS:
@@ -1947,11 +1972,16 @@ class WorkflowValidationService:
             if workflow_name not in WORKFLOWS:
                 map_errors.append(f"agent '{agent_label}' references unknown workflow '{workflow_name}'")
         return {
+            "valid": not invalid_reports and not invalid_batch_reports and not map_errors,
             "workflow_count": len(workflow_reports),
             "valid_count": len([report for report in workflow_reports if report.get("valid")]),
             "invalid_count": len(invalid_reports),
+            "batch_workflow_count": len(batch_workflow_reports),
+            "valid_batch_workflow_count": len([report for report in batch_workflow_reports if report.get("valid")]),
+            "invalid_batch_workflow_count": len(invalid_batch_reports),
             "mapping_errors": map_errors,
             "workflows": workflow_reports,
+            "batch_workflows": batch_workflow_reports,
         }
 
 

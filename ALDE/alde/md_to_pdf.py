@@ -12,6 +12,7 @@ from reportlab.lib.units import mm
 from reportlab.platypus import (  # type: ignore
     ListFlowable,
     ListItem,
+    PageBreak,
     Paragraph,
     SimpleDocTemplate,
     Spacer,
@@ -59,7 +60,7 @@ def md_inline_to_reportlab(text: str) -> str:
 
 @dataclass
 class Block:
-    kind: str  # heading1, heading2, heading3, para, ul
+    kind: str  # heading1, heading2, heading3, para, ul, pagebreak
     text: str | None = None
     items: list[str] | None = None
 
@@ -83,6 +84,16 @@ def iter_markdown_blocks(md: str) -> Iterable[Block]:
         s = s.strip()
         return s in {"---", "***", "___"}
 
+    def is_pagebreak(s: str) -> bool:
+        token = s.strip().lower()
+        return token in {
+            "<!-- pagebreak -->",
+            "<!--pagebreak-->",
+            "[pagebreak]",
+            "\\pagebreak",
+            "<pagebreak/>",
+        }
+
     while i < len(lines):
         line = lines[i].rstrip("\n")
 
@@ -91,6 +102,11 @@ def iter_markdown_blocks(md: str) -> Iterable[Block]:
             continue
 
         if is_hr(line):
+            i += 1
+            continue
+
+        if is_pagebreak(line):
+            yield Block("pagebreak")
             i += 1
             continue
 
@@ -216,6 +232,10 @@ def markdown_to_pdf(md_path: Path, pdf_path: Path, *, options: PdfOptions | None
     story = []
 
     for block in iter_markdown_blocks(md):
+        if block.kind == "pagebreak":
+            story.append(PageBreak())
+            continue
+
         if block.kind == "heading1" and block.text:
             story.append(Paragraph(md_inline_to_reportlab(block.text), style_h1))
             continue

@@ -18,7 +18,6 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
             Keep it simple, short, and deterministic. 
 
             Rules:
-            - Own user interaction, clarification, routing, and planning.
             - Ask follow-up questions when the request is  missing required inputs.
             - Build a minimal explicit execution plan before delegating: goal, selected target_agent, selected job_name or tool_name, required inputs, and expected result.
             - Use direct tools only when the work is trivial, deterministic, and does not need a worker specialization.
@@ -34,7 +33,7 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
             "mode": "xrouter_xplanner",
             "job_skill_profile_policy": {
                 "selection_mode": "job_name",
-                "fallback_skill_profile": "xrouter_xplanner_core",
+                "fallback_skill_profile": "xplaner_xrouter_core",
             },
         },
         "output_schema": {},
@@ -72,10 +71,10 @@ SYSTEM_PROMPT: dict[str, dict[str, Any]] = {
 
 JOB_PROMPTS: dict[str, dict[str, Any]] = {
     
-    "document_dispatch": {
+    "dispatch_documents": {
         "prompt": _text(
             """
-            === Job: document_dispatch ===
+            === Job: dispatch_documents ===
             Description: Deterministic dispatch job for job-posting PDFs and related store updates.
             Goal: Discover eligible inputs, classify them against store state, and forward only required parsing work.
 
@@ -85,7 +84,7 @@ JOB_PROMPTS: dict[str, dict[str, Any]] = {
             - Do not forward documents that are already processed or currently queued or processing.
             - Use dispatch_documents only for filesystem scan requests that start from scan_dir.
             - Use execute_action_request or upsert_object_record when structured payloads are already available.
-            - If batch cover-letter generation is requested, call the batch workflow and stop after returning its result.
+            - For batch processing, forward one handoff payload per document and let runtime execute one routed tool call per emitted handoff message.
             - A single broken PDF must not abort the whole run.
             - If DB access is uncertain, report UNKNOWN instead of inventing state.
             """
@@ -103,6 +102,8 @@ JOB_PROMPTS: dict[str, dict[str, Any]] = {
                     "extensions",
                     "max_files",
                     "agent_name",
+                    "parser_agent_name",
+                    "parser_job_name",
                     "dry_run",
                     "handoff_message_id",
                 ],
@@ -113,13 +114,14 @@ JOB_PROMPTS: dict[str, dict[str, Any]] = {
                 "Check readability and compute content_sha256, file_size_bytes, and mtime_epoch.",
                 "Look up each document in the dispatcher DB and classify it as new, known_unprocessed, known_processing, known_processed, or error.",
                 "Forward only new or known_unprocessed items to the job_posting_parser job when parsing work is still required.",
+                "Emit one handoff message per forwarded item so runtime can fire one route_to_agent tool call per document.",
                 "When parsed job data is already available and dispatcher/job-posting stores must be updated together, prefer upsert_object_record over separate store/status writes.",
                 "Return a structured report with summary, forwarded items, and errors.",
             ],
         },
         "output_schema": {
             "agent": "xworker",
-            "job_name": "document_dispatch",
+            "job_name": "dispatch_documents",
             "scan_dir": "/path",
             "summary": {
                 "pdf_found": 0,
@@ -194,17 +196,21 @@ JOB_PROMPTS: dict[str, dict[str, Any]] = {
         "prompt": _text(
             """
             === Job: job_posting_parser ===
-            Description: Structured job-posting extraction job.
-            Goal: Convert dispatcher payloads for job-posting PDFs into a knowledge-ready JSON representation with raw-text, entity, and relational projections.
+            Description: Structured job-posting extraction and latest-selection job.
+            Goal: Convert dispatcher payloads and batch posting lists into a knowledge-ready JSON representation with raw-text, entity, and relational projections.
 
             Rules:
-            - Determine whether the source is actually a job posting.
-            - Do not score candidate fit or make downstream decisions.
+            - Be strictly source-grounded; do not invent facts, fields, or scores.
+            - Determine whether each source is actually a job posting.
+            - Support both single dispatcher payload mode and latest batch mode.
+            - In latest batch mode, deduplicate deterministically by source_id, then source_url, then content_sha256.
+            - In latest batch mode, sort by posting_date descending, then fetched_at descending, then source_id ascending.
             - Populate db_updates only as the desired state transition.
-            - Keep salaries in the original currency.
+            - Keep salaries in the original currency and preserve source formatting when normalization is ambiguous.
             - Preserve the original extracted source in raw_text_document.raw_text whenever available.
-            - Emit explicit entity_objects and relation_objects only when the source provides evidence for them.
+            - Emit entity_objects and relation_objects only when the source provides evidence.
             - Keep job_posting as a flattened compatibility projection for existing storage and downstream consumers.
+            - If parse.is_job_posting is false, set db_updates.processing_state to failed and db_updates.processed to false.
             - Return JSON only.
             """
         ),
@@ -213,6 +219,21 @@ JOB_PROMPTS: dict[str, dict[str, Any]] = {
             "input_contract": {
                 "type": "job_posting_pdf",
                 "required": ["correlation_id", "link", "file", "db", "requested_actions"],
+                "optional": ["items", "latest_limit"],
+                "variants": [
+                    {
+                        "name": "single_dispatch_payload",
+                        "required": ["correlation_id", "link", "file", "db", "requested_actions"],
+                    },
+                    {
+                        "name": "latest_job_postings_batch",
+                        "required": ["items"],
+                        "optional": ["latest_limit"],
+                        "latest_limit_default": 10,
+                        "deduplication_order": ["source_id", "source_url", "content_sha256"],
+                        "sort_order": ["posting_date_desc", "fetched_at_desc", "source_id_asc"],
+                    },
+                ],
                 "missing_field_policy": "Mirror missing fields as null and report them in parse.errors.",
             },
             "extraction_guidance": [
@@ -222,8 +243,23 @@ JOB_PROMPTS: dict[str, dict[str, Any]] = {
                 "Represent the posting as a primary subject entity in entity_objects, usually with entity_key 'subject'.",
                 "Use stable, reusable entity keys so relation_objects can reference them deterministically.",
                 "Emit only evidence-backed relation types such as offered_by, located_in, requires_skill, requires_language, or application_contact.",
+                "For latest batch mode, keep only the newest postings after deterministic deduplication and sorting.",
+                "For latest batch mode, include dropped duplicates and non-job-posting items in warnings or dropped_items metadata.",
                 "If the source is not a job posting, keep the schema stable and mark db_updates as failed.",
             ],
+            "batch_output_schema": {
+                "summary": {
+                    "total_input": 0,
+                    "valid_postings": 0,
+                    "returned_latest": 0,
+                    "dropped_duplicates": 0,
+                    "dropped_non_job_postings": 0,
+                },
+                "latest_job_postings": [],
+                "dropped_items": [],
+                "errors": [],
+                "warnings": [],
+            },
         },
         "output_schema": {
             "agent": "xworker",
@@ -305,14 +341,16 @@ JOB_PROMPTS: dict[str, dict[str, Any]] = {
         "prompt": _text(
             """
             === Job: cover_letter_writer ===
-            Description: Structured cover-letter writing job.
-            Goal: Produce a tailored cover letter from structured job-posting and applicant-profile inputs.
+            Description: Structured application-package writing job.
+            Goal: Produce a tailored two-page package from structured job-posting and applicant-profile inputs.
 
             Rules:
             - Use only facts present in job_posting_result and profile_result.
             - If recipient or contact details are missing, use neutral wording.
             - Match requirements only when there is explicit evidence in the profile.
             - If a required skill is missing, do not invent it; record it in quality.red_flags.
+            - Build exactly two pages: page 1 = application, page 2 = CV tailored to the job offer.
+            - Provide page_content for both pages and page-level metadata (content_sha, title/titel, signature, page).
             - Return JSON only.
             """
         ),
@@ -356,6 +394,56 @@ JOB_PROMPTS: dict[str, dict[str, Any]] = {
                 "enclosures": ["Lebenslauf", "Zeugnisse"],
                 "full_text": "<full cover letter as continuous text>",
             },
+            "cv": {
+                "target_role": "<job title + company or empty>",
+                "summary": "<job-tailored profile summary>",
+                "sections": {
+                    "job_fit": [],
+                    "skills": [],
+                    "experience": [],
+                    "education": [],
+                    "languages": [],
+                },
+                "signature": "<candidate name>",
+                "full_text": "<full CV as continuous text>",
+            },
+            "pages": [
+                {
+                    "page": 1,
+                    "title": "Application",
+                    "titel": "Application",
+                    "signature": "...",
+                    "page_content": "...",
+                    "content_sha": "...",
+                    "metadata": {
+                        "page": 1,
+                        "title": "Application",
+                        "titel": "Application",
+                        "signature": "...",
+                        "content_sha": "...",
+                    },
+                },
+                {
+                    "page": 2,
+                    "title": "CV",
+                    "titel": "CV",
+                    "signature": "...",
+                    "page_content": "...",
+                    "content_sha": "...",
+                    "metadata": {
+                        "page": 2,
+                        "title": "CV",
+                        "titel": "CV",
+                        "signature": "...",
+                        "content_sha": "...",
+                    },
+                },
+            ],
+            "page_count": 2,
+            "document": {
+                "full_text": "<application + pagebreak + cv>",
+                "page_break_marker": "<!-- pagebreak -->",
+            },
             "quality": {
                 "word_count": 0,
                 "tone_used": "modern",
@@ -363,6 +451,42 @@ JOB_PROMPTS: dict[str, dict[str, Any]] = {
                 "matched_requirements": [],
                 "highlighted_skills": [],
                 "red_flags": [],
+            },
+        },
+    },
+    "router_planner_cover_letter_sequence": {
+        "prompt": _text(
+            """
+            === Job: router_planner_cover_letter_sequence ===
+            Description: Specialized router planner for dispatch -> parse -> cover-letter execution.
+            Goal: Initialize the deterministic sequence for cover-letter generation from applicant profile and job-offer inputs.
+
+            Rules:
+            - Build one deterministic route initialization payload for document_dispatch.
+            - Preserve all given applicant_profile, job_posting, job_posting_result, and options fields unchanged.
+            - Set action to generate_cover_letter when missing.
+            - Keep sequence metadata explicit: sequence_name, parser_job_name, writer_job_name.
+            - Do not invent filesystem or DB state.
+            """
+        ),
+        "task": {
+            "mode": "router_sequence_planner",
+            "defaults": {
+                "target_agent": "_xworker",
+                "route_job_name": "document_dispatch",
+                "parser_job_name": "job_posting_parser",
+                "writer_job_name": "cover_letter_writer",
+                "sequence_name": "dispatch_parse_generate_cover_letter",
+            },
+        },
+        "output_schema": {
+            "target_agent": "_xworker",
+            "job_name": "document_dispatch",
+            "user_question": "{...sequence payload json...}",
+            "handoff_metadata": {
+                "sequence_name": "dispatch_parse_generate_cover_letter",
+                "parser_job_name": "job_posting_parser",
+                "writer_job_name": "cover_letter_writer",
             },
         },
     },
@@ -423,17 +547,22 @@ JOB_CONFIGS: dict[str, dict[str, Any]] = {
         "runtime_agent": "_xworker",
         "skill_profile": "xworker_generic_parser",
         "default_object_name": "documents",
+        "default_tool_names": ["read_document", "pypdf_read_document", "list_documents"],
     },
     "applicant_profile_parser": {
         "runtime_agent": "_xworker",
         "skill_profile": "xworker_profile_parser",
         "default_object_name": "profiles",
+        "workflow_name": "xworker_profile_parser_leaf",
+        "default_tool_names": ["read_document", "pypdf_read_document", "list_documents"],
         "specialized_prompt": {"agent_type": "parser", "task_name": "applicant_profile"},
     },
     "job_posting_parser": {
         "runtime_agent": "_xworker",
         "skill_profile": "xworker_job_posting_parser",
         "default_object_name": "job_postings",
+        "workflow_name": "xworker_job_posting_parser_leaf",
+        "default_tool_names": ["read_document", "pypdf_read_document", "list_documents"],
         "specialized_prompt": {"agent_type": "parser", "task_name": "job_posting"},
     },
     "generic_writer": {
@@ -445,7 +574,36 @@ JOB_CONFIGS: dict[str, dict[str, Any]] = {
         "runtime_agent": "_xworker",
         "skill_profile": "xworker_cover_letter_writer",
         "default_object_name": "cover_letters",
+        "disable_runtime_tools": True,
         "specialized_prompt": {"agent_type": "writer", "task_name": "cover_letter"},
+    },
+    "router_planner_cover_letter_sequence": {
+        "runtime_agent": "_xrouter_xplanner",
+        "skill_profile": "xrouter_cover_letter_sequence_planner",
+        "default_object_name": "documents",
+        "is_default_for_agent": True,
+        "route_defaults": {
+            "target_agent": "_xworker",
+            "job_name": "document_dispatch",
+            "handoff_metadata": {
+                "sequence_name": "dispatch_parse_generate_cover_letter",
+                "parser_job_name": "job_posting_parser",
+                "writer_job_name": "cover_letter_writer",
+            },
+            "sequence_payload": {
+                "action": "generate_cover_letter",
+                "sequence": {
+                    "name": "dispatch_parse_generate_cover_letter",
+                    "steps": [
+                        "dispatch_document(load_applicant_profile, load_job_offers)",
+                        "parse_document(parse_job_offer)",
+                        "generate_cover_letter(handoff_parser_result, handoff_applicant_profile)",
+                    ],
+                    "parser_job_name": "job_posting_parser",
+                    "writer_job_name": "cover_letter_writer",
+                },
+            },
+        },
     },
   
     "mail_agent_runtime": {
@@ -534,9 +692,9 @@ AGENT_RUNTIME: dict[str, dict[str, Any]] = {
         "defaults": {
             "job_name": _default_job_name_for_agent("_xrouter_xplanner"),
             "skill": "",
-            "profile": "xrouter_xplanner_core",
+            "profile": "xplaner_xrouter_core",
         },
-        "workflow": {"definition": "xrouter_xplanner_router"},
+        "workflow": {"definition": "xplaner_xrouter_router"},
     },
     "_xworker": {
         "canonical_name": "xworker",
@@ -614,6 +772,11 @@ ALLOWED_INSTANCE_POLICIES = {
 }
 
 
+
+
+
+
+
 HANDOFF_PROTOCOL: dict[str, dict[str, Any]] = {
     "message_text": {
         "description": "Plain text handoff transported as the routed user message.",
@@ -649,7 +812,7 @@ HANDOFF_SCHEMA: dict[str, dict[str, Any]] = {
                 "protocol": "message_text",
                 "description": "xrouter_xplanner request for the deterministic dispatch workflow.",
                 "required_message_text": True,
-                "workflow_name": "xworker_dispatch_chain",
+                "workflow_name": "xworker_documents_dispatch_chain",
                 "instructions": [
                     "Treat the routed user message as the dispatch request.",
                     "Execute the document_dispatch job deterministically and do not invent filesystem or DB state.",
@@ -753,7 +916,7 @@ HANDOFF_SCHEMA: dict[str, dict[str, Any]] = {
 
 ACTIONS: dict[str, dict[str, Any]] = {
  
-    "document_dispatch_request": {
+    "dispatch_documents": {
         "description": "Deterministic document dispatch request that scans a directory for new job-offer PDFs and updates dispatcher state.",
         "actions": ["dispatch_documents", "document_dispatch"],
         "required_paths": ["action", "scan_dir"],
@@ -764,7 +927,8 @@ ACTIONS: dict[str, dict[str, Any]] = {
             "dispatcher_message_id",
             "recursive",
             "extensions",
-            "target_agent",
+            "agent_name",
+            "parser_job_name",
         ],
         "conditions": {
             "all": [
@@ -774,6 +938,50 @@ ACTIONS: dict[str, dict[str, Any]] = {
         },
         "action_execution": {
             "handler_name": "dispatch_documents",
+        },
+    },
+
+    "platform_job_posting_ingest_request": {
+        "description": "Deterministic non-PDF ingest request for job postings from platforms, APIs, or pre-parsed sources.",
+        "actions": ["ingest_object", "store_object_result"],
+        "required_paths": ["action"],
+        "conditions": {
+            "all": [
+                {"action": {"in": ["ingest_object", "store_object_result"]}},
+                {
+                    "any": [
+                        {"job_posting_result": {"exists": True}},
+                        {"job_posting": {"exists": True}},
+                    ]
+                },
+            ]
+        },
+        "recommended_paths": ["correlation_id", "source_agent", "source_payload"],
+        "request_resolution": {
+            "objects": [
+                {
+                    "binding_name": "job_posting",
+                    "request_field": "job_posting",
+                    "result_field": "job_posting_result",
+                    "default_obj_name": "job_postings",
+                    "obj_name_config_key": "job_posting_obj_name",
+                    "db_path_field_key": "job_posting_db_path_field",
+                    "default_source": "text",
+                }
+            ],
+        },
+        "action_execution": {
+            "handler_name": "ingest_object",
+            "binding_name": "job_posting",
+            "object_payload_field": "job_posting",
+            "request_payload_field": "job_posting",
+            "result_payload_field": "job_posting_result",
+            "correlation_id_fields": ["correlation_id"],
+            "db_path_fields": ["obj_db_path", "job_postings_db_path", "db_path"],
+            "source_agent_fields": ["source_agent"],
+            "source_payload_fields": ["source_payload"],
+            "parse_fields": ["parse"],
+            "default_request_source": "text",
         },
     },
    
@@ -823,9 +1031,53 @@ ACTIONS: dict[str, dict[str, Any]] = {
             "dispatcher_updates_fields": ["dispatcher_updates"],
         },
     },
+
+    "platform_profile_ingest_request": {
+        "description": "Deterministic ingest request for applicant profiles from platforms, APIs, or pre-parsed sources.",
+        "actions": ["ingest_object", "store_object_result"],
+        "required_paths": ["action"],
+        "conditions": {
+            "all": [
+                {"action": {"in": ["ingest_object", "store_object_result"]}},
+                {
+                    "any": [
+                        {"profile_result": {"exists": True}},
+                        {"applicant_profile": {"exists": True}},
+                        {"profile": {"exists": True}},
+                    ]
+                },
+            ]
+        },
+        "recommended_paths": ["correlation_id", "source_agent"],
+        "request_resolution": {
+            "objects": [
+                {
+                    "binding_name": "profile",
+                    "request_field": "applicant_profile",
+                    "result_field": "profile_result",
+                    "default_obj_name": "profiles",
+                    "obj_name_config_key": "profile_obj_name",
+                    "db_path_field_key": "profile_db_path_field",
+                    "default_source": "text",
+                }
+            ],
+        },
+        "action_execution": {
+            "handler_name": "ingest_object",
+            "binding_name": "profile",
+            "object_payload_field": "profile",
+            "request_payload_field": "applicant_profile",
+            "result_payload_field": "profile_result",
+            "correlation_id_fields": ["correlation_id"],
+            "db_path_fields": ["obj_db_path", "profiles_db_path", "db_path"],
+            "source_agent_fields": ["source_agent"],
+            "source_payload_fields": ["source_payload"],
+            "default_request_source": "text",
+        },
+    },
     
     "cover_letter_generation_request": {
-        "description": "Cover-letter generation request that either routes directly to the writer when all structured inputs are ready or to the dispatcher when preparation/batch generation is still required.",
+        "description": "Cover-letter generation request that routes directly to the writer when structured inputs are ready and otherwise relies on dispatch-driven per-document fan-out.",
         "actions": ["generate_cover_letter"],
         "required_paths": ["action", "applicant_profile"],
         "conditions": {
@@ -867,17 +1119,7 @@ ACTIONS: dict[str, dict[str, Any]] = {
                     "drop_db_path_field_when_resolved": True,
                 }
             ],
-            "default_fields": [
-                {
-                    "field": "batch_tool_name",
-                    "config_key": "batch_tool_name",
-                    "normalize": "tool_name",
-                },
-                {
-                    "field": "batch_workflow_name",
-                    "config_key": "batch_workflow_name",
-                }
-            ],
+            "default_fields": [],
             "dispatcher_route_target": "_xworker",
             "ready_route_target": "_xworker",
  
@@ -909,6 +1151,12 @@ AGENT_SKILLS: dict[str, dict[str, Any]] = {
         "description": "Default planning and routing profile for the primary agent.",
         "job_name": "interactive_planning",
     },
+    "xrouter_cover_letter_sequence_planner": {
+        "role": "xplaner_xrouter",
+        "prompt_fragments": ["source_grounding", "router_handoff", "deterministic_workflow"],
+        "description": "Planning profile for deterministic dispatch->parse->cover-letter sequence initialization.",
+        "job_name": "router_planner_cover_letter_sequence",
+    },
   
     "xworker_core": {
         "role": "xworker",
@@ -921,6 +1169,12 @@ AGENT_SKILLS: dict[str, dict[str, Any]] = {
         "prompt_fragments": ["source_grounding", "deterministic_workflow"],
         "description": "Worker profile for deterministic dispatch and document bucketing.",
         "job_name": "document_dispatch",
+    },
+    "xworker_dispatch_ingest_import_pipeline": {
+        "role": "xworker",
+        "prompt_fragments": ["source_grounding", "deterministic_workflow"],
+        "description": "Worker profile for deterministic document ingest/import pipeline execution.",
+        "job_name": "document_dispatch_ingest_import_pipeline",
     },
 
     "xworker_generic_parser": {
@@ -1062,7 +1316,7 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
         "parameters": [
             {"name": "content", "type": "string", "description": "text to write to disk.", "required": True},
             {"name": "path", "type": "string", "description": "Directory to store the file.", "default_ref": "default_save_dir"},
-            {"name": "titel", "type": "string", "description": "Optional file title for filename prefix."},
+            {"name": "filename", "type": "string", "description": "Optional filename for the markdown artifact."},
         ],
     },
     {
@@ -1158,10 +1412,11 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
     {
         "name": "dispatch_documents",
         "description": "Discover documents in a directory, fingerprint them (SHA-256), check/update a small DB, and prepare handoff payloads for a parser agent.",
-        "implementation_name": "dispatch_docs",
+        "implementation_name": "dispatch_documents",
         "dispatch_policy": {
             "obj_name": "job_postings",
             "obj_db_path_field": "obj_db_path",
+            "parser_job_name": "job_posting_parser",
             "document_type": "file",
             "requested_actions": ["parse", "extract_text", "store_object_result", "mark_processed_on_success"],
             "default_target_agent": "_xworker",
@@ -1170,7 +1425,7 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
             "metadata_defaults": {
                 "obj_db_path": {
                     "resolver": "default_document_db_path",
-                    "obj_name": "job_postings"
+                    "obj_name": "job_postings_db"
                 }
             },
         },
@@ -1178,13 +1433,15 @@ TOOL_CONFIGS: list[dict[str, Any]] = [
             {"name": "scan_dir", "type": "string", "description": "Directory to scan for documents.", "required": True},
             {"name": "db", "type": "object", "description": "Optional DB adapter/config. Supported: { 'path': '/abs/path/to/db.json' }", "required": False},
             {"name": "db_path", "type": "string", "description": "Optional DB JSON path (file-based DB). Overrides db.path.", "required": False},
-            {"name": "obj_name", "type": "string", "description": "Logical object/store name used to derive object-specific DB metadata and handoff fields, e.g. 'job_postings'.", "required": False, "default": "job_postings"},
+            {"name": "obj_name", "type": "string", "description": "Logical object/store name used to derive object-specific DB metadata and handoff fields, e.g. 'job_postings'.", "required": False, "default": "job_postings_DB"},
             {"name": "thread_id", "type": "string", "description": "Thread id for link.thread_id (or UNKNOWN).", "required": False},
             {"name": "dispatcher_message_id", "type": "string", "description": "Dispatcher message id for reporting (or UNKNOWN).", "required": False},
             {"name": "recursive", "type": "boolean", "description": "Recurse into subdirectories.", "required": False, "default": True},
             {"name": "extensions", "type": "array", "description": "File extensions to include (default: ['.pdf', '.PDF']).", "required": False, "items": {"type": "string"}},
             {"name": "max_files", "type": "integer", "description": "Optional max number of PDFs to scan.", "required": False},
             {"name": "agent_name", "type": "string", "description": "Target agent name for handoff messages.", "required": False, "default": "_xworker"},
+            {"name": "parser_agent_name", "type": "string", "description": "Optional parser agent override for emitted handoff messages.", "required": False},
+            {"name": "parser_job_name", "type": "string", "description": "Parser job name for each emitted handoff payload.", "required": False, "default": "job_posting_parser"},
             {"name": "dry_run", "type": "boolean", "description": "If true: do not update DB and do not create handoff messages.", "required": False, "default": False},
         ],
     },
@@ -1376,9 +1633,9 @@ TOOL_NAMES: dict[str, str] = {
     "store_document_result": "store_object_result",
     "upsert_object_record": "upsert_object_record",
     "upsert_job_record": "upsert_dispatcher_job_record",
-    "batch_document_generator": "batch_generate_documents",
-    "batch_generate_documents": "batch_generate_documents",
-    "batch_generate_cover_letters": "batch_generate_documents",
+    "batch_document_generator": "dispatch_documents",
+    "batch_generate_documents": "dispatch_documents",
+    "batch_generate_cover_letters": "dispatch_documents",
     "pypdf_read_document": "pypdf_read_document",
     "pypdf_read": "pypdf_read_document",
     "read_pdf_with_pypdf": "pypdf_read_document",
@@ -1388,10 +1645,15 @@ TOOL_NAMES: dict[str, str] = {
 
 
 ACTION_NAMES: dict[str, str] = {
-    "document_dispatch": "dispatch_documents",
-    "dispatch_documents": "dispatch_documents",
+    "generate_cover_letter": "generate_cover_letter",
+    "cover_letter_writer": "generate_cover_letter",
+    "cover_letter_generation": "generate_cover_letter",
+    "dispatch_document": "dispatch_documents",
+    "generate_cover_letters_batch": "dispatch_documents",
+    "batch_generate_documents": "dispatch_documents",
+    "batch_generate_cover_letters": "dispatch_documents",
+   
     "data_dispatcher/dispatch_documents": "dispatch_documents",
-    "data_dispatcher.dispatch_documents": "dispatch_documents",
     "ingest_object": "ingest_object",
     "store_object_result": "store_object_result",
     "upsert_object_record": "upsert_object_record",
@@ -1408,7 +1670,6 @@ ACTION_NAMES: dict[str, str] = {
 
 
 TOOL_GROUPS: dict[str, list[str]] = {
-    "rag": ["memorydb", "vectordb"],
     "doc_ro": [
         "read_document",
         "pypdf_read_document",
@@ -1435,18 +1696,39 @@ TOOL_GROUPS: dict[str, list[str]] = {
     "web": ["fetch_url", "fetch_data", "call_api"],
     "comms": ["send_mail", "run_mail_agent", "calendar", "call", "accept_call", "reject_call"],
     "code": ["code_tool", "iter_documents"],
-    "dispatcher": ["dispatch_documents", "execute_action_request", "upsert_object_record", "ingest_object", "store_object_result", "batch_generate_documents", "vdb_worker"],
+    "dispatcher": ["dispatch_documents", "execute_action_request", "upsert_object_record", "ingest_object", "store_object_result", "vdb_worker"],
 }
 
 
 FORCED_ROUTES: dict[str, list[dict[str, Any]]] = {
-    "_xplaner_xrouter": [
+    "_xrouter_xplanner": [
         {
             "name": "agent_prefix",
             "trigger": {"type": "at_prefix"},
         },
-    
-        
+        {
+            "name": "cover_letter_writer_direct_payload",
+            "trigger": {
+                "type": "json_payload",
+                "conditions": {
+                    "all": [
+                        {"action": {"eq": "generate_cover_letter"}},
+                        {"job_posting_result": {"exists": True}},
+                        {"profile_result": {"exists": True}},
+                    ]
+                },
+            },
+            "route": {
+                "target_agent": "_xworker",
+                "job_name": "cover_letter_writer",
+                "handoff_protocol": "agent_handoff_v1",
+                "handoff_payload": {
+                    "agent_label": "_xrouter_xplanner",
+                    "handoff_to": "_xworker",
+                    "output": "__cover_letter_writer_payload__",
+                },
+            },
+        },
         {
             "name": "cover_letter_request",
             "trigger": {
@@ -1480,7 +1762,7 @@ WORKFLOWS: dict[str, dict[str, Any]] = {
         },
         "states": {
             "xplaner_ready": {
-                "actor": {"kind": "agent", "name": "_xplaner_xrouter"},
+                "actor": {"kind": "agent", "name": "_xrouter_xplanner"},
                 "terminal": False,
             },
             "xworker_delegated": {
@@ -1712,7 +1994,7 @@ WORKFLOWS: dict[str, dict[str, Any]] = {
             }
         ],
     },
-    "xworker_dispatch_chain": {
+    "xworker_documents_dispatch_chain": {
         "description": "Deterministic xworker dispatch chain for document discovery, action execution, and parser handoff.",
         "entry_state": "dispatcher_ready",
         "retry_policy": {
@@ -1761,11 +2043,6 @@ WORKFLOWS: dict[str, dict[str, Any]] = {
             },
             {
                 "from": "dispatcher_ready",
-                "on": {"kind": "tool", "name": "batch_generate_documents"},
-                "to": "documents_batched",
-            },
-            {
-                "from": "dispatcher_ready",
                 "on": {"kind": "tool", "name": "execute_action_request"},
                 "to": "action_executed",
             },
@@ -1809,7 +2086,7 @@ WORKFLOWS: dict[str, dict[str, Any]] = {
                     "name": ["tool_failed", "model_failed", "routed_agent_failed"],
                     "conditions": {
                         "any": [
-                            {"tool_name": {"in": ["dispatch_documents", "batch_generate_documents", "execute_action_request", "upsert_object_record", "route_to_agent"]}},
+                            {"tool_name": {"in": ["dispatch_documents", "execute_action_request", "upsert_object_record", "route_to_agent"]}},
                             {"error": {"exists": True}},
                             {"target_agent": "_xworker"},
                         ]
